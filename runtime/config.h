@@ -118,7 +118,7 @@ uint32_t config_combo_mask(const char *text);  // "A+X" -> the BTN_* bits, 0 if 
 void config_combo_text(uint32_t mask, char *out, size_t size);  // and back
 // The hub server used when ini Server is empty (runtime/net/ldn.c, server/): the project's public one (an Oracle
 // none). "" = no default: no internet hubs unless the player names a server.
-#define LDN_DEFAULT_SERVER ""
+#define LDN_DEFAULT_SERVER "hunterhubid-gu-hub.duckdns.org morerokk-mhgurecomp-ldnserver.duckdns.org"
 #define LOW_END_SCALE 40  // what the menu's Low-end mode sets: RenderScale, FPS
 #define LOW_END_FPS 30
 enum { UPDATES_ASK, UPDATES_AUTO, UPDATES_OFF };

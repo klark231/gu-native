@@ -735,7 +735,7 @@ void plat_fatal_notice(void) {
     int config_language(void);
     if (!g_own_log) return;
     const char *msg = settings_text(config_language(), "The game stopped because of an error. The details are in log.txt, "
-                                                       "in Android/data/com.mhgu.recomp/files.");
+                                                       "in your user folder.");
     if (crash_screen()) {
         fprintf(stderr, "\n*** %s\n", msg);
         usleep(300000);  // (the log's last lines on their way to the file: stderr is a pipe, log_tee)

@@ -32,6 +32,7 @@ void ui_request_save_import(void) { SDL_SetAtomicInt(&requested_action, 5); }
 void ui_request_share_log(void) { SDL_SetAtomicInt(&requested_action, 6); }
 void ui_request_save_export(void) { SDL_SetAtomicInt(&requested_action, 7); }
 void ui_request_gpu_driver(void) { SDL_SetAtomicInt(&requested_action, 8); }
+void ui_request_user_folder(void) { SDL_SetAtomicInt(&requested_action, 9); }
 static void activity_call(const char *method) {  // (a static void method of GameActivity: as restart_application)
     JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
     jobject act = env ? (jobject)SDL_GetAndroidActivity() : NULL;
@@ -262,6 +263,7 @@ int ui_run(void) {
         if (action == 6) activity_call("showShareLog");
         if (action == 7) activity_call("showSaveExport");
         if (action == 8) activity_call("showDrivers");
+        if (action == 9) activity_call("showUserFolder");
         static float screen_for = -1;  // (the screen's refresh rate follows the FPS limit: GameActivity.setFrameCap)
         float fps_now = config_live_fps();
         if (fps_now != screen_for) screen_for = fps_now, frame_cap_to_activity(fps_now);

@@ -1450,6 +1450,8 @@ std::vector<Row> main_rows() {
 #endif
         add_bool(r, "bonus", "Bonus content", &c.bonus_content, ini("BonusContent"));
 #ifdef __ANDROID__
+        action(r, "user.folder", tr("User folder"), []() { ui_request_user_folder(); });
+        r.back().help = tr("Where your settings, saves, mods, cheats and logs are kept. Choose a folder you can reach with a file manager. Close the game and open it again to apply it: your files are copied then.");
         action(r, "game.folder", tr("Game folder"), []() { ui_request_game_folder(); });
         r.back().help = tr("Where the game's exefs and romfs are read from. A new folder is used the next time the game starts.");
         action(r, "save.import", tr("Import save"), []() { ui_request_save_import(); });

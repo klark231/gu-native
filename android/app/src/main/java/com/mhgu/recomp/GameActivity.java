@@ -235,6 +235,12 @@ public class GameActivity extends SDLActivity {
         }
     }
 
+    /** Ajustes -> Carpeta del usuario. */
+    public static void showUserFolder() {
+        SDLActivity activity = mSingleton;
+        if (activity != null) activity.startActivity(new Intent(activity, UserFolderActivity.class));
+    }
+
     private static volatile float frameCap;  // (el límite de FPS de los ajustes; 0: aún no se sabe, o sin límite)
 
     /** El límite de FPS cambió (runtime/ui.c): la pantalla lo sigue. */
@@ -273,8 +279,7 @@ public class GameActivity extends SDLActivity {
     /** Crea las carpetas del jugador y copia lo que el APK trae para ellas (la lista de pipelines). */
     private void prepareFiles() {
         SaveImportActivity.applyPending(this);  // (before the game: Ajustes -> Importar partida)
-        File home = getExternalFilesDir(null);
-        if (home == null) home = getFilesDir();
+        File home = UserFolder.home(this);
         new File(home, "data").mkdirs();
         new File(home, "mods").mkdirs();
         new File(home, "cheats").mkdirs();

@@ -7,6 +7,7 @@ void ui_capture_launch_args(int argc, char **argv);
 #ifdef __ANDROID__
 void ui_request_licenses(void);     // The licenses' and the game folder's screens, opened on the host thread too
 void ui_request_game_folder(void);
+void ui_request_user_folder(void);  // Settings -> User folder (UserFolderActivity)
 void ui_request_save_import(void);
 void ui_request_save_export(void);
 void ui_request_gpu_driver(void);

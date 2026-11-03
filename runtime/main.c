@@ -108,6 +108,7 @@ static void boot(const char *root) {
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <dlfcn.h>
+#include <unistd.h>
 #include "settings_locale.h"
 // A message before the settings are read: in the phone's language, as the settings' first run (config.c)
 static const char *boot_text(const char *english) {
@@ -117,9 +118,31 @@ static const char *boot_text(const char *english) {
     SDL_free(loc);
     return settings_text(spanish ? 1 : 0, english);
 }
+// The user folder (UserFolder.java): the player's own choice, kept in user_folder.txt in the app's private folder; it
+// has to exist and be writable, or the default (the app's external files folder) is used, as on the Java side.
+static const char *user_home(void) {
+    static char path[1100];
+    const char *own = SDL_GetAndroidInternalStoragePath();
+    if (own) {
+        char p[1100];
+        snprintf(p, sizeof p, "%s/user_folder.txt", own);
+        FILE *f = fopen(p, "r");
+        if (f) {
+            if (!fgets(path, sizeof path, f)) path[0] = 0;
+            fclose(f);
+            path[strcspn(path, "\r\n")] = 0;
+            struct stat st;
+            if (path[0] && stat(path, &st) == 0 && S_ISDIR(st.st_mode) && access(path, W_OK) == 0) return path;
+            if (path[0]) fprintf(stderr, "[main] user folder %s can't be used: the default one is\n", path);
+        }
+    }
+    const char *ext = SDL_GetAndroidExternalStoragePath();
+    return ext ? ext : own;
+}
 // These files can't be played: GameFolderActivity shows what is wrong with them at the next start
 static void files_rejected(void) {
-    const char *ext = SDL_GetAndroidExternalStoragePath();
+    const char *ext = getenv("MHGU_HOME");
+    if (!ext || !*ext) ext = user_home();
     char path[1100];
     snprintf(path, sizeof path, "%s/game_folder_bad.txt", ext ? ext : ".");
     FILE *f = fopen(path, "w");
@@ -134,8 +157,7 @@ static void game_lib_failed(const char *why) {
     exit(1);
 }
 static void android_env(void) {
-    const char *ext = SDL_GetAndroidExternalStoragePath();
-    if (!ext) ext = SDL_GetAndroidInternalStoragePath();
+    const char *ext = user_home();  // (the player's folder: everything of theirs follows it)
     if (ext) {
         setenv("MHGU_HOME", ext, 0);
         setenv("XDG_DATA_HOME", ext, 0);

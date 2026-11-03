@@ -52,10 +52,7 @@ public class GameFolderActivity extends Activity {
     private TextView status;
     private Button pick;
 
-    private File home() {
-        File f = getExternalFilesDir(null);
-        return f != null ? f : getFilesDir();
-    }
+    private File home() { return UserFolder.home(this); }  // (the user folder: UserFolderActivity)
     private File savedFile() { return new File(home(), "game_folder.txt"); }
     private File rejectedFile() { return new File(home(), "game_folder_bad.txt"); }
     private File ownLib() { return new File(getFilesDir(), "game/libmhgugame.so"); }
@@ -95,6 +92,18 @@ public class GameFolderActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         declareGame();
+        // the user folder first: a change chosen last time is applied now (files copied), and the very first start asks
+        // where the player's files should live (once); a folder that went missing is asked about again
+        if (UserFolder.hasPending(this)) {
+            startActivity(new Intent(this, UserFolderActivity.class).putExtra(UserFolderActivity.EXTRA_APPLY, true));
+            finish();
+            return;
+        }
+        if (!UserFolder.asked(this) || UserFolder.lost(this)) {
+            startActivity(new Intent(this, UserFolderActivity.class).putExtra(UserFolderActivity.EXTRA_FIRST, true));
+            finish();
+            return;
+        }
         es = "es".equals(Locale.getDefault().getLanguage());
         change = getIntent().getBooleanExtra(EXTRA_CHANGE, false);
         boolean rejected = rejectedFile().exists();

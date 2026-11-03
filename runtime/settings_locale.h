@@ -438,12 +438,15 @@ static inline const char *settings_text(int language, const char *english) {
          "Envía el registro del juego a la app que elijas, para quien te esté ayudando con un problema."},
         {"Brings your save from an emulator or another device. It replaces the characters on this device, and the current save is kept in a copy.",
          "Trae tu partida desde un emulador o desde otro dispositivo. Reemplaza los personajes de este dispositivo, y la partida actual queda guardada en una copia."},
+        {"User folder", "Carpeta del usuario"},
+        {"Where your settings, saves, mods, cheats and logs are kept. Choose a folder you can reach with a file manager. Close the game and open it again to apply it: your files are copied then.",
+         "Dónde se guardan tus ajustes, partidas, mods, trucos y registros. Elige una carpeta que alcances con un administrador de archivos. Cierra el juego y ábrelo de nuevo para aplicarla: ahí se copian tus archivos."},
         {"Game folder", "Carpeta del juego"},
         {"Where the game's exefs and romfs are read from. A new folder is used the next time the game starts.",
          "De dónde se leen exefs y romfs del juego. Una carpeta nueva se usa la próxima vez que abras el juego."},
         {", and its shader package is missing", ", y falta su paquete de sombreadores"},
-        {"The game stopped because of an error. The details are in log.txt, in Android/data/com.mhgu.recomp/files.",
-         "El juego se detuvo por un error. Los detalles están en log.txt, en Android/data/com.mhgu.recomp/files."},
+        {"The game stopped because of an error. The details are in log.txt, in your user folder.",
+         "El juego se detuvo por un error. Los detalles están en log.txt, en tu carpeta del usuario."},
     };
     for (unsigned i = 0; i < sizeof messages / sizeof *messages; ++i)
         if (!strcmp(english, messages[i].en)) return messages[i].es;

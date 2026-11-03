@@ -21,7 +21,7 @@ GAMELIB_ID=$( (cat tools/gen.py tools/lifter.py tools/neon.py tools/nso.py tools
 SHADER_ID=$(cat runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h | tr -d '\r' | sha256sum | cut -c1-16)
 VERSION="$(cat "$ROOT/VERSION" 2>/dev/null || echo dev)"
 cd "$HERE"
-mkdir -p "$HERE/build"
+mkdir -p "$HERE/build"  # native/build/ is gitignored, so on a fresh checkout it does not exist yet and the "> $OUT.configure.log" redirect fails
 
 "$CMAKE" -S "$(m "$HERE")" -B "$(m "$OUT")" -G Ninja -DCMAKE_MAKE_PROGRAM="$(m "$NINJA")" \
   -DCMAKE_TOOLCHAIN_FILE="$(m "$NDK/build/cmake/android.toolchain.cmake")" -DANDROID_ABI=$ABI \

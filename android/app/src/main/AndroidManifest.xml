@@ -15,6 +15,8 @@
          Android 11 en adelante pide el acceso a todos los archivos, Android 10 el de lectura -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <!-- la carpeta del usuario (UserFolderActivity) es de lectura y escritura: en Android 10 hace falta también este -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <!-- multijugador (Local Play por IP / hubs) -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -71,6 +73,13 @@
                 <category android:name="android.intent.category.GAME" />
             </intent-filter>
         </activity>
+
+        <!-- Ajustes -> Carpeta del usuario; también la primera vez y al aplicar un cambio (UserFolder) -->
+        <activity android:name=".UserFolderActivity"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+            android:screenOrientation="sensorLandscape"
+            android:excludeFromRecents="true"
+            android:exported="false" />
 
         <!-- Ajustes -> Licencias -->
         <activity android:name=".SaveImportActivity"
