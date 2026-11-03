@@ -1612,6 +1612,11 @@ HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan)
         snprintf(found[nfound].server, sizeof found[nfound].server, "%s", names[i] ? names[i] : "");
         found[nfound++].addr = addrs[i];
         if (k < max) memcpy((uint8_t *)G2H(out) + (size_t)k++ * NETINFO_SIZE, infos[i], NETINFO_SIZE);
+        if (ENV("MHGU_LOG_NET") && atoi(ENV("MHGU_LOG_NET")) >= 3 && i < 4) {  // hub description, to compare with a 3DS beacon
+            static char hx[NETINFO_SIZE * 2 + 1];
+            for (int q = 0; q < NETINFO_SIZE; q++) snprintf(hx + q * 2, 3, "%02x", infos[i][q]);
+            LOG("[netinfo] hub %d %s\n", i, hx);
+        }
     }
     if (pcount) ST32(pcount, k);
     static int last = -1, last_online = -1, last_max = -1;
