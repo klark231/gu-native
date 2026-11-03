@@ -4,11 +4,7 @@
 set -e
 ABI=${1:-arm64-v8a}
 API=29
-SDK="$LOCALAPPDATA/Android/Sdk"
-SDK=$(cygpath -u "$SDK")
-NDK="$SDK/ndk/27.0.12077973"
-CMAKE="$SDK/cmake/3.22.1/bin/cmake.exe"
-NINJA="$SDK/cmake/3.22.1/bin/ninja.exe"
+. "$(cd "$(dirname "$0")" && pwd)/env.sh"  # SDK, NDK, CMAKE, NINJA (Windows Git Bash or Linux)
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC="$HERE/src"
 OUT="$HERE/out/$ABI"
