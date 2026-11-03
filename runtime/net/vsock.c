@@ -371,6 +371,17 @@ static void x_connect(Cpu *c) {
     RET(r);
 }
 
+// MHGU_LOG_NET=3: hex of each UDP datagram (first 256 bytes), to compare the game's packets with another platform's.
+static void dgram_dump(const char *dir, uint32_t ip, uint16_t port, const void *data, uint32_t len) {
+    const char *e = ENV("MHGU_LOG_NET");
+    if (!e || atoi(e) < 3) return;
+    char hex[513];
+    uint32_t n = len < 256 ? len : 256;
+    for (uint32_t i = 0; i < n; i++) snprintf(hex + i * 2, 3, "%02x", ((const uint8_t *)data)[i]);
+    hex[n * 2] = 0;
+    LOG("[netdump] %s %s:%u len=%u %s\n", dir, ipstr(ip), port, len, hex);
+}
+
 static int do_send(Cpu *c, int fd, uint32_t buf, uint32_t len, int flags, uint32_t to, uint32_t tolen) {
     (void)flags;
     uint32_t ip = 0;
@@ -389,6 +400,7 @@ static int do_send(Cpu *c, int fd, uint32_t buf, uint32_t len, int flags, uint32
         pthread_mutex_unlock(&mu);
         if (len > 0xFFE0) return fail(S_EMSGSIZE);
         if (!ldn_net_up()) return fail(S_ENETUNREACH);
+        dgram_dump("TX", ip, port, G2H(buf), len);
         ldn_send(&p, G2H(buf), len);
         return (int)len;
     }
@@ -417,6 +429,7 @@ static int do_recv(int fd, uint32_t buf, uint32_t len, int flags, uint32_t from,
                 Dgram *d = s->head;
                 uint32_t n = d->len < len ? d->len : len;
                 memcpy(G2H(buf), d->data, n);
+                dgram_dump("RX", d->ip, d->port, d->data, d->len);
                 write_addr(from, fromlen, d->ip, d->port);
                 if (!(flags & S_MSG_PEEK)) {
                     s->head = d->next;
