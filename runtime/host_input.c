@@ -537,10 +537,37 @@ static void close_pad(SDL_JoystickID id) {
     }
 }
 
+// A joystick SDL has no gamepad mapping for (seen: generic Bluetooth pads that only report BUTTON_1 .. 16) is not read
+// at all until the player maps it, and nothing said so: many said their controller "isn't read". So it is logged, and
+// a notice says where to map it (Controls, Map a controller: runtime/padmap.c), once per controller and session
+static void joystick_seen(SDL_JoystickID id) {
+    if (SDL_IsGamepad(id)) return;
+    static SDL_JoystickID told[16];
+    static int ntold;
+    for (int i = 0; i < ntold; i++)
+        if (told[i] == id) return;
+    if (ntold < 16) told[ntold++] = id;
+    const char *name = SDL_GetJoystickNameForID(id);
+    LOG("[input] joystick %s (%04x:%04x) has no gamepad mapping: not read until it is mapped (Controls, Map a controller)\n",
+        name ? name : "?", SDL_GetJoystickVendorForID(id), SDL_GetJoystickProductForID(id));
+    if (name && (SDL_strcasestr(name, "consumer control") || SDL_strcasestr(name, "virtual") || SDL_strcasestr(name, "uinput")))
+        return;  // (not a controller in the player's hands: pad_is_real)
+    bool es = config_language() == 1;
+    char text[200];
+    snprintf(text, sizeof text,
+             es ? "%s: para usarlo, configúralo en el engranaje, Controles, Mapear un mando."
+                : "%s: to use it, set it up under the gear, Controls, Map a controller.",
+             name ? name : (es ? "Un mando" : "A controller"));
+    overlay_notice(es ? "Mando sin configurar" : "Controller not set up", text);
+}
+
 static void pick_pad(void) {  // over every controller SDL sees now: those MHGU_PAD allows (all without it), first in use
     int n = 0;
     SDL_JoystickID *ids = SDL_GetGamepads(&n);
     for (int i = 0; i < n; i++) open_pad(ids[i]);
+    SDL_free(ids);
+    ids = SDL_GetJoysticks(&n);
+    for (int i = 0; i < n; i++) joystick_seen(ids[i]);
     SDL_free(ids);
 }
 
@@ -659,6 +686,9 @@ void host_input_event(const SDL_Event *e) {
         break;
     case SDL_EVENT_GAMEPAD_ADDED:
         open_pad(e->gdevice.which);
+        break;
+    case SDL_EVENT_JOYSTICK_ADDED:  // (also sent for gamepads, before their GAMEPAD_ADDED: joystick_seen skips those)
+        joystick_seen(e->jdevice.which);
         break;
     case SDL_EVENT_GAMEPAD_REMOVED:
         close_pad(e->gdevice.which);

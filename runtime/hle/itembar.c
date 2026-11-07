@@ -9,7 +9,7 @@
 // stops at the empty place, the bar's left end), and sets bit 1 (right) or 2 (left) of +0x253c for the bar's turn
 // animation. The handler is hooked: after it, a notch of
 // the wheel does the same, past the same checks. One notch per update, at most a few waiting; notches while the
-// handler doesn't run (towns, menus, cutscenes) or while the player may not pick an item are dropped.
+// handler doesn't run (towns, menus, cutscenes) are dropped; those while the player may not pick an item wait 0.6 s.
 #include <pthread.h>
 
 #include "../hle.h"
@@ -29,11 +29,14 @@
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_steps;                  // notches waiting: < 0 left, > 0 right
 static volatile uint64_t g_seen_ns;  // when the handler last ran
+static uint64_t g_steps_ns;          // when the last one came
+#define KEEP_NS 600000000ull         // a notch the player may not take now (a swing, a roll) waits this long
 
 void itembar_scroll(int steps) {
-    uint64_t seen = g_seen_ns;
-    if (!seen || plat_now_ns() - seen >= ACTIVE_NS) return;  // (no item bar now)
+    uint64_t seen = g_seen_ns, now = plat_now_ns();
+    if (!seen || now - seen >= ACTIVE_NS) return;  // (no item bar now)
     pthread_mutex_lock(&g_lock);
+    g_steps_ns = now;
     g_steps += steps;
     if (g_steps > MAX_WAITING) g_steps = MAX_WAITING;
     if (g_steps < -MAX_WAITING) g_steps = -MAX_WAITING;
@@ -67,7 +70,10 @@ static void item_bar(Cpu *c) {
     uint32_t can_select = vt ? LD32(vt + VF_CAN_SELECT) : 0;  // (vtables are in main's image: not heap addresses)
     bool may = call(c, FN_PL_BUSY, pl, 0, 0) == 0 && can_select && call(c, can_select, pl, 1, 0) == 1;
     pthread_mutex_lock(&g_lock);
-    g_steps = may ? g_steps - dir : 0;  // (not now: dropped, not kept for when the attack is over)
+    // (not now: kept a moment, for the end of a swing, a roll; then dropped, not kept for when a long attack is over.
+    // Dropped at once, a swipe in a fight often did nothing)
+    if (may) g_steps -= dir;
+    else if (now - g_steps_ns > KEEP_NS) g_steps = 0;
     pthread_mutex_unlock(&g_lock);
     if (!may) return;
     uint32_t slot = call(c, FN_ITEM_NEXT, pl, LD16(pl + PL_ITEM_SLOT), dir > 0 ? 0 : 1);

@@ -35,7 +35,7 @@ public final class DeviceStats {
     public static int thermalStatus() {
         try {
             PowerManager pm = powerManager();
-            return pm != null ? pm.getCurrentThermalStatus() : -1;
+            return pm != null && Build.VERSION.SDK_INT >= 29 ? pm.getCurrentThermalStatus() : -1;  // (API 29)
         } catch (Exception e) {
             return -1;
         }

@@ -14,7 +14,7 @@
 // clock no longer answers has ended). A translating thread joins it with APerformanceHint_setThreads (API 34) only once
 // it has submitted in SUBMIT_FRAMES frames in a row - a thread that submits a few times while loading and ends doesn't
 // - as does a game or render thread that turns up later; one that ended leaves it then. The functions are looked up in
-// libandroid.so at run time (API 33; the app's minimum is 29: below that there is no session), and the session is made
+// libandroid.so at run time (API 33; the app's minimum is 28: below 33 there is no session), and the session is made
 // on a thread of its own (binder calls: the frame's path only reports, which the system batches).
 //
 // A frame's work: the busiest session thread's CPU time since the previous present (CLOCK_THREAD_CPUTIME_ID: what it
@@ -31,6 +31,7 @@
 #define _GNU_SOURCE
 #include <android/api-level.h>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -267,10 +268,15 @@ static void log_frame(uint64_t work, bool have_session) {
 
 #define EASY_FRAMES 60  // (frames looked at together)
 #define EASY_RUNS 5     // (of them in a row, all easy, before the efficient cores)
+#define EASY_RUNS_MAX 80
+// A phone whose frames are easy on the fast cores but not on the efficient ones went back and forth all the time
+// (a Unisoc T606: about 30 times in one session, each a few slow frames): each time they did not last a minute, the
+// next try waits twice as long
 static void efficiency_follow(APerformanceHintSession *s, int64_t work) {
-    static int frames, easy_runs, off = -1;
+    static int frames, easy_runs, off = -1, need = EASY_RUNS;
     static int64_t sum, longest;
     static bool efficient;
+    static uint64_t on_since;
     if (off < 0) {
         const char *e = getenv("MHGU_ADPF_EFFICIENT");
         off = !fn.prefer_efficiency || (e && !strcmp(e, "0"));
@@ -282,15 +288,91 @@ static void efficiency_follow(APerformanceHintSession *s, int64_t work) {
     bool tight = avg > target * 7 / 10 || longest > target;
     easy_runs = avg < target / 2 && longest < target * 8 / 10 ? easy_runs + 1 : 0;
     frames = 0, sum = longest = 0;
-    bool want = tight ? false : efficient || easy_runs >= EASY_RUNS;
+    bool want = tight ? false : efficient || easy_runs >= need;
     if (want == efficient) return;
     efficient = want;
     fn.prefer_efficiency(s, want);
-    LOG("[perf] efficient cores %s (work %.1f ms of %.1f)\n", want ? "on" : "off", avg / 1e6, target / 1e6);
+    uint64_t now = plat_now_ns();
+    if (want) on_since = now, easy_runs = 0;
+    else if (now - on_since < 60000000000ull) need = need * 2 > EASY_RUNS_MAX ? EASY_RUNS_MAX : need * 2;
+    else need = EASY_RUNS;
+    LOG("[perf] efficient cores %s (work %.1f ms of %.1f)%s\n", want ? "on" : "off", avg / 1e6, target / 1e6,
+        want ? "" : need > EASY_RUNS ? ": the next try waits longer" : "");
+}
+
+// Once a minute (and at the first present): the process's memory map entries against vm.max_map_count, its resident
+// memory and the system's available memory. Games that close after 5 to 15 minutes (PowerVR, a 3 GB phone) ran out of
+// map entries (an mprotect said "out of memory" on a phone with 11 GB) or of memory: this shows whether either grows.
+static long count_lines(const char *path, long *bytes) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    char buf[16384];
+    long n = 0, total = 0;
+    ssize_t r;
+    while ((r = read(fd, buf, sizeof buf)) > 0) {
+        total += r;
+        for (ssize_t i = 0; i < r; i++) n += buf[i] == '\n';
+    }
+    close(fd);
+    if (bytes) *bytes = total;
+    return n;
+}
+
+static long kb_field(const char *path, const char *name) {
+    FILE *f = fopen(path, "re");
+    if (!f) return -1;
+    char line[256];
+    long v = -1;
+    size_t len = strlen(name);
+    while (fgets(line, sizeof line, f))
+        if (!strncmp(line, name, len)) { v = atol(line + len); break; }
+    fclose(f);
+    return v;
+}
+
+// (the error screen's log: what the minute's line says, now; open / read only, nothing that allocates)
+void perf_mem_report(void) {
+    long maps = count_lines("/proc/self/maps", NULL), rss = -1;
+    char buf[4096];
+    int fd = open("/proc/self/status", O_RDONLY | O_CLOEXEC);
+    if (fd >= 0) {
+        ssize_t r = read(fd, buf, sizeof buf - 1);
+        close(fd);
+        if (r > 0) {
+            buf[r] = 0;
+            const char *p = strstr(buf, "VmRSS:");
+            if (p) rss = atol(p + 6);
+        }
+    }
+    fprintf(stderr, "[mem] at the error: %ld map entries, resident %ld MB\n", maps, rss / 1024);
+}
+
+static void mem_watch(void) {
+    static uint64_t next;
+    static long max_maps = -1, first_maps = -1, first_rss = -1;
+    uint64_t now = plat_now_ns();
+    if (now < next) return;
+    next = now + 60000000000ull;
+    if (max_maps < 0) {
+        FILE *f = fopen("/proc/sys/vm/max_map_count", "re");
+        if (f) { if (fscanf(f, "%ld", &max_maps) != 1) max_maps = 0; fclose(f); }
+        if (max_maps < 0) max_maps = 0;
+    }
+    long maps = count_lines("/proc/self/maps", NULL);
+    long rss = kb_field("/proc/self/status", "VmRSS:"), avail = kb_field("/proc/meminfo", "MemAvailable:");
+    if (first_maps < 0) first_maps = maps, first_rss = rss;
+    void vk_mem_summary(char *out, size_t size);  // (nvn/vulkan/device.c)
+    char gpu[96];
+    vk_mem_summary(gpu, sizeof gpu);
+    char of[32] = "";  // (apps may not read vm.max_map_count: 65530 is the kernel's default)
+    if (max_maps > 0) snprintf(of, sizeof of, " of %ld", max_maps);
+    LOG("[mem] %ld map entries%s (%+ld since the start), resident %ld MB (%+ld), the system's available %ld MB%s\n",
+        maps, of, maps - first_maps, rss / 1024, (rss - first_rss) / 1024, avail / 1024, gpu);
 }
 
 void perf_hint_frame(void) {
     perf_hint_thread(PERF_RENDER);
+    mem_watch();
     if (log_on < 0) {  // (the first present: the environment)
         const char *e = getenv("MHGU_ADPF_LOG");
         log_on = e && *e && strcmp(e, "0") != 0;

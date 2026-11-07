@@ -11,6 +11,7 @@
 #include "../ipc.h"
 #include "../mods.h"
 #include "../romfs.h"
+#include "dlc.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -37,6 +38,23 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
     }
     case 4: OUT(uint64_t, 0) = romfs_size(); resp_size(resp, 8); break;  // GetSize
     default: LOG("[fs] IStorage cmd %u (ok)\n", req->cmd);
+    }
+}
+
+// A DLC's image (services/dlc.c): the same commands, on its own image (the service's state)
+static void dlc_storage(Service *s, IpcReq *req, IpcResp *resp) {
+    RomfsImage *im = s->state;
+    switch (req->cmd) {
+    case 0: {
+        uint64_t off = IN(uint64_t, 0), size = IN(uint64_t, 8);
+        IpcBuf *b = out_buf(req, 0);
+        if (!b) { resp->result = MAKE_RESULT(2, 6001); break; }
+        if (size > b->size) size = b->size;
+        romfs_image_read(im, BUFP(b), off, size);
+        break;
+    }
+    case 4: OUT(uint64_t, 0) = romfs_image_size(im); resp_size(resp, 8); break;
+    default: LOG("[fs] IStorage(dlc) cmd %u (ok)\n", req->cmd);
     }
 }
 
@@ -459,10 +477,14 @@ SERVICE("fsp-srv", fsp_srv) {
         break;
     }
     case 200: ipc_return_object(resp, open_romfs_storage()); break;  // OpenDataStorageByCurrentProcess
-    case 202:  // OpenDataStorageByDataId (system data archives)
-        LOG("[fs] OpenDataStorageByDataId %llx (not available)\n", (unsigned long long)IN(uint64_t, 8));
+    case 202: {  // OpenDataStorageByDataId: a DLC's RomFS (nn::fs::MountAddOnContent), else system data archives
+        uint64_t id = IN(uint64_t, 8);
+        RomfsImage *im = dlc_image(id);
+        if (im) { ipc_return_object(resp, service_new("IStorage(dlc)", dlc_storage, im)); break; }
+        LOG("[fs] OpenDataStorageByDataId %llx (not available)\n", (unsigned long long)id);
         resp->result = MAKE_RESULT(2, 1001);
         break;
+    }
     case 203: ipc_return_object(resp, open_romfs_storage()); break;  // OpenPatchDataStorageByCurrentProcess
     case 1005: OUT(uint32_t, 0) = 0; resp_size(resp, 4); break;  // GetGlobalAccessLogMode
     case 1003: case 1004: case 1006: break;

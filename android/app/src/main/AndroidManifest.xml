@@ -15,7 +15,7 @@
          Android 11 en adelante pide el acceso a todos los archivos, Android 10 el de lectura -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
-    <!-- la carpeta del usuario (UserFolderActivity) es de lectura y escritura: en Android 10 hace falta también este -->
+    <!-- Android 9 y 10: los trucos, mods y DLC se copian a la carpeta del juego (ImportActivity) -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <!-- multijugador (Local Play por IP / hubs) -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -74,13 +74,6 @@
             </intent-filter>
         </activity>
 
-        <!-- Ajustes -> Carpeta del usuario; también la primera vez y al aplicar un cambio (UserFolder) -->
-        <activity android:name=".UserFolderActivity"
-            android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
-            android:screenOrientation="sensorLandscape"
-            android:excludeFromRecents="true"
-            android:exported="false" />
-
         <!-- Ajustes -> Licencias -->
         <activity android:name=".SaveImportActivity"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
@@ -101,6 +94,11 @@
             android:grantUriPermissions="true" />
 
         <activity android:name=".DriverActivity"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+            android:screenOrientation="sensorLandscape"
+            android:exported="false" />
+
+        <activity android:name=".ImportActivity"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
             android:screenOrientation="sensorLandscape"
             android:exported="false" />

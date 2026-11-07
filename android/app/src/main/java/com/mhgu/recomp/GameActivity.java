@@ -182,6 +182,15 @@ public class GameActivity extends SDLActivity {
         if (activity != null) activity.startActivity(new Intent(activity, DriverActivity.class));
     }
 
+    /** Ajustes -> Trucos / Mods: el importador (ImportActivity). */
+    public static void importCheats() { startImport(ImportActivity.CHEATS); }
+    public static void importMod() { startImport(ImportActivity.MOD); }
+    public static void importDlc() { startImport(ImportActivity.DLC); }
+    private static void startImport(int kind) {
+        SDLActivity activity = mSingleton;
+        if (activity != null) activity.startActivity(new Intent(activity, ImportActivity.class).putExtra(ImportActivity.KIND, kind));
+    }
+
     public static void showSaveExport() {
         SDLActivity activity = mSingleton;
         if (activity != null) activity.startActivity(new Intent(activity, SaveExportActivity.class));
@@ -235,12 +244,6 @@ public class GameActivity extends SDLActivity {
         }
     }
 
-    /** Ajustes -> Carpeta del usuario. */
-    public static void showUserFolder() {
-        SDLActivity activity = mSingleton;
-        if (activity != null) activity.startActivity(new Intent(activity, UserFolderActivity.class));
-    }
-
     private static volatile float frameCap;  // (el límite de FPS de los ajustes; 0: aún no se sabe, o sin límite)
 
     /** El límite de FPS cambió (runtime/ui.c): la pantalla lo sigue. */
@@ -279,7 +282,8 @@ public class GameActivity extends SDLActivity {
     /** Crea las carpetas del jugador y copia lo que el APK trae para ellas (la lista de pipelines). */
     private void prepareFiles() {
         SaveImportActivity.applyPending(this);  // (before the game: Ajustes -> Importar partida)
-        File home = UserFolder.home(this);
+        File home = getExternalFilesDir(null);
+        if (home == null) home = getFilesDir();
         new File(home, "data").mkdirs();
         new File(home, "mods").mkdirs();
         new File(home, "cheats").mkdirs();

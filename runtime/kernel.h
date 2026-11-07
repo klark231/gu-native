@@ -59,6 +59,8 @@ uint32_t kernel_new_handle(KObject *o);
 void kernel_signal(KObject *o);  // caller holds g_klock
 KEvent *kernel_create_event_pair(uint32_t *writable, uint32_t *readable);
 KThread *kernel_current_thread(void);
+void dispatch_thread_init(Cpu *c);  // dispatch.c: the thread's own cache of guest address -> function
+void dispatch_thread_done(Cpu *c);  // (and freed when the thread ends)
 int kernel_stack_callers(uint32_t sp, char *line, size_t size);  // " addr addr ...": the game's calls, from the stack
 void kernel_log_guest_stack(const char *tag, const Cpu *c);       // logs tag, lr and those callers
 uint32_t kernel_heap_size(void);

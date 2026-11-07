@@ -79,6 +79,7 @@ static uint32_t msaa_floor(uint32_t s);
 PFN_vkGetInstanceProcAddr gpu_driver_loader(void);  // (platform/android_gpu.c)
 bool gpu_driver_surface(SDL_Window *win, VkInstance inst, VkSurfaceKHR *out);
 void gpu_driver_good(void);
+void gpu_driver_check(void);  // (the device made: the player's driver is the one running, or it is given up)
 #define make_surface() gpu_driver_surface(ui_window(), g_vk.inst, &g_vk.surface)
 #else
 #define make_surface() SDL_Vulkan_CreateSurface(ui_window(), g_vk.inst, NULL, &g_vk.surface)
@@ -286,6 +287,7 @@ static void create_device(void) {
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
 #ifdef __ANDROID__
+    gpu_driver_check();
     {   // (Vulkan 1.2's, and only by the device: the libvulkan of an older Android doesn't know them)
         PFN_vkWaitSemaphores wait = (PFN_vkWaitSemaphores)vkGetDeviceProcAddr(g_vk.dev, "vkWaitSemaphores");
         PFN_vkGetSemaphoreCounterValue value = (PFN_vkGetSemaphoreCounterValue)vkGetDeviceProcAddr(g_vk.dev, "vkGetSemaphoreCounterValue");
@@ -313,6 +315,15 @@ static void create_device(void) {
 
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.dev, .instance = g_vk.inst,
                                  .vulkanApiVersion = g_vk.api12 ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1};
+    // PowerVR (BXM-8-256, Dimensity 7020 to 7300): games closed after 5 to 15 minutes, out of the process's memory map
+    // entries (mprotect: "out of memory" on a phone with 11 GB; pipelines failing with OUT_OF_HOST_MEMORY), while the
+    // write tracking had armed only 16 runs. A driver that prefers an allocation of its own for each image gets one
+    // VkDeviceMemory each from VMA, and one mapping each on such a GPU. Told it is Vulkan 1.0, VMA never asks: images
+    // share its blocks, a few hundred megabytes each, as on the GPUs where the map entries stay flat
+    if (strstr(g_vk.props.deviceName, "PowerVR") && !getenv("MHGU_VMA_DEDICATED")) {
+        ai.vulkanApiVersion = VK_API_VERSION_1_0;
+        LOG("[vk] PowerVR: images share VMA's memory blocks (no allocation of their own)\n");
+    }
     VK_CHECK(vmaCreateAllocator(&ai, &g_vk.vma));
 
     if (g_vk.has_timeline) {
@@ -372,14 +383,32 @@ static void pipeline_cache_save(void) {
 // An Adreno on a Vulkan 1.1 driver (seen: Adreno 710, 1.1.128) shows the 3D picture repeated in a grid over the screen with
 // a small 3D picture and no MSAA, in a hunt; with 2x it is right (the report's own test: 894x402). Why is not known and no
 // device here does it, so those drivers keep 2x below 720 lines, and nothing else changes
+// [Performance] AdrenoFix Off: never (an Adreno 610 on 1.1.128 was dark and flickering with it, at 40 to 70%; and 2x costs)
 static uint32_t msaa_floor(uint32_t s) {
     if (s > 1 || g_vk.api12 || !strstr(g_vk.props.deviceName, "Adreno") || g_config.render_h >= 720 || !(g_vk.msaa_counts & 2)) return s;
+    if (g_config.adreno_fix) {
+        static bool said;
+        if (!said) LOG("[vk] MSAA as set: AdrenoFix is off (this driver may repeat a small picture without MSAA)\n");
+        said = true;
+        return s;
+    }
     static bool told;
     if (!told) LOG("[vk] MSAA 2x kept: this Adreno driver repeats a small picture without it\n");
     told = true;
     return 2;
 }
 bool vk_gpu_adreno(void) { return strstr(g_vk.props.deviceName, "Adreno") != NULL; }
+bool vk_gpu_adreno_fix_applies(void) { return vk_gpu_adreno() && !g_vk.api12; }  // ([Performance] AdrenoFix: its menu row)
+
+// (platform/android_perf.c, the minute's [mem] line) VMA's VkDeviceMemory blocks, its allocations and their bytes
+void vk_mem_summary(char *out, size_t size) {
+    out[0] = 0;
+    if (!g_vk.vma) return;
+    VmaTotalStatistics t;
+    vmaCalculateStatistics(g_vk.vma, &t);
+    snprintf(out, size, ", GPU memory %u blocks, %u allocations, %llu MB", t.total.statistics.blockCount,
+             t.total.statistics.allocationCount, (unsigned long long)(t.total.statistics.blockBytes >> 20));
+}
 
 // F7 (host_input.c): MSAA off -> 2x -> 4x -> 8x (those the GPU has) -> off, from the next pass on.
 void vk_cycle_msaa(void) {
@@ -684,6 +713,7 @@ static void frame_end(const char *shot_path) {
     if (!cur_frame.ok) return;
     VkCommandBuffer cb = vk_cmd();
     vkCmdEndRenderPass(cb);
+    { void vk_gpuprof_mark(const char *label); vk_gpuprof_mark("window image: the game's picture, the overlay"); }
     VkSpan shot = {0};
     uint32_t img = cur_frame.image;
     if (shot_path) {  // PRESENT_SRC -> TRANSFER_SRC, copy, back

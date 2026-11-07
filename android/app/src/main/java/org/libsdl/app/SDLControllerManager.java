@@ -146,10 +146,32 @@ public class SDLControllerManager
         }
         */
 
-        return ((sources & InputDevice.SOURCE_CLASS_JOYSTICK) != 0 ||
+        if ((sources & InputDevice.SOURCE_CLASS_JOYSTICK) != 0 ||
                 ((sources & InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD) ||
-                ((sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD)
-        );
+                ((sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD)) {
+            return true;
+        }
+        // MHGU: a controller Android calls a keyboard (some pads in one of their modes: their buttons come as
+        // KEYCODE_BUTTON_* key presses) was not a joystick here, and the game read nothing of it. An external device whose
+        // keys include a gamepad's A and B is one (a real keyboard has no such keys)
+        return padKeyboard(device);
+    }
+
+    private static final java.util.HashMap<Integer, Boolean> sPadKeyboards = new java.util.HashMap<>();
+
+    static boolean padKeyboard(InputDevice device) {
+        int id = device.getId();
+        Boolean known = sPadKeyboards.get(id);
+        if (known != null) return known;
+        boolean pad = false;
+        if ((device.getSources() & InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD && !device.isVirtual()
+                && (android.os.Build.VERSION.SDK_INT < 29 || device.isExternal())) {
+            boolean[] has = device.hasKeys(KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_B);
+            pad = has.length == 2 && has[0] && has[1];
+        }
+        sPadKeyboards.put(id, pad);
+        if (pad) Log.i("MHGU", "input: " + device.getName() + " is a keyboard with a gamepad's buttons: read as a controller");
+        return pad;
     }
 
 }
@@ -989,6 +1011,7 @@ class SDLGenericMotionListener_API29 extends SDLGenericMotionListener_API26 {
             return SDL_PEN_DEVICE_TYPE_UNKNOWN;
         }
 
+        if (Build.VERSION.SDK_INT < 29) return SDL_PEN_DEVICE_TYPE_UNKNOWN;  // (MHGU: Android 9 has no isExternal)
         return penDevice.isExternal() ? SDL_PEN_DEVICE_TYPE_INDIRECT : SDL_PEN_DEVICE_TYPE_DIRECT;
     }
 }

@@ -600,8 +600,9 @@ bool cheats_set(const bool *on, int n, char *err, size_t errsz) {
 }
 
 // ------------------------------------------------------------------ entry points
-void cheats_init(void) {
-    DIR *d = opendir(cheats_dir());
+// The files of one folder, in name order (those of a name already loaded from the other folder are left out)
+static void load_dir(const char *dir) {
+    DIR *d = opendir(dir);
     if (!d) return;
     char *names[256];
     int n = 0;
@@ -614,10 +615,25 @@ void cheats_init(void) {
     closedir(d);
     qsort(names, n, sizeof *names, cmp_name);
     for (int i = 0; i < n; i++) {
+        bool seen = false;
+        for (int k = 0; k < ncheats && !seen; k++) seen = !strcmp(cheats[k].file, names[i]);
         char path[1024];
-        snprintf(path, sizeof path, "%s/%s", cheats_dir(), names[i]);
-        load_file(path, names[i]);
+        snprintf(path, sizeof path, "%s/%s", dir, names[i]);
+        if (seen) LOG("[cheats] %s: one of that name was read already, from the other cheats folder: left out\n", path);
+        else load_file(path, names[i]);
         free(names[i]);
+    }
+}
+
+void cheats_init(void) {
+    // the app's folder (the bundled ones, and the settings' list of those off), then the game folder's cheats/: where a
+    // player can put them on a phone, whose app folder (Android/data) a file manager can't open
+    load_dir(cheats_dir());
+    extern const char *g_game_dir;  // (main.c)
+    if (!getenv("MHGU_CHEATS_DIR") && g_game_dir) {
+        char other[1024];
+        snprintf(other, sizeof other, "%s/cheats", g_game_dir);
+        load_dir(other);
     }
     for (int i = 0; i < ncheats; i++) cheats[i].on = 1;
     load_off();

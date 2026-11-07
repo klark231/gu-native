@@ -7,11 +7,12 @@ void ui_capture_launch_args(int argc, char **argv);
 #ifdef __ANDROID__
 void ui_request_licenses(void);     // The licenses' and the game folder's screens, opened on the host thread too
 void ui_request_game_folder(void);
-void ui_request_user_folder(void);  // Settings -> User folder (UserFolderActivity)
 void ui_request_save_import(void);
 void ui_request_save_export(void);
 void ui_request_gpu_driver(void);
+void ui_request_import(int kind);  // the import screen (ImportActivity): 0 cheats, 1 a mod, 2 DLC
 bool vk_gpu_adreno(void);          // (nvn/vulkan/device.c)
+bool vk_gpu_adreno_fix_applies(void);  // (an Adreno on a Vulkan 1.1 driver: [Performance] AdrenoFix)
 const char *gpu_driver_name(void);  // (platform/android_gpu.c: "" the system's)
 void ui_request_share_log(void);
 #endif

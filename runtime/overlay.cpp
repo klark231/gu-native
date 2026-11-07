@@ -531,7 +531,7 @@ void overlay_frame(void *cpu) {
     char line[256];
     bool chat = chat_composing(line, sizeof line);
     ImGuiIO &io = ImGui::GetIO();
-    bool touch = touch_visible();
+    bool touch = touch_drawn();  // (hidden, the settings button still shows)
     bool stats = perfstats_visible();  // ([Performance] ShowStats: runtime/perfstats.cpp)
     if (!open && !free_render && !notice && !chat && !touch && !stats) {  // (nothing to draw)
         std::lock_guard<std::mutex> l(g_snap_lock);

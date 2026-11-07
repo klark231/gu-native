@@ -80,5 +80,8 @@ bool weapon_aiming(uint32_t h) {
     return (st == 1 && no >= 45 && no <= 48) || (st == 2 && no == 16);
 }
 
+// the hunter's current action, st << 16 | no (the log of a shot that found no aim it knew)
+unsigned weapon_action(uint32_t h) { return h ? (unsigned)LD16(h + PL_ACT_ST) << 16 | LD16(h + PL_ACT_NO) : 0; }
+
 // the hunter is in a move of the weapon's own (a shot, a reload), not a roll or a stagger
 bool weapon_moving(uint32_t h) { return h && (LD16(h + PL_ACT_ST) & 0x7fff) == 0x10; }

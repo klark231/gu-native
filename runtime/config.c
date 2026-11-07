@@ -32,7 +32,10 @@
 #define CONFIG_DEFAULT_SIZE 1920, 1080
 #define CONFIG_DEFAULT_FXAA 1
 #endif
-#define CONFIG_DEFAULT_VALUES DISPLAY_BORDERLESS, CONFIG_DEFAULT_SIZE, 0, 0, 60, 1, 1, CONFIG_DEFAULT_FXAA, FACE_POSITION, 39500, "", 0, 1, 1, {{1, 1, 1, 1}, 2}, 1.0f, 0.0f, 1.0f, UI_CENTER, 1, 100, 0, 0, 100, MENU_CONFIRM_ORIGINAL, 1, 0, FSR_NATIVE, 0.8f, 1, 0.9f, 1, FSR_UP_3, UPDATES_ASK, 1, 1.0f, 0, COMBO_LENIENT, "", "", "/", FXAA_ORIGINAL, 0, DEFAULT_BINDS, THEME_HUNTER, 1, 1, 1, TOUCH_AUTO, 1, 1.0f, 0.8f, 100, 1, 1, 0, 1, 0, 1, TOUCH_SHOW_DEFAULT
+#define CONFIG_DEFAULT_VALUES DISPLAY_BORDERLESS, CONFIG_DEFAULT_SIZE, 0, 0, 60, 1, 1, CONFIG_DEFAULT_FXAA, FACE_POSITION, 39500, "", 0, 1, 1, {{1, 1, 1, 1}, 2}, 1.0f, 0.0f, 1.0f, UI_CENTER, 1, 100, 0, 0, 100, MENU_CONFIRM_ORIGINAL, 1, 0, FSR_NATIVE, 0.8f, 1, 0.9f, 1, FSR_UP_3, UPDATES_ASK, 1, 1.0f, 0, COMBO_LENIENT, "", "", "/", FXAA_ORIGINAL, 0, DEFAULT_BINDS, THEME_HUNTER, 1, 1, 1, TOUCH_AUTO, 1, 1.0f, 0.8f, 100, 1, 1, 0, 1, 0, 1, \
+    1, 0, 1, 1, TOUCH_SHOW_DEFAULT
+// (in Config's order, config.h: a new field there needs its value here, in its place - shadows, adreno_fix, bloom, reverb before
+// touch_show: without them the touch buttons' defaults moved two places and most buttons were off)
 Config g_config = {CONFIG_DEFAULT_VALUES};
 Config config_defaults(void) { Config c = {CONFIG_DEFAULT_VALUES}; return c; }
 uint32_t g_render_size[2] = {1920, 1080};
@@ -165,10 +168,25 @@ static const char DEFAULT_INI[] =
     "; Default: On\n"
     "ShaderPrewarm = On\n"
     "\n"
-    "; For a weak phone: no bloom or depth of field, cheaper and smaller textures, and the HUD stays sharp over a smaller\n"
-    "; 3D picture. It does not change the resolution or the frame rate by itself: the menu's switch does that\n"
+    "; Off, On or Toaster. On, for a weak phone: no bloom or depth of field, cheaper and smaller textures, and the HUD stays\n"
+    "; sharp over a smaller 3D picture. Toaster: all of that and more, for speed and the battery before looks: the HUD at\n"
+    "; most 540 lines tall and lighter textures still. It does not change the resolution, the frame rate, Shadows, Bloom or\n"
+    "; Reverb by itself: the menu's switch does that\n"
     "; Default: Off\n"
     "LowEnd = Off\n"
+    "\n"
+    "; The shadows of the hunters, monsters and scenery. Off: none, a little faster on a weak GPU\n"
+    "; Default: On\n"
+    "Shadows = On\n"
+    "\n"
+    "; The glow around lights and the blur of what is far away (bloom and depth of field). Off: faster on a weak GPU\n"
+    "; Default: On\n"
+    "Bloom = On\n"
+    "\n"
+    "; An Adreno GPU with a Vulkan 1.1 driver can show the 3D picture repeated in a grid below 720 lines without MSAA.\n"
+    "; Auto keeps 2x MSAA there; Off leaves MSAA as set (faster, and some of those drivers look better without it)\n"
+    "; Auto, Off\n"
+    "AdrenoFix = Auto\n"
     "\n"
     "; Shows the frame rate, the frame time and the device's temperature in a corner of the screen\n"
     "; Default: Off\n"
@@ -325,9 +343,7 @@ static const char DEFAULT_INI[] =
     "\n"
     "; Hub server for playing over the internet without port forwarding: hubs you create are listed there, and\n"
     "; Search Hubs shows its hubs next to the LAN's. host or host:port (default port 39510).\n"
-    "; Several servers can be named, separated by commas or spaces (up to 4): your hubs are listed on all of them,\n"
-    "; and Search Hubs shows the hubs of all of them. A name starting with - is kept but switched off.\n"
-    "; Empty: the default. Off: no internet hubs.\n"
+    "; Empty or Off: no internet hubs.\n"
     "; Default:\n"
     "Server =\n"
     "\n"
@@ -389,6 +405,10 @@ static const char DEFAULT_INI[] =
     "; Mute the game while its window is in the background (not focused)\n"
     "; Default: Off\n"
     "MuteInBackground = Off\n"
+    "\n"
+    "; The echo of caves and rooms (the game's reverb). Off: the sound is dry, and a weak phone's processor does less\n"
+    "; Default: On\n"
+    "Reverb = On\n"
     "\n"
     "[Application]\n"
     "; The game stops while the app is in the background (a phone: another app or the home screen), so it uses no\n"
@@ -469,7 +489,9 @@ static int parse_factors(const char *v, float f[4]) {
 // gets the FOV factor and, on a picture narrower than 16:9 (16:10), the height that keeps 16:9's width (Vert+): more
 // above and below instead of less to the sides. Other cameras keep their own.
 float camera_fovy(float fovy, float aspect) {
-    if (aspect != g_render_aspect) return fovy;
+    // (near enough: a small 3D picture's size is rounded to whole pixels, and at 33% its shape came out a little off the
+    // screen's - the FOV setting did nothing there, and did at 50%)
+    if (!(fabsf(aspect / g_render_aspect - 1.0f) < 0.006f)) return fovy;
     fovy *= config_live_fov();
     if (aspect < 16.0f / 9.0f) fovy = 2.0f * atanf(tanf(fovy * 0.5f) * (16.0f / 9.0f) / aspect);
     return fovy;
@@ -548,7 +570,11 @@ const ConfigSetting g_settings[] = {
     {"Performance", "FPS|FrameRate", SET_INT, F(fps), 0, 30, 240, NULL, NULL, false, ERR_MISC},
     ON_OFF("Performance", "VSync", vsync, false),
     ON_OFF("Performance", "ShaderPrewarm", shader_prewarm, true),
-    ON_OFF("Performance", "LowEnd", low_end, true),
+    {"Performance", "LowEnd", SET_CHOICE, F(low_end), 0, 0, 0, "Off|false|no|0,On|true|yes|1,Toaster|tostadora|2", NULL, true,
+     ERR_MISC},
+    ON_OFF("Performance", "Shadows", shadows, false),
+    ON_OFF("Performance", "Bloom", bloom, false),
+    {"Performance", "AdrenoFix", SET_CHOICE, F(adreno_fix), 0, 0, 0, "Auto,Off", NULL, true, ERR_MISC},
     ON_OFF("Performance", "ShowStats", show_stats, false),
     {"Controls", "FaceButtons", SET_CHOICE, F(face_buttons), 0, 0, 0, "Position|positional,Label|labels|xbox",
      NULL, false, ERR_MISC},
@@ -571,6 +597,8 @@ const ConfigSetting g_settings[] = {
     ON_OFF("Touch", "ShowL", touch_show[TB_L], false),
     ON_OFF("Touch", "ShowZL", touch_show[TB_ZL], false),
     ON_OFF("Touch", "ShowZR", touch_show[TB_ZR], false),
+    ON_OFF("Touch", "ShowMenuZL", touch_show[TB_MENU_ZL], false),
+    ON_OFF("Touch", "ShowMenuZR", touch_show[TB_MENU_ZR], false),
     ON_OFF("Touch", "ShowL3", touch_show[TB_L3], false),
     ON_OFF("Touch", "ShowR3", touch_show[TB_R3], false),
     ON_OFF("Touch", "ShowStick", touch_show[TB_STICK], false),
@@ -610,6 +638,7 @@ const ConfigSetting g_settings[] = {
     ON_OFF("Bonus Content", "BonusContent", bonus_content, true),
     {"Audio", "Volume", SET_INT, F(volume), 0, 0, 100, NULL, NULL, false, ERR_MISC},
     ON_OFF("Audio", "MuteInBackground", mute_in_background, false),
+    ON_OFF("Audio", "Reverb", reverb, false),
     ON_OFF("Application", "PauseInBackground", pause_background, false),
     ON_OFF("Application", "ConfirmExit", confirm_exit, false),
     {"Application", "Language", SET_CHOICE, F(language), 0, 0, 0, "English|en,Spanish|es", NULL, false, ERR_LANGUAGE},
@@ -921,6 +950,7 @@ bool config_help(const char *key, char *buf, size_t size) {
 
 static int desktop_w, desktop_h;
 static bool render_auto = true;
+static bool g_shadows_set, g_bloom_set;  // (the file says Shadows / Bloom: an older one doesn't, and LowEnd then takes them off)
 
 static void set_key(const char *key, char *val, int line) {
     char k[64], v[256];
@@ -948,6 +978,8 @@ static void set_key(const char *key, char *val, int line) {
     }
     const ConfigSetting *s = config_setting(key);
     if (!s) { LOG("[config] line %d: unknown setting \"%s\" (ignored)\n", line, key); return; }
+    if (s->field == offsetof(Config, shadows)) g_shadows_set = true;
+    if (s->field == offsetof(Config, bloom)) g_bloom_set = true;
     if (!config_parse(s, val, &g_config))
         LOG("[config] line %d: \"%s\" is not a value %s takes; using the default\n", line, val, key);
 }
@@ -1042,6 +1074,9 @@ void config_load(void) {
         append_missing_sections(path, seen);
     }
 
+    // (a file of an older version, with LowEnd on and no Shadows: off, as the menu's Low-end mode now sets them)
+    if (f && !g_shadows_set && g_config.low_end) g_config.shadows = 0;
+    if (f && !g_bloom_set && g_config.low_end) g_config.bloom = 0;  // (LowEnd alone left the bloom out up to 0.1.6)
     // Keep Auto/Desktop and file values, rather than persisting temporary environment overrides.
     render_auto = !g_config.render_w;
     config_store_loaded(&g_config);
@@ -1076,6 +1111,13 @@ void config_load(void) {
     if ((e = getenv("MHGU_UI_ANCHOR"))) config_parse(config_setting("UIAnchor"), e, &g_config);
     e = getenv("MHGU_RENDER");
     if (e && parse_size(e, &w, &h)) render_auto = false, g_config.render_w = w, g_config.render_h = h;
+    // (test runs, the device's own settings left as they are: MHGU_LOWEND=0|1|2 (Toaster), MHGU_SCALE=<percent>,
+    // MHGU_SHADOWS=0|1, MHGU_BLOOM=0|1, MHGU_FPS_LIMIT=<fps>; not saved)
+    if ((e = getenv("MHGU_LOWEND"))) g_config.low_end = atoi(e) < 0 ? 0 : atoi(e) > 2 ? 2 : atoi(e);
+    if ((e = getenv("MHGU_BLOOM"))) g_config.bloom = atoi(e) != 0, config_live_test(&g_config);
+    if ((e = getenv("MHGU_FPS_LIMIT")) && atoi(e) >= 30 && atoi(e) <= 240) g_config.fps = atoi(e), config_live_test(&g_config);
+    if ((e = getenv("MHGU_SCALE")) && atoi(e) >= 10 && atoi(e) <= 100) g_config.render_scale = atoi(e);
+    if ((e = getenv("MHGU_SHADOWS"))) g_config.shadows = atoi(e) != 0, config_live_test(&g_config);
     if ((e = getenv("MHGU_FSR"))) g_config.fsr = atoi(e) != 0;  // (test runs: MHGU_FSR=0|1, MHGU_FSR_QUALITY=quality...)
     if (g_config.low_end) g_config.fsr = 0, g_config.fxaa = 0, g_config.msaa = 1;  // (none of them on a weak GPU)
     if ((e = getenv("MHGU_FSR_UPSCALER"))) g_config.fsr_upscaler = !strcmp(e, "4") || !strcasecmp(e, "fsr4") ? FSR_UP_4 : FSR_UP_3;
@@ -1119,8 +1161,13 @@ void config_load(void) {
         fit_aspect(tw * s / 100, th * s / 100, aspect, &w, &h);
         if (s < 100) LOG("[config] RenderScale %d%%: the 3D picture at %dx%d (screen %dx%d)\n", s, w, h, tw, th);
         if (g_config.low_end && !g_config.fsr && s < 100) {
-            int ow, oh;  // (LowEnd: the HUD stays at the screen's size, fsr.c vk_fsr_init)
-            fit_aspect(tw, th, aspect, &ow, &oh);
+            // (LowEnd: the HUD stays sharp over the smaller 3D picture, fsr.c vk_fsr_init: at the screen's size up to
+            // 720 lines or twice the 3D's, whichever is more. At a 2712x1220 screen's whole size it drew 9 times the
+            // pixels of the 3D at 33%, and a phone with an Adreno 710 was slower with LowEnd than without)
+            // (Toaster: at most TOASTER_HUD_LINES, for the HUD, the game's last draw and the window's copy)
+            int ow, oh, cap = g_config.low_end == LOW_END_TOASTER ? TOASTER_HUD_LINES : h * 2 > 720 ? h * 2 : 720;
+            if (th > cap) fit_aspect(tw * cap / th, cap, aspect, &ow, &oh);
+            else fit_aspect(tw, th, aspect, &ow, &oh);
             g_fsr_output[0] = (uint32_t)ow, g_fsr_output[1] = (uint32_t)oh;
         }
     } else {

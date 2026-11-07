@@ -6,6 +6,7 @@
 #include "../hle.h"
 #include "../hle/input.h"
 #include "../ipc.h"
+#include "dlc.h"
 
 static void ok_logger(Service *s, IpcReq *req, IpcResp *resp) {
     LOG("[svc] %s cmd %u (ok)\n", s->name, req->cmd);
@@ -100,14 +101,34 @@ SERVICE("pctl:s", pctl_s) { pctl_root(s, req, resp); }
 SERVICE("pctl:a", pctl_a) { pctl_root(s, req, resp); }
 SERVICE("pctl:r", pctl_r) { pctl_root(s, req, resp); }
 
-// ------------------------------------------------------------------ aoc:u (no DLC)
+// ------------------------------------------------------------------ aoc:u (the DLC in dlc/: services/dlc.c)
 SERVICE("aoc:u", aoc_u) {
     (void)s;
     switch (req->cmd) {
-    case 2: OUT(uint32_t, 0) = 0; resp_size(resp, 4); break;   // CountAddOnContent
-    case 3: OUT(uint32_t, 0) = 0; resp_size(resp, 4); break;   // ListAddOnContent
-    case 5: OUT(uint64_t, 0) = 0x0100770008DD9000ull; resp_size(resp, 8); break;  // GetAddOnContentBaseId
-    case 8: resp->copy_handles[resp->ncopy++] = new_event_handle(); break;
+    case 0: case 2: {  // CountAddOnContent (by process / [3.0.0+] with a pid)
+        int n = dlc_count();
+        static int said = -1;
+        if (said != n) LOG("[aoc] CountAddOnContent: %d\n", n), said = n;
+        OUT(uint32_t, 0) = (uint32_t)n;
+        resp_size(resp, 4);
+        break;
+    }
+    case 1: case 3: {  // ListAddOnContent(u32 offset, u32 count[, pid]) -> B buffer of u32 indices, u32 written
+        uint32_t offset = IN(uint32_t, 0), count = IN(uint32_t, 4);
+        IpcBuf *b = out_buf(req, 0);
+        int max = b ? (int)(b->size / 4) : 0;
+        if ((uint32_t)max > count) max = (int)count;
+        uint32_t idx[256];
+        int n = dlc_list(offset, idx, max < 256 ? max : 256);
+        if (b && n) memcpy(BUFP(b), idx, (size_t)n * 4);
+        LOG("[aoc] ListAddOnContent(offset %u, count %u): %d\n", offset, count, n);
+        OUT(uint32_t, 0) = (uint32_t)n;
+        resp_size(resp, 4);
+        break;
+    }
+    case 5: OUT(uint64_t, 0) = DLC_BASE_ID; resp_size(resp, 8); break;  // GetAddOnContentBaseId
+    case 7: LOG("[aoc] PrepareAddOnContent %u\n", IN(uint32_t, 0)); break;  // (they are always there)
+    case 8: resp->copy_handles[resp->ncopy++] = new_event_handle(); break;  // GetAddOnContentListChangedEvent
     default: ok_logger(s, req, resp);
     }
 }

@@ -23,7 +23,8 @@ static SDL_AtomicInt live_fps, live_fov, live_mouse, live_draw = {0x3f800000}, l
                      live_vsync = {1}, live_face, live_menu_confirm, live_background = {1}, live_combo, live_chat_key,
                      live_fxaa_mode, live_smooth, live_discord, live_discord_hunter, live_binds[BINDS][BIND_KEYS],
                      live_touch, live_touch_hud, live_touch_show[TB_COUNT], live_touch_combo[TOUCH_COMBOS], live_touch_combo_pad[TOUCH_COMBOS], live_touch_cam, live_touch_opacity, live_lock_on = {1},
-                     live_touch_vibration = {1}, live_phone_rumble = {1}, live_show_stats, live_pause_bg = {1};
+                     live_touch_vibration = {1}, live_phone_rumble = {1}, live_show_stats, live_pause_bg = {1},
+                     live_shadows = {1}, live_bloom = {1}, live_reverb = {1};
 static void set_float(SDL_AtomicInt *slot, float value) {
     int bits; _Static_assert(sizeof bits == sizeof value, "32-bit float settings");
     memcpy(&bits, &value, sizeof bits); SDL_SetAtomicInt(slot, bits);
@@ -67,6 +68,9 @@ static void publish_live(const Config *c, bool all) {
     if (all || c->phone_rumble != saved.phone_rumble) SDL_SetAtomicInt(&live_phone_rumble, c->phone_rumble);
     if (all || c->show_stats != saved.show_stats) SDL_SetAtomicInt(&live_show_stats, c->show_stats);
     if (all || c->pause_background != saved.pause_background) SDL_SetAtomicInt(&live_pause_bg, c->pause_background);
+    if (all || c->shadows != saved.shadows) SDL_SetAtomicInt(&live_shadows, c->shadows);
+    if (all || c->bloom != saved.bloom) SDL_SetAtomicInt(&live_bloom, c->bloom);
+    if (all || c->reverb != saved.reverb) SDL_SetAtomicInt(&live_reverb, c->reverb);
     for (int i = 0; i < BINDS; i++)
         for (int k = 0; k < BIND_KEYS; k++)
             if (all || c->binds[i][k] != saved.binds[i][k]) SDL_SetAtomicInt(&live_binds[i][k], c->binds[i][k]);
@@ -146,6 +150,15 @@ int config_live_touch_vibration(void) { return SDL_GetAtomicInt(&live_touch_vibr
 int config_live_phone_rumble(void) { return SDL_GetAtomicInt(&live_phone_rumble); }
 int config_live_show_stats(void) { return SDL_GetAtomicInt(&live_show_stats); }
 int config_live_pause_background(void) { return SDL_GetAtomicInt(&live_pause_bg); }
+int config_live_shadows(void) { return SDL_GetAtomicInt(&live_shadows); }
+int config_live_bloom(void) { return SDL_GetAtomicInt(&live_bloom); }
+int config_live_reverb(void) { return SDL_GetAtomicInt(&live_reverb); }
+// (config.c: a test run's MHGU_SHADOWS, MHGU_BLOOM, MHGU_FPS_LIMIT, after the file: live, not saved)
+void config_live_test(const Config *c) {
+    SDL_SetAtomicInt(&live_shadows, c->shadows);
+    SDL_SetAtomicInt(&live_bloom, c->bloom);
+    set_float(&live_fps, (float)c->fps);
+}
 int config_live_bind(int bind, int slot) { return SDL_GetAtomicInt(&live_binds[bind][slot]); }
 void config_live_ldn(char *server, size_t server_size, char *key, size_t key_size) {
     SDL_LockSpinlock(&live_ldn_lock);

@@ -12,6 +12,7 @@
 //
 // files/gpu_drivers/: <folder>/<driver>.so, selected (its folder, then its library's file name), failed, trial
 #include <dlfcn.h>
+#include <link.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -25,6 +26,7 @@
 
 static bool g_custom;
 static char g_name[128];
+static char g_dir[600];  // ("/gpu_drivers/<folder>/": gpu_driver_check)
 
 bool gpu_driver_custom(void) { return g_custom; }
 const char *gpu_driver_name(void) { return g_name; }
@@ -65,6 +67,7 @@ PFN_vkGetInstanceProcAddr gpu_driver_loader(void) {
             if (lib) {
                 g_custom = true;
                 snprintf(g_name, sizeof g_name, "%s", folder);
+                snprintf(g_dir, sizeof g_dir, "/gpu_drivers/%s/", folder);
                 LOG("[gpu] driver of the player's: %s (%s)\n", folder, file);
             } else {
                 LOG("[gpu] driver %s could not be opened: %s; the system's instead\n", folder, dlerror());
@@ -75,6 +78,30 @@ PFN_vkGetInstanceProcAddr gpu_driver_loader(void) {
     }
     if (!lib) lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
     return lib ? (PFN_vkGetInstanceProcAddr)dlsym(lib, "vkGetInstanceProcAddr") : NULL;
+}
+
+// The device is made: whether the player's driver is the one running. A library that could not be opened, or one named as
+// the system's (vulkan.adreno.so: Android's own interface has that one loaded already), leaves the system's driver in
+// its place without any error, and the menu said the player's worked (seen on an Adreno 630 with "Adreno 840" in the
+// menu and the system's 1.1.87 driver running). So the loaded libraries are looked through for one from its folder; none:
+// the choice is moved to failed (DriverActivity says so), and the menu says the system's.
+// (by the folder's own part of the path: the loader keeps real paths, /data/data/..., where the app was given /data/user/0/...)
+static int found_in_dir(struct dl_phdr_info *info, size_t size, void *data) {
+    (void)size;
+    return info->dlpi_name && strstr(info->dlpi_name, (const char *)data) != NULL;
+}
+
+void gpu_driver_check(void) {
+    if (!g_custom || dl_iterate_phdr(found_in_dir, g_dir)) return;
+    LOG("[gpu] driver %s did not load (no library from %s is running): the system's driver runs instead\n", g_name, g_dir);
+    char root[400], selected[512], failed[512], trial[512];
+    snprintf(root, sizeof root, "%s/gpu_drivers", SDL_GetAndroidInternalStoragePath());
+    snprintf(selected, sizeof selected, "%s/selected", root);
+    snprintf(failed, sizeof failed, "%s/failed", root);
+    snprintf(trial, sizeof trial, "%s/trial", root);
+    rename(selected, failed);
+    unlink(trial);
+    g_custom = false, g_name[0] = 0;
 }
 
 // Frames have been drawn with it

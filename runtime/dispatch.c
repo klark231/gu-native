@@ -211,7 +211,11 @@ static struct { uint32_t addr, detour; } hooks[MAX_HOOKS];
 static struct { uint32_t at, addr; bool original; } tramps[MAX_HOOKS];
 static int nhooks, ntramps;
 static pthread_mutex_t hook_lock = PTHREAD_MUTEX_INITIALIZER;
-static __thread uint32_t t_hook_bypass;  // the next entry of this function runs it (the hook's original)
+// The next entry of this function runs it (the hook's original). Kept in the Cpu's spare bytes, not in a __thread
+// variable (emulated TLS on Android 9): each guest thread has its own Cpu.
+#define CPU_BYPASS 8
+static inline uint32_t hook_bypass(const Cpu *c) { uint32_t v; memcpy(&v, c->_pad + CPU_BYPASS, 4); return v; }
+static inline void set_hook_bypass(Cpu *c, uint32_t v) { memcpy(c->_pad + CPU_BYPASS, &v, 4); }
 
 bool fnhook_set(uint32_t addr, uint32_t detour) {
     if (addr >= HLE_BASE || !dispatch_lookup(addr)) {
@@ -246,8 +250,8 @@ uint32_t fnhook_get(uint32_t addr) {
 }
 
 int fnhook_enter(Cpu *c, uint32_t addr) {
-    if (t_hook_bypass == addr) {
-        t_hook_bypass = 0;
+    if (hook_bypass(c) == addr) {
+        set_hook_bypass(c, 0);
         return 0;
     }
     uint32_t detour = fnhook_get(addr);
@@ -265,9 +269,9 @@ void fnhook_call_original(Cpu *c, uint32_t addr) {
     }
     GuestFn f = dispatch_lookup(addr);
     if (!f) FATAL("hook original: no function at %x\n", addr);
-    t_hook_bypass = addr;
+    set_hook_bypass(c, addr);
     f(c);
-    t_hook_bypass = 0;
+    set_hook_bypass(c, 0);
 }
 
 bool fnhook_add_trampoline(uint32_t at, uint32_t addr, bool original) {
@@ -317,11 +321,33 @@ static void trampoline(Cpu *c) {
 
 static void interp_entry(Cpu *c) { interp_run(c); }
 
-// Small direct-mapped cache in front of the binary search
+// Small direct-mapped cache in front of the binary search, one per guest thread. Its Cpu's spare bytes (_pad, which
+// the game's code never touches) point to it: built for Android 9, a __thread variable is emulated TLS, a call and a
+// pthread_getspecific on every indirect jump (about a tenth of a game thread's time on a Moto g06). The thread-local
+// cache is only the fallback for a Cpu that has none.
 #define DCACHE 4096
-static __thread struct { uint32_t addr; GuestFn fn; } dcache[DCACHE];
+typedef struct { uint32_t addr; GuestFn fn; } DEntry;
+#define CPU_DCACHE 0  // _pad offset: this thread's cache (DEntry *); CPU_BYPASS (above) is at 8
+static __thread DEntry dcache_tls[DCACHE];
+static __attribute__((noinline)) DEntry *dc_tls(void) { return dcache_tls; }
+static inline DEntry *dc_of(Cpu *c) {
+    DEntry *dc;
+    memcpy(&dc, c->_pad + CPU_DCACHE, sizeof dc);
+    return __builtin_expect(dc != NULL, 1) ? dc : dc_tls();
+}
 
-static GuestFn dispatch_slow(Cpu *c) {
+void dispatch_thread_init(Cpu *c) {
+    DEntry *dc = calloc(DCACHE, sizeof *dc);
+    memcpy(c->_pad + CPU_DCACHE, &dc, sizeof dc);
+}
+void dispatch_thread_done(Cpu *c) {  // (its thread has left the guest's code for good: kernel.c thread_main)
+    DEntry *dc, *none = NULL;
+    memcpy(&dc, c->_pad + CPU_DCACHE, sizeof dc);
+    memcpy(c->_pad + CPU_DCACHE, &none, sizeof none);
+    free(dc);
+}
+
+static GuestFn dispatch_slow(Cpu *c, DEntry *dcache) {
     uint32_t pc = c->pc;
     if (pc >= HLE_BASE && pc < HLE_BASE + HLE_SIZE) {
         rt_unwind_point();
@@ -351,9 +377,10 @@ static GuestFn dispatch_slow(Cpu *c) {
 
 // Always tail-calls, so chains of indirect jumps don't grow the host stack.
 void rt_dispatch(Cpu *c) {
+    DEntry *dcache = dc_of(c);
     unsigned h = (c->pc >> 2) & (DCACHE - 1);
     // (an empty slot holds address 0: a jump to guest address 0 must not "hit" it)
-    GuestFn f = dcache[h].addr == c->pc && dcache[h].fn ? dcache[h].fn : dispatch_slow(c);
+    GuestFn f = dcache[h].addr == c->pc && dcache[h].fn ? dcache[h].fn : dispatch_slow(c, dcache);
     __attribute__((musttail)) return f(c);
 }
 
@@ -403,6 +430,10 @@ const char *rt_host_fn_name(uint64_t pc, uint64_t *offset) {
 void rt_fatal_trace(void) {
     fprintf(stderr, "host backtrace (guest functions are f_<addr>):\n");
     plat_print_backtrace();
+#ifdef __ANDROID__
+    void perf_mem_report(void);  // (runtime/platform/android_perf.c: map entries and memory now)
+    perf_mem_report();
+#endif
     Cpu *c = kernel_current_cpu();
     if (c) {
         uint32_t off = 0;

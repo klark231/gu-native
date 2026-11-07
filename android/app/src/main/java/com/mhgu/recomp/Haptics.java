@@ -72,7 +72,7 @@ public final class Haptics {
 
     @SuppressWarnings("deprecation")  // (vibrate con AudioAttributes: lo único que hay antes de API 33)
     private static void play(Vibrator v, VibrationEffect e) {
-        if (vattrs != null) v.vibrate(e, vattrs);
+        if (vattrs != null && Build.VERSION.SDK_INT >= 33) v.vibrate(e, vattrs);
         else v.vibrate(e, aattrs);
     }
 
@@ -112,8 +112,8 @@ public final class Haptics {
     // patrón largo), un pulso propio: 12 ms a media intensidad, o 20 ms si el motor no acepta intensidad (los motores
     // de masa excéntrica tardan en arrancar y uno más corto no se siente).
     private static VibrationEffect makeClick(Vibrator v) {
-        boolean predefined = Build.VERSION.SDK_INT < 30
-                || v.areAllEffectsSupported(VibrationEffect.EFFECT_CLICK) != Vibrator.VIBRATION_EFFECT_SUPPORT_NO;
+        boolean predefined = Build.VERSION.SDK_INT >= 29 && (Build.VERSION.SDK_INT < 30
+                || v.areAllEffectsSupported(VibrationEffect.EFFECT_CLICK) != Vibrator.VIBRATION_EFFECT_SUPPORT_NO);  // (Android 9: the own pulse)
         if (predefined) {
             try {
                 return VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK);

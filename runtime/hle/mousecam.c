@@ -70,6 +70,7 @@ static int clamp_pitch(int p) { return p < -PITCH_MAX ? -PITCH_MAX : p > PITCH_M
 
 bool touch_lock_active(void);  // (runtime/touch.cpp: the lock-on is on and the player is not turning the camera)
 bool touch_lock_on(void);      // (the lock-on is on, whatever the camera is doing)
+bool touch_lock_assist(void);  // (a locked shot of the touch controls holds R for its aim now)
 #define ZONE       0x1054u       // (u8, of a hunter and of a monster: which zone of the map it is in)
 #define PL_HEADING 0x14a0u
 #define PL_AIM     0x14b8u       // (float: the aim's pitch)
@@ -84,6 +85,13 @@ bool touch_lock_on(void);      // (the lock-on is on, whatever the camera is doi
 #define LOCK_HEIGHT 90.0f    // (the camera aims this far above the monster's feet)
 #define LOCK_NEAR0 120.0f    // closer than this (under the monster) the camera holds its heading,
 #define LOCK_NEAR1 380.0f    // farther than this the full follow (eased between)
+// A model's skeleton (the hunter's and every monster's, measured on a Motorola g06 in the arena): +0x490 the number of
+// joints, +0x494 their array, 0xa0 bytes each (+0x00 a vtable in main's image, +0x10 the world matrix's rows, its
+// translation at +0x40 with w = 1.0, +0x60 the rotation, +0x70 the scale, +0x91 the parent: 0xff the root). The root
+// is the pelvis, the body's middle (a quadruped's at 190 of the 215 its back's joints reach; its feet at 0).
+#define EN_JOINTS   0x490u
+#define JOINT_SIZE  0xa0u
+#define JOINT_POS   0x40u
 
 // The large monster to follow: the one followed already, unless another is clearly nearer (30%: no back and forth
 // between two at about the same distance), else the nearest; its place, or false. (the hunt camera's thread alone)
@@ -112,6 +120,34 @@ static bool lock_target(float x, float y, float z, float out[3]) {
     }
     g_lock_en = best_en;
     return best_en != 0;
+}
+
+// Where a locked shot goes: the monster's body, not its feet. The root joint (the pelvis) when it is well off the
+// ground, else the middle of the skeleton's box (a monster whose root is low); false: no skeleton to read (its feet
+// and a fixed height then)
+static bool body_center(uint32_t en, float feet_y, float out[3]) {
+    if (!sane(en)) return false;
+    uint32_t n = LD32(en + EN_JOINTS), arr = LD32(en + EN_JOINTS + 4);
+    if (n < 3 || n > 512 || !sane(arr)) return false;
+    float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f}, root[3] = {0};
+    bool have_root = false;
+    int good = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t j = arr + i * JOINT_SIZE, vt = LD32(j);
+        if (vt < 0x00200000u || vt >= 0x02347000u) break;  // (not a joint: the array is not what it was measured to be)
+        float p[3] = {LDF(j + JOINT_POS), LDF(j + JOINT_POS + 4), LDF(j + JOINT_POS + 8)};
+        if (!isfinite(p[0]) || !isfinite(p[1]) || !isfinite(p[2]) || LDF(j + JOINT_POS + 12) != 1.0f) continue;
+        for (int k = 0; k < 3; k++) lo[k] = fminf(lo[k], p[k]), hi[k] = fmaxf(hi[k], p[k]);
+        if (!have_root && LD8(j + 0x91) == 0xff) root[0] = p[0], root[1] = p[1], root[2] = p[2], have_root = true;
+        good++;
+    }
+    if (good < 3 || hi[1] - lo[1] < 1.0f || hi[1] - feet_y > 5000.0f) return false;
+    if (have_root && root[1] - lo[1] > 0.35f * (hi[1] - lo[1])) {
+        out[0] = root[0], out[1] = root[1], out[2] = root[2];
+    } else {
+        for (int k = 0; k < 3; k++) out[k] = 0.5f * (lo[k] + hi[k]);
+    }
+    return true;
 }
 
 // one update of the lock-on: the camera's heading and its smoothed angles eased toward the monster
@@ -159,16 +195,20 @@ void mousecam_lock_shot(void) {
     // (a bowgun: A fires; a bow: what draws it, by the game's Bow Controls; A is its melee attack)
     bool fire = (b & (ranged != WEAPON_BOW ? 1ull << BTN_A : weapon_bow_type() ? 1ull << BTN_R : 1ull << BTN_X)) != 0;
     if (fire) fired = now;
-    bool aiming = weapon_aiming(h);
+    // (the touch controls' locked shot holds R for the aim: an aim whose actions weapon_aiming doesn't know, another
+    // style's, counts too)
+    bool aiming = weapon_aiming(h) || (ranged != WEAPON_BOW && touch_lock_assist());
     if (!(aiming && touch_lock_active()) && !((fire || now - fired < SHOT_NS) && (aiming || weapon_moving(h)))) return;
     float x = LDF(h + PL_PLACE), y = LDF(h + PL_PLACE + 4), z = LDF(h + PL_PLACE + 8), t[3];
     if (!isfinite(x) || !lock_target(x, y, z, t)) return;
+    float body[3], aim_y = t[1] + LOCK_HEIGHT;  // (no skeleton to read: a fixed height over its feet)
+    if (body_center(g_lock_en, t[1], body)) t[0] = body[0], t[2] = body[2], aim_y = body[1];
     float dx = t[0] - x, dz = t[2] - z, dist = sqrtf(dx * dx + dz * dz);
     if (dist < LOCK_NEAR0) return;  // (under it: the bearing swings)
     const float U = 65536.0f / (2.0f * 3.14159265f);
     ST32(h + PL_HEADING, (uint32_t)lrintf(atan2f(dx, dz) * U) & 0xffffu);
     if (!aiming && ranged != WEAPON_BOW) return;
-    float rise = atan2f(t[1] + LOCK_HEIGHT - (y + MUZZLE_Y), dist);  // (radians; up is positive)
+    float rise = atan2f(aim_y - (y + MUZZLE_Y), dist);  // (radians; up is positive)
     const float UP = 45.0f * 3.14159265f / 180.0f, DOWN = 30.0f * 3.14159265f / 180.0f;
     if (rise > UP) rise = UP;
     if (rise < -DOWN) rise = -DOWN;

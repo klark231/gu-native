@@ -219,6 +219,31 @@ public class DriverActivity extends Activity {
         }
     }
 
+    /**
+     * A library named as the system's own driver (vulkan.adreno.so) is never loaded: Android's interface has that one open
+     * already, and the system's runs in its place. Such a library gets a name of its own (one installed before too).
+     */
+    private static String ownName(File dir, String library) {
+        boolean system = library.equals("vulkan.adreno.so") || library.equals("libvulkan.so")
+                || new File("/vendor/lib64/hw/" + library).exists() || new File("/system/lib64/hw/" + library).exists();
+        if (!system) return library;
+        String renamed = "vulkan.player.so";
+        File from = new File(dir, library), to = new File(dir, renamed);
+        if (!from.isFile()) return to.isFile() ? renamed : library;
+        to.delete();
+        if (!from.renameTo(to)) return library;
+        File txt = new File(dir, "driver.txt");
+        List<String> info = lines(txt);
+        if (info.size() >= 2) {
+            try (FileWriter w = new FileWriter(txt)) {
+                w.write(info.get(0) + "\n" + renamed + "\n");
+            } catch (IOException e) {
+                Log.w(TAG, "driver: " + e);
+            }
+        }
+        return renamed;
+    }
+
     private void choose(String folder, String library) {
         File selected = new File(root(), "selected");
         new File(root(), "trial").delete();
@@ -226,6 +251,7 @@ public class DriverActivity extends Activity {
             selected.delete();
         } else {
             root().mkdirs();
+            library = ownName(new File(root(), folder), library);
             try (FileWriter w = new FileWriter(selected)) {
                 w.write(folder + "\n" + library + "\n");
             } catch (IOException e) {
@@ -318,6 +344,7 @@ public class DriverActivity extends Activity {
             delete(tmp);
             throw new IOException(es ? "no es una librería para ARM de 64 bits" : "not a 64-bit ARM library");
         }
+        library = ownName(tmp, library);
         String shown = meta != null ? meta.optString("name", "") : "";
         String version = meta != null ? meta.optString("driverVersion", "") : "";
         if (shown.isEmpty()) shown = library;

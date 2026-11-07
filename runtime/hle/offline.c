@@ -1,5 +1,6 @@
 // Online features on the host, as a console that is offline: no BCAT delivery cache (event quests come from the
 // game files / mods instead), no friends, applets (error, web, shop) that close at once. Each call is logged once.
+#include <stdlib.h>
 #include <string.h>
 
 #include "../hle.h"
@@ -86,11 +87,13 @@ HLE_FUNC("_ZN2nn2ec30ShowShopApplicationInformationENS_13ApplicationIdE", ec_sho
 // ---- nn::nifm: no internet connection (the game's Online Play entries then report that and stay offline)
 #define NIFM_NOT_AVAILABLE MAKE_RESULT(110, 300)
 HLE_FUNC("_ZN2nn4nifm10InitializeEv", nifm_initialize) { RET(0); }
-HLE_FUNC("_ZN2nn4nifm18IsNetworkAvailableEv", nifm_available) { RET(0); }
+// (MHGU_FAKE_NET=1, test builds: a connection is said to be there - what the game's Download menu does then)
+static bool fake_net(void) { static int on = -1; if (on < 0) on = getenv("MHGU_FAKE_NET") != NULL; return on; }
+HLE_FUNC("_ZN2nn4nifm18IsNetworkAvailableEv", nifm_available) { RET(fake_net() ? 1 : 0); }
 HLE_FUNC("_ZN2nn4nifm19SetLocalNetworkModeEb", nifm_local_mode) { (void)c; }
 HLE_FUNC("_ZN2nn4nifm27SubmitNetworkRequestAndWaitEv", nifm_submit) { (void)c; ONCE("[offline] internet connection requested: none\n"); }
 HLE_FUNC("_ZN2nn4nifm20CancelNetworkRequestEv", nifm_cancel) { (void)c; }
-HLE_FUNC("_ZN2nn4nifm26HandleNetworkRequestResultEv", nifm_handle_result) { RET(NIFM_NOT_AVAILABLE); }
+HLE_FUNC("_ZN2nn4nifm26HandleNetworkRequestResultEv", nifm_handle_result) { RET(fake_net() ? 0 : NIFM_NOT_AVAILABLE); }
 HLE_FUNC("_ZN2nn4nifm22GetCurrentIpConfigInfoEP7in_addrS2_S2_S2_S2_", nifm_ip_config) { RET(NIFM_NOT_AVAILABLE); }
 HLE_FUNC("_ZN2nn4nifm22GetCurrentProxySettingEPNS0_12ProxySettingE", nifm_proxy) { RET(NIFM_NOT_AVAILABLE); }
 HLE_FUNC("_ZN2nn4nifm26GetCurrentPrimaryIpAddressEP7in_addr", nifm_primary_ip) { RET(NIFM_NOT_AVAILABLE); }

@@ -22,9 +22,14 @@ static bool is_dir(const char *p) {
     return !stat(p, &st) && S_ISDIR(st.st_mode);
 }
 
+// MHGU_MODS_DIR, else the game folder's mods/ when there is one (a phone: a file manager reaches it, and not the app's
+// own folder in Android/data), else the app's mods/
 const char *mods_dir(void) {
     const char *e = getenv("MHGU_MODS_DIR");
-    return e && *e ? e : "mods";
+    if (e && *e) return e;
+    static char in_game[1100];
+    if (!in_game[0] && g_game_dir) snprintf(in_game, sizeof in_game, "%s/mods", g_game_dir);
+    return in_game[0] && is_dir(in_game) ? in_game : "mods";
 }
 
 // The folder named `want` (any case) in dir or up to `depth` levels below it (shallowest first), into out.

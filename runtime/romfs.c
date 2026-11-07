@@ -165,11 +165,15 @@ static void put32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
 static void put64(uint8_t *p, uint64_t v) { memcpy(p, &v, 8); }
 
 // ------------------------------------------------------------------ the image
-static uint8_t g_hdr[DATA_START];
-static uint8_t *g_tables;          // dir hash, dir meta, file hash, file meta (contiguous)
-static uint64_t g_tables_off, g_tables_size, g_size;
-static File **g_files;             // by data offset
-static int g_nfiles;
+// One image: the game's (romfs_*), or a DLC's (romfs_image_*: services/dlc.c)
+struct RomfsImage {
+    uint8_t hdr[DATA_START];
+    uint8_t *tables;          // dir hash, dir meta, file hash, file meta (contiguous)
+    uint64_t tables_off, tables_size, size;
+    File **files;             // by data offset
+    int nfiles;
+};
+static RomfsImage g_main;
 
 static char *rel_path(File *f) {
     char *parts[40];
@@ -184,7 +188,7 @@ static char *rel_path(File *f) {
     return s;
 }
 
-bool romfs_open(const char *base_dir, const char *const *overlays, int noverlays) {
+static bool build(RomfsImage *im, const char *base_dir, const char *const *overlays, int noverlays, bool game) {
     Dir *root = scan(base_dir, "", 0);
     if (!root) { LOG("[romfs] cannot read %s\n", base_dir); return false; }
     for (int i = 0; i < noverlays; i++) {
@@ -212,11 +216,11 @@ bool romfs_open(const char *base_dir, const char *const *overlays, int noverlays
     uint32_t nbd = bucket_count((uint32_t)l.nd), nbf = bucket_count((uint32_t)l.nf);
     uint64_t dhash_off = (DATA_START + data + 3) & ~3ull;
     uint64_t dmeta_off = dhash_off + 4ull * nbd, fhash_off = dmeta_off + dsize, fmeta_off = fhash_off + 4ull * nbf;
-    g_tables_off = dhash_off;
-    g_tables_size = fmeta_off + fsize - dhash_off;
-    g_tables = calloc(1, g_tables_size);
-    uint32_t *dbuckets = (uint32_t *)g_tables, *fbuckets = (uint32_t *)(g_tables + (fhash_off - dhash_off));
-    uint8_t *dtab = g_tables + (dmeta_off - dhash_off), *ftab = g_tables + (fmeta_off - dhash_off);
+    im->tables_off = dhash_off;
+    im->tables_size = fmeta_off + fsize - dhash_off;
+    im->tables = calloc(1, im->tables_size);
+    uint32_t *dbuckets = (uint32_t *)im->tables, *fbuckets = (uint32_t *)(im->tables + (fhash_off - dhash_off));
+    uint8_t *dtab = im->tables + (dmeta_off - dhash_off), *ftab = im->tables + (fmeta_off - dhash_off);
     for (uint32_t i = 0; i < nbd; i++) dbuckets[i] = EMPTY;
     for (uint32_t i = 0; i < nbf; i++) fbuckets[i] = EMPTY;
     for (int i = 0; i < l.nd; i++) {
@@ -253,19 +257,30 @@ bool romfs_open(const char *base_dir, const char *const *overlays, int noverlays
         fbuckets[h] = f->off;
     }
     uint64_t hv[10] = {0x50, dhash_off, 4ull * nbd, dmeta_off, dsize, fhash_off, 4ull * nbf, fmeta_off, fsize, DATA_START};
-    memcpy(g_hdr, hv, sizeof hv);
-    g_size = fmeta_off + fsize;
-    g_files = l.files;  // (flatten order is data order)
-    g_nfiles = l.nf;
+    memcpy(im->hdr, hv, sizeof hv);
+    im->size = fmeta_off + fsize;
+    im->files = l.files;  // (flatten order is data order)
+    im->nfiles = l.nf;
     free(l.dirs);
-    LOG("[romfs] %d files, %d folders, image %.1f GB\n", l.nf, l.nd, g_size / 1e9);
+    LOG("[romfs] %d files, %d folders, image %.1f GB\n", l.nf, l.nd, im->size / 1e9);
     // (version 1.4.0's is 12.3 GB. A copy cut short, with every file there but some of them empty, starts and then fails in
     // ways that look like the port's: seen as a black picture and a call to nothing)
-    if (g_size < 12000000000ull) LOG("[romfs] WARNING: smaller than the game's 12.3 GB: some files are probably incomplete\n");
+    if (im->size < 12000000000ull) LOG("[romfs] WARNING: smaller than the game's 12.3 GB: some files are probably incomplete\n");
     return true;
 }
 
-uint64_t romfs_size(void) { return g_size; }
+bool romfs_open(const char *base_dir, const char *const *overlays, int noverlays) {
+    return build(&g_main, base_dir, overlays, noverlays, true);
+}
+
+RomfsImage *romfs_image_open(const char *dir) {
+    RomfsImage *im = calloc(1, sizeof *im);
+    if (!build(im, dir, NULL, 0, false)) { free(im); return NULL; }
+    return im;
+}
+
+uint64_t romfs_size(void) { return g_main.size; }
+uint64_t romfs_image_size(const RomfsImage *im) { return im->size; }
 
 // ---- host file descriptors (a small cache: the image has tens of thousands of files)
 #define FDC 64
@@ -294,11 +309,11 @@ static int64_t read_file(File *f, uint8_t *dst, uint64_t off, uint64_t n) {
     return plat_pread(fd, dst, n, (off_t)off);  // (dst: an IPC buffer in guest memory, platform.h)
 }
 
-static int file_at(uint64_t rel) {  // index of the file whose padded data range holds rel, or -1
-    int lo = 0, hi = g_nfiles - 1, best = -1;
+static int file_at(const RomfsImage *im, uint64_t rel) {  // index of the file whose padded data range holds rel, or -1
+    int lo = 0, hi = im->nfiles - 1, best = -1;
     while (lo <= hi) {
         int mid = (lo + hi) / 2;
-        if (g_files[mid]->data_off <= rel) { best = mid; lo = mid + 1; }
+        if (im->files[mid]->data_off <= rel) { best = mid; lo = mid + 1; }
         else hi = mid - 1;
     }
     return best;
@@ -306,33 +321,33 @@ static int file_at(uint64_t rel) {  // index of the file whose padded data range
 
 const char *romfs_file_at(uint64_t off) {
     if (off < DATA_START) return NULL;
-    int i = file_at(off - DATA_START);
-    return i >= 0 && off - DATA_START < g_files[i]->data_off + g_files[i]->size ? g_files[i]->rpath : NULL;
+    int i = file_at(&g_main, off - DATA_START);
+    return i >= 0 && off - DATA_START < g_main.files[i]->data_off + g_main.files[i]->size ? g_main.files[i]->rpath : NULL;
 }
 
 const char *romfs_host_path(const char *rpath) {
     while (*rpath == '/') rpath++;
-    for (int i = 0; i < g_nfiles; i++)  // (rare: movies)
-        if (!strcasecmp(g_files[i]->rpath, rpath)) return g_files[i]->path;
+    for (int i = 0; i < g_main.nfiles; i++)  // (rare: movies)
+        if (!strcasecmp(g_main.files[i]->rpath, rpath)) return g_main.files[i]->path;
     return NULL;
 }
 
-uint64_t romfs_read(uint8_t *dst, uint64_t off, uint64_t size) {
-    if (off >= g_size) return 0;
-    if (off + size > g_size) size = g_size - off;
+uint64_t romfs_image_read(const RomfsImage *im, uint8_t *dst, uint64_t off, uint64_t size) {
+    if (off >= im->size) return 0;
+    if (off + size > im->size) size = im->size - off;
     uint64_t done = 0;
     while (done < size) {
         uint64_t o = off + done, n = size - done;
         if (o < DATA_START) {  // header
             if (n > DATA_START - o) n = DATA_START - o;
-            memcpy(dst + done, g_hdr + o, n);
-        } else if (o >= g_tables_off) {  // tables
-            memcpy(dst + done, g_tables + (o - g_tables_off), n);
+            memcpy(dst + done, im->hdr + o, n);
+        } else if (o >= im->tables_off) {  // tables
+            memcpy(dst + done, im->tables + (o - im->tables_off), n);
         } else {  // file data (and the padding between files)
-            if (o + n > g_tables_off) n = g_tables_off - o;
+            if (o + n > im->tables_off) n = im->tables_off - o;
             uint64_t rel = o - DATA_START;
-            int i = file_at(rel);
-            File *f = i >= 0 ? g_files[i] : NULL;
+            int i = file_at(im, rel);
+            File *f = i >= 0 ? im->files[i] : NULL;
             if (f && rel < f->data_off + f->size) {
                 uint64_t in = rel - f->data_off, avail = f->size - in;
                 if (n > avail) n = avail;
@@ -340,7 +355,7 @@ uint64_t romfs_read(uint8_t *dst, uint64_t off, uint64_t size) {
                 if (r < 0) r = 0;
                 if ((uint64_t)r < n) memset(dst + done + r, 0, n - r);
             } else {  // padding up to the next file
-                uint64_t next = i + 1 < g_nfiles ? g_files[i + 1]->data_off : g_tables_off - DATA_START;
+                uint64_t next = i + 1 < im->nfiles ? im->files[i + 1]->data_off : im->tables_off - DATA_START;
                 if (n > next - rel) n = next - rel;
                 memset(dst + done, 0, n);
             }
@@ -349,3 +364,5 @@ uint64_t romfs_read(uint8_t *dst, uint64_t off, uint64_t size) {
     }
     return done;
 }
+
+uint64_t romfs_read(uint8_t *dst, uint64_t off, uint64_t size) { return romfs_image_read(&g_main, dst, off, size); }

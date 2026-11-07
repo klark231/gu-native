@@ -15,6 +15,7 @@ bool touch_event(const SDL_Event *e);  // a finger event: true when it was the c
 void touch_input(bool pad_connected, bool typing, uint64_t *buttons, int *lx, int *ly, float *cam_dx, float *cam_dy);
 // game thread (runtime/overlay.cpp): drawn over the game, under the port's menus
 bool touch_visible(void);
+bool touch_drawn(void);  // (something of them is on the screen: the settings button alone, when they are hidden)
 void touch_draw(float display_w, float display_h);
 void touch_edit_begin(void);  // the layout editor (settings menu: Controls), once the menu is closed
 void touch_edit_cancel(void);  // (the settings menu's unsaved-changes dialog cancelled: it stays open)

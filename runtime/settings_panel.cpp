@@ -374,6 +374,10 @@ bool equal(const Config &a, const Config &b) {
     SAME(render_h);
     SAME(render_scale);
     SAME(low_end);
+    SAME(shadows);
+    SAME(bloom);
+    SAME(reverb);
+    SAME(adreno_fix);
     SAME(fps);
     SAME(fsr);
     SAME(fsr_upscaler);
@@ -840,6 +844,10 @@ void reset_section() {
         break;
     case 1:
         c.low_end = f.low_end;
+        c.shadows = f.shadows;
+        c.bloom = f.bloom;
+        c.reverb = f.reverb;
+        c.adreno_fix = f.adreno_fix;
         c.fsr = f.fsr;
         c.fsr_upscaler = f.fsr_upscaler;
         c.fsr_quality = f.fsr_quality;
@@ -986,8 +994,15 @@ void conflict_rows(std::vector<Row> &r) {
     }
 }
 void cheat_rows(std::vector<Row> &r) {
+#ifdef __ANDROID__  // (the app's cheats folder is in Android/data, out of a file manager's reach: copied in by ImportActivity)
+    action(r, "cheats.add", tr("Add cheats"), []() { ui_request_import(0); });
+    r.back().help = tr("Copies cheat .txt files (Atmosphere's format, for 1.4.0) from your phone's storage. You can also put them yourself in the cheats folder inside your game folder. The game restarts to read them.");
+    if (cheat_tab.draft.empty())
+        return;
+#else
     if (cheat_tab.draft.empty())
         action(r, "cheats.none", tr("No cheats found in the cheats folder"), []() {});
+#endif
     for (int i = 0; i < (int)cheat_tab.draft.size(); ++i) {
         Row row;
         row.id = "cheat." + std::to_string(i);
@@ -1015,8 +1030,20 @@ void mods_rows(std::vector<Row> &r) {
     if (!mods.scan)
         start_scan();
     auto result = mods.scan;  // (the scan thread fills it; `done` says when)
+#ifdef __ANDROID__  // (as the cheats: copied into the app's folders by ImportActivity)
+    action(r, "mods.add", tr("Add a mod"), []() { ui_request_import(1); });
+    r.back().help = tr("Copies a mod's folder (with romfs or exefs in it) or its .zip from your phone's storage. You can also put it yourself in the mods folder inside your game folder. The game restarts to load it.");
+    // (DLC: the game takes them only in its Download menu, which needs its online services, and stops with an error
+    // without them, even with a connection said to be there. The rest is in place - services/dlc.c, ImportActivity -
+    // and the row shows in a test run with MHGU_DLC=1)
+    if (getenv("MHGU_DLC"))
+        action(r, "dlc.add", tr("Add DLC"), []() { ui_request_import(2); });
+    if (getenv("MHGU_DLC"))
+        r.back().help = tr("Your own DLC of the game: each one's folder holds a DLC.dlcp. You can also put them yourself in the dlc folder inside your game folder. Then, in the game's main menu: Download. Experimental.");
+#else
     if (mods.draft.empty())
         action(r, "mods.none", tr("No mods found in the mods folder"), []() {});
+#endif
     for (int i = 0; i < (int)mods.draft.size(); ++i) {
         std::string name = mods.draft[i].name;
         bool on = mods.draft[i].on, clash = false;
@@ -1141,13 +1168,13 @@ std::vector<Row> main_rows() {
 #endif
         if ((!c.fsr || c.low_end) && !c.render_w) {  // (Auto: the 3D picture in percent of the screen's, RenderScale; the nearest of the presets;
                               // with FSR its quality sets the 3D size)
-            static const int scales[] = {100, 90, 80, 75, 66, 50, 40, 33};
+            static const int scales[] = {100, 90, 80, 75, 66, 50, 40, 33, 25};
             int pick = 0;
             for (int i = 1; i < (int)std::size(scales); i++)
                 if (std::abs(scales[i] - c.render_scale) < std::abs(scales[pick] - c.render_scale))
                     pick = i;
             add_choice(
-                r, "render.scale", "3D resolution", pick, {"100%", "90%", "80%", "75%", "66%", "50%", "40%", "33%"},
+                r, "render.scale", "3D resolution", pick, {"100%", "90%", "80%", "75%", "66%", "50%", "40%", "33%", "25%"},
                 [](int v) { s.draft.render_scale = scales[v]; }, ini("RenderScale"));
             if (scales[pick] != c.render_scale)  // (another value set in the file: shown as it is)
                 r.back().value = std::to_string(c.render_scale) + "%";
@@ -1168,19 +1195,30 @@ std::vector<Row> main_rows() {
         break;
     case 1:
         add_choice(
-            r, "lowend", "Low-end mode", c.low_end ? 1 : 0, {tr("Off"), tr("On")},
-            [](int v) {  // (it brings the resolution and the frame rate along; both can then be changed)
-                s.draft.low_end = v;
+            r, "lowend", "Low-end mode", c.low_end < 0 || c.low_end > 2 ? 0 : c.low_end, {tr("Off"), tr("On"), tr("Toaster")},
+            [](int v) {  // (it brings the resolution, the frame rate and the switches along; all can then be changed)
+                Config &d = s.draft;
+                int was = d.low_end;
+                d.low_end = v;
                 if (v) {
-                    s.draft.render_scale = std::min(s.draft.render_scale, LOW_END_SCALE);
-                    s.draft.fps = std::min(s.draft.fps, LOW_END_FPS);
+                    int scale = v == LOW_END_TOASTER ? TOASTER_SCALE : LOW_END_SCALE;
+                    if (was == LOW_END_TOASTER && d.render_scale == TOASTER_SCALE) d.render_scale = scale;  // (back to On)
+                    d.render_scale = std::min(d.render_scale, scale);
+                    d.fps = std::min(d.fps, LOW_END_FPS);
+                    d.shadows = 0;
+                    d.bloom = 0;
+                    if (v == LOW_END_TOASTER) d.reverb = 0;
+                    else if (was == LOW_END_TOASTER) d.reverb = 1;
                 } else {
-                    if (s.draft.render_scale <= LOW_END_SCALE) s.draft.render_scale = 100;
-                    if (s.draft.fps == LOW_END_FPS) s.draft.fps = 60;
+                    if (d.render_scale <= LOW_END_SCALE) d.render_scale = 100;
+                    if (d.fps == LOW_END_FPS) d.fps = 60;
+                    d.shadows = 1;
+                    d.bloom = 1;
+                    d.reverb = 1;
                 }
             },
             ini("LowEnd"));
-        r.back().help = tr("For weak phones: turns off bloom and depth of field, uses lighter textures and keeps the HUD sharp over a smaller 3D picture. It also sets the 3D resolution and the frame rate, and you can change both.");
+        r.back().help = tr("For weak phones: turns off bloom, depth of field and shadows, uses lighter textures and keeps the HUD sharp over a smaller 3D picture. It also sets the 3D resolution and the frame rate, and you can change all of them. Toaster: everything for speed and the battery before looks: 25%, 30 FPS, no reverb, and a lighter HUD and textures still.");
         number(r, "fps", "Frame rate limit", &c.fps, (int)lo("FPS"), (int)hi("FPS"), 1, ini("FPS"));
         {  // left / right: one frame per second more or less; Confirm: the common ones
             static const int presets[] = {30, 60, 90, 120, 150, 240};
@@ -1245,10 +1283,17 @@ std::vector<Row> main_rows() {
                ini("DrawDistance"));
         if (c.draw_distance == 0)
             r.back().value = tr("No limit");
+        add_bool(r, "shadows", "Shadows", &c.shadows, ini("Shadows"));
+        add_bool(r, "bloom", "Bloom and depth of field", &c.bloom, ini("Bloom"));
+        if (c.fsr && !c.low_end) {  // (FSR finds the start of the HUD from these passes: lowend_skipped)
+            r.back().enabled = false;
+            r.back().value = tr("On (FSR)");
+        }
 #ifndef __ANDROID__  // (a phone: not worth a row)
         add_bool(r, "smooth", "Smooth gradients", &c.smooth_gradients, ini("SmoothGradients"));
 #endif
         number(r, "volume", "Volume (%)", &c.volume, (int)lo("Volume"), (int)hi("Volume"), 1, ini("Volume"));
+        add_bool(r, "reverb", "Reverb", &c.reverb, ini("Reverb"));
 #ifndef __ANDROID__  // (a phone: not worth a row)
         add_bool(r, "mutebg", "Mute in background", &c.mute_in_background, ini("MuteInBackground"));
 #endif
@@ -1285,6 +1330,10 @@ std::vector<Row> main_rows() {
             action(r, "gpu.driver", tr("GPU driver"), []() { ui_request_gpu_driver(); });
             r.back().value = *gpu_driver_name() ? gpu_driver_name() : tr("System");
             r.back().help = tr("Adreno only, at your own risk: load a Vulkan driver of your own. By default the system's is used.");
+        }
+        if (vk_gpu_adreno_fix_applies()) {  // (an Adreno on a Vulkan 1.1 driver: device.c msaa_floor)
+            add_choice(r, "adrenofix", "Adreno fix", c.adreno_fix ? 1 : 0, {tr("Auto"), tr("Off")},
+                       [](int v) { s.draft.adreno_fix = v; }, ini("AdrenoFix"));
         }
 #endif
         break;
@@ -1344,9 +1393,10 @@ std::vector<Row> main_rows() {
     case 3:
         number(r, "port", "Host port (TCP / UDP)", &c.ldn_port, (int)lo("Port"), (int)hi("Port"), 1, ini("Port"));
         text(r, "hosts", "Search hosts", c.ldn_join, sizeof c.ldn_join, *c.ldn_join ? c.ldn_join : tr("LAN"), ini("Join"));
+        // (internet hubs through a hub server of the player's choice, server/: none is built in, LDN_DEFAULT_SERVER)
         text(r, "server", "Hub server", c.ldn_server, sizeof c.ldn_server,
-             !*c.ldn_server ? std::string(tr("Default")) + (*LDN_DEFAULT_SERVER ? " (" LDN_DEFAULT_SERVER ")" : "")
-                            : c.ldn_server,
+             *c.ldn_server ? std::string(c.ldn_server)
+             : *LDN_DEFAULT_SERVER ? std::string(tr("Default")) + " (" LDN_DEFAULT_SERVER ")" : std::string(tr("None")),
              ini("Server"));
         text(r, "key", "Matchmaking key", c.ldn_key, sizeof c.ldn_key, *c.ldn_key ? c.ldn_key : tr("Public"), ini("Key"));
         hub_check(r);
@@ -1450,8 +1500,6 @@ std::vector<Row> main_rows() {
 #endif
         add_bool(r, "bonus", "Bonus content", &c.bonus_content, ini("BonusContent"));
 #ifdef __ANDROID__
-        action(r, "user.folder", tr("User folder"), []() { ui_request_user_folder(); });
-        r.back().help = tr("Where your settings, saves, mods, cheats and logs are kept. Choose a folder you can reach with a file manager. Close the game and open it again to apply it: your files are copied then.");
         action(r, "game.folder", tr("Game folder"), []() { ui_request_game_folder(); });
         r.back().help = tr("Where the game's exefs and romfs are read from. A new folder is used the next time the game starts.");
         action(r, "save.import", tr("Import save"), []() { ui_request_save_import(); });
@@ -1530,10 +1578,11 @@ bool save() {
 const char *const TB_TITLES[TB_COUNT] = {"Attacks", "Dodge (B)", "Guard (R)", "Sheathe (Y)", "Game menu (+)", "Minus (-)", "D-pad",
                                          "L", "ZL", "ZR", "Left stick click (L3)", "Right stick click (R3)", "Movement stick",
                                          "Layout for bows and bowguns", "Fire / shoot", "Reload / melee", "Aim",
-                                         "Crouching fire / coating", "Ammo arrows", "Item arrows"};
+                                         "Crouching fire / coating", "Ammo arrows", "Item arrows", "ZL in menus", "ZR in menus"};
 const char *const TB_KEYS[TB_COUNT] = {"ShowAttacks", "ShowDodge", "ShowGuard", "ShowSheathe", "ShowPlus", "ShowMinus", "ShowDpad",
                                        "ShowL", "ShowZL", "ShowZR", "ShowL3", "ShowR3", "ShowStick", "ShowRanged", "ShowFire",
-                                       "ShowSecond", "ShowAim", "ShowRangedSpecial", "ShowAmmo", "ShowItemArrows"};
+                                       "ShowSecond", "ShowAim", "ShowRangedSpecial", "ShowAmmo", "ShowItemArrows", "ShowMenuZL",
+                                       "ShowMenuZR"};
 int s_combo;  // the combined button being edited
 void touch_button_rows(std::vector<Row> &r) {
     Config &c = s.draft;
@@ -1757,11 +1806,27 @@ struct PhoneHelp {
 const PhoneHelp PHONE_HELP[] = {
     {"RenderScale", "The size of the 3D picture against the screen's. Lower runs faster and looks softer.",
      "El tamaño de la imagen 3D respecto de la pantalla. Más bajo corre más rápido y se ve más suave."},
-    {"LowEnd", "For a weak phone: no bloom or depth of field, cheaper and smaller textures, and the HUD stays sharp over a smaller 3D picture.",
-     "Para un teléfono débil: sin resplandor ni profundidad de campo, texturas más livianas y más chicas, y el HUD sigue nítido sobre una imagen 3D más chica."},
+    {"ShowMenuZL", "In the game's menus, a ZL tab beside L. Some menus use it to change sections or show more information: the item box, the smithy.",
+     "En los menús del juego, una pestaña ZL junto a L. Algunos menús la usan para cambiar de sección o ver más información: la caja de objetos, la herrería."},
+    {"ShowMenuZR", "In the game's menus, a ZR tab beside R. Some menus use it to change sections or show more information: the item box, the smithy.",
+     "En los menús del juego, una pestaña ZR junto a R. Algunos menús la usan para cambiar de sección o ver más información: la caja de objetos, la herrería."},
+    {"Bloom", "The glow around lights and the blur of what is far away. Off: faster on a weak phone. Low-end mode turns it off.",
+     "El resplandor alrededor de las luces y el desenfoque de lo lejano. Apagado: más rápido en un teléfono débil. El modo gama baja lo apaga."},
+    {"Reverb", "The echo of caves and rooms. Off: the sound is dry, and a weak phone's processor does less.",
+     "El eco de cuevas y salas. Apagada: el sonido queda seco y el procesador de un teléfono débil trabaja menos."},
+    {"LowEnd", "For a weak phone: no bloom or depth of field, cheaper and smaller textures, and the HUD stays sharp over a smaller 3D picture. Toaster: everything for speed and the battery before looks.",
+     "Para un teléfono débil: sin resplandor ni profundidad de campo, texturas más livianas y más chicas, y el HUD sigue nítido sobre una imagen 3D más chica. Tostadora: todo para la velocidad y la batería antes que el aspecto."},
+    {"Shadows", "The shadows of hunters, monsters and scenery. Off: a little faster on a weak phone.",
+     "Las sombras de cazadores, monstruos y escenario. Apagadas: un poco más rápido en un teléfono débil."},
+    {"AdrenoFix", "Some Adreno drivers repeat the 3D picture in a grid at a low 3D resolution: Auto keeps 2x MSAA there. If the picture looks dark or flickers, or for more speed, choose Off.",
+     "Algunos drivers de Adreno repiten la imagen 3D en grilla con una resolución 3D baja: Auto deja MSAA 2x en ese caso. Si la imagen se ve oscura o parpadea, o para ganar velocidad, elige Off."},
     {"LockOn", "Keeps the camera on the monster, as in the newer games, and a bow's or a bowgun's shots go to it. Off: the icon turns the camera to it once.",
      "Mantiene la cámara sobre el monstruo, como en los juegos nuevos, y los disparos de arcos y ballestas van hacia él. Apagado: el ícono gira la cámara una sola vez."},
     {"Join", "A host's IP address, to play over a VPN. Empty: searches your network.", "La dirección IP de un anfitrión, para jugar por VPN. Vacío: busca en tu red."},
+    {"Server", "A hub server's address (name or IP, and :port if it is not 39510), to play over the internet with everyone who uses the same server: their hubs show when you search for hubs in the game. Empty: none, only your network.",
+     "La dirección de un servidor de hubs (nombre o IP, y :puerto si no es el 39510), para jugar por internet con todos los que usen el mismo servidor: sus hubs aparecen al buscar hubs en el juego. Vacío: ninguno, solo tu red."},
+    {"Key", "On the hub server, only players with the same key see each other's hubs: agree on one with your friends. Empty: public hubs.",
+     "En el servidor de hubs, solo los jugadores con la misma clave ven los hubs de los demás: acuerden una con tus amigos. Vacío: hubs públicos."},
     {"1Player", "The health of large monsters in Hub quests, by number of hunters. When you join a hub, the host's values are used.",
      "La vida de los monstruos grandes en las misiones del Hub, según la cantidad de cazadores. Al unirte a un Hub se usan los valores del anfitrión."},
     {"FOV", "How much of the scene you see: higher shows more.", "Cuánto se ve de la escena: un valor mayor muestra más."},
