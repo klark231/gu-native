@@ -1,0 +1,117 @@
+name: Release APK
+
+# Builds the public APK (no game code in it) and publishes it as a GitHub Release, signed with your key.
+# Run it by pushing a tag (git tag v0.1.5-fork.1 && git push origin v0.1.5-fork.1) or from the Actions tab (Run workflow).
+#
+# Secrets (Settings > Secrets and variables > Actions, or `gh secret set`):
+#   ANDROID_KEYSTORE_BASE64    the keystore file, base64
+#   ANDROID_KEYSTORE_PASSWORD  its password
+#   ANDROID_KEY_ALIAS          the key's alias
+#   ANDROID_KEY_PASSWORD       the key's password
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      NDK_VERSION: 27.0.12077973
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK parts (NDK r27, CMake 3.22.1)
+        run: |
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --install \
+            "ndk;$NDK_VERSION" "cmake;3.22.1" "platforms;android-35" "build-tools;35.0.0" > /dev/null
+
+      - name: Check the signing secrets
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          PW: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          AL: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KP: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          for v in KS PW AL KP; do
+            [ -n "${!v}" ] || { echo "::error::A signing secret is empty: set ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD"; exit 1; }
+          done
+
+      - name: Cache native dependencies (SDL3, shaderc, FFmpeg)
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps/src
+            deps/out
+            deps/tmp/dl
+          key: deps-${{ runner.os }}-${{ hashFiles('deps/*.sh') }}
+
+      - name: Native dependencies
+        run: |
+          bash deps/fetch_sources.sh
+          JOBS=$(nproc) bash deps/build_deps.sh arm64-v8a
+          JOBS=$(nproc) bash deps/build_ffmpeg.sh arm64-v8a
+
+      - name: Runtime (libmain.so)
+        run: JOBS=$(nproc) bash native/build_native.sh arm64-v8a
+
+      - name: Signing key
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          PW: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          AL: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KP: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          printf %s "$KS" | base64 -d > android/mhgu.keystore
+          {
+            echo "storePassword=$PW"
+            echo "keyAlias=$AL"
+            echo "keyPassword=$KP"
+          } > android/keystore.properties
+
+      - name: APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease
+
+      - name: Name and verify the APK
+        id: apk
+        run: |
+          VERSION=$(cat VERSION)
+          APK="MHGU-$VERSION.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "$APK"
+          "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify --print-certs "$APK"
+          # the public APK must carry no game code
+          if unzip -l "$APK" | grep -q libmhgugame.so; then echo "::error::libmhgugame.so is inside the APK"; exit 1; fi
+          sha256sum "$APK" | tee "$APK.sha256"
+          echo "name=$APK" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK='${{ steps.apk.outputs.name }}'
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then TAG="$GITHUB_REF_NAME"; else TAG="v${{ steps.apk.outputs.version }}-fork.${GITHUB_RUN_NUMBER}"; fi
+          cat > notes.md <<'NOTES'
+          Public APK: it contains no game code, game files or keys. You need your own copy of the game (1.4.0) and your own
+          `libmhgugame.so`, made with `tools/build_game.py` (see the README). A different signing key than the original
+          project's: it can't update over an install of the original app.
+          NOTES
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" "$APK.sha256" --clobber
+          else
+            gh release create "$TAG" "$APK" "$APK.sha256" --title "MHGU $TAG" --notes-file notes.md --target "$GITHUB_SHA"
+          fi
