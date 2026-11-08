@@ -30,7 +30,7 @@
 
 namespace {
 enum class View { Main, Keyboard, CloseChanges, Exit, Restart, Reset, Move, Conflicts, KeyCapture, Keybinds, TouchButtons, ComboEdit,
-                  PadList, PadMap };
+                  PadList, PadMap, HubServers };
 enum class Command { None, Save };
 struct Row {
     std::string id, title, value;
@@ -738,6 +738,108 @@ void hub_check(std::vector<Row> &rows) {
     r.activate = []() { ldn_hub_check(s.draft.ldn_server, s.draft.ldn_key); };
     rows.push_back(std::move(r));
 }
+// The hub servers (runtime/net/ldn.c lobby_servers_of): ini Server holds them in one text, separated by spaces or
+// commas (empty: the defaults, "Off": none). The Hub servers view lists them one to a row, so one can be changed,
+// removed or added without writing over the others.
+constexpr size_t HUB_SERVERS_MAX = 8;
+std::vector<std::string> hub_servers() {
+    std::string t = *s.draft.ldn_server ? s.draft.ldn_server : LDN_DEFAULT_SERVER;
+    std::vector<std::string> out;
+    if (t.size() == 3 && (t[0] | 0x20) == 'o' && (t[1] | 0x20) == 'f' && (t[2] | 0x20) == 'f') return out;
+    std::string cur;
+    for (char ch : t + " ") {
+        if (ch == ' ' || ch == ',' || ch == '\t') {
+            if (!cur.empty()) out.push_back(cur);
+            cur.clear();
+        } else cur += ch;
+    }
+    return out;
+}
+// Stores the list as the ini text (the defaults as empty, none as "Off"); false (error set): not valid or too long
+bool hub_servers_set(const std::vector<std::string> &list, std::string &error) {
+    std::string t;
+    for (const std::string &h : list) t += (t.empty() ? "" : " ") + h;
+    if (t.empty()) t = "Off";
+    else if (t == LDN_DEFAULT_SERVER) t.clear();
+    if (t.size() >= sizeof s.draft.ldn_server) {
+        error = tr("Too many hub servers: the list is too long.");
+        return false;
+    }
+    Config temp = s.draft;
+    SDL_strlcpy(temp.ldn_server, t.c_str(), sizeof temp.ldn_server);
+    char why[512];
+    if (!config_validate(&temp, why, sizeof why)) {
+        error = settings_text(s.draft.language, why);
+        return false;
+    }
+    s.draft = temp;
+    return true;
+}
+// One typed server name: no blanks inside, not empty
+bool hub_server_name(const std::string &typed, std::string &name, std::string &error) {
+    size_t a = typed.find_first_not_of(" \t"), b = typed.find_last_not_of(" \t");
+    name = a == std::string::npos ? "" : typed.substr(a, b - a + 1);
+    if (name.empty() || name.find_first_of(" ,\t") != std::string::npos) {
+        error = tr("Type one server name, such as host or host:port.");
+        return false;
+    }
+    return true;
+}
+std::string hub_servers_summary() {
+    std::vector<std::string> l = hub_servers();
+    return l.empty() ? tr("Off") : l.size() == 1 ? l[0] : fmt("%d servers", (int)l.size());
+}
+void hub_server_rows(std::vector<Row> &r) {
+    std::vector<std::string> list = hub_servers();
+    if (list.empty()) header(r, "hs.none", tr("No hub server: only your local network is searched"));
+    for (size_t i = 0; i < list.size(); i++) {
+        std::string id = std::to_string(i);
+        Row row;
+        row.id = "hs." + id;
+        row.title = fmt("Server %d", (int)i + 1);
+        row.value = list[i];
+        row.help = tr("Select to change this server's address. Leave a name starting with - to keep it in the list switched off.");
+        row.activate = [i]() {
+            keyboard(fmt("Server %d", (int)i + 1), hub_servers()[i], 120, [i](const std::string &typed, std::string &error) {
+                std::vector<std::string> l = hub_servers();
+                std::string name;
+                if (i >= l.size() || !hub_server_name(typed, name, error)) return false;
+                l[i] = name;
+                return hub_servers_set(l, error);
+            });
+        };
+        r.push_back(std::move(row));
+        Row del;
+        del.id = "hsd." + id;
+        del.title = fmt("Remove server %d", (int)i + 1);
+        del.action = true;
+        del.help = tr("Takes this server out of the list. Hubs listed only there are no longer searched.");
+        del.activate = [i]() {
+            std::vector<std::string> l = hub_servers();
+            std::string error;
+            if (i < l.size()) l.erase(l.begin() + (long)i);
+            hub_servers_set(l, error);
+        };
+        r.push_back(std::move(del));
+    }
+    action(r, "hs.add", tr("Add a server"), []() {
+        keyboard(tr("New hub server"), "", 120, [](const std::string &typed, std::string &error) {
+            std::vector<std::string> l = hub_servers();
+            std::string name;
+            if (l.size() >= HUB_SERVERS_MAX) {
+                error = tr("At most 8 hub servers.");
+                return false;
+            }
+            if (!hub_server_name(typed, name, error)) return false;
+            l.push_back(name);
+            return hub_servers_set(l, error);
+        });
+    }, hub_servers().size() < HUB_SERVERS_MAX);
+    r.back().help = tr("Another hub server: hubs are listed on all of them and a search asks all of them.");
+    action(r, "hs.reset", tr("Restore the default servers"), []() { s.draft.ldn_server[0] = 0; });
+    r.back().help = tr("The two servers the game comes with.");
+    action(r, "hs.back", tr("Back"), []() { pop(); });
+}
 // The keybinds' rows (config.h BIND_*): what each is called
 const char *const bind_titles[BINDS] = {"Move forward", "Move back", "Move left", "Move right", "Walk", "A", "B", "X",
                                         "Y", "L", "R", "ZL", "ZR", "Plus", "Minus", "D-pad up", "D-pad down",
@@ -1400,10 +1502,10 @@ std::vector<Row> main_rows() {
         number(r, "port", "Host port (TCP / UDP)", &c.ldn_port, (int)lo("Port"), (int)hi("Port"), 1, ini("Port"));
         text(r, "hosts", "Search hosts", c.ldn_join, sizeof c.ldn_join, *c.ldn_join ? c.ldn_join : tr("LAN"), ini("Join"));
         // (internet hubs through a hub server of the player's choice, server/: none is built in, LDN_DEFAULT_SERVER)
-        text(r, "server", "Hub server", c.ldn_server, sizeof c.ldn_server,
-             !*c.ldn_server ? std::string(tr("Default")) + (*LDN_DEFAULT_SERVER ? " (" LDN_DEFAULT_SERVER ")" : "")
-                           : c.ldn_server,
-             ini("Server"));
+        action(r, "server", tr("Hub server"), []() { push(View::HubServers, "hs.0"); });
+        r.back().value = hub_servers_summary();
+        r.back().help = tr("The servers that list internet hubs. Select to change, remove or add servers.");
+        keyed(r.back(), ini("Server"));
         text(r, "key", "Matchmaking key", c.ldn_key, sizeof c.ldn_key, *c.ldn_key ? c.ldn_key : tr("Public"), ini("Key"));
         hub_check(r);
         add_bool(r, "sync", "Sync small monsters", &c.sync_small_monsters, ini("SyncSmallMonsters"));
@@ -1699,6 +1801,7 @@ std::vector<Row> rows_for_view(bool *open) {
     if (s.view == View::ComboEdit) { combo_rows(r); return r; }
     if (s.view == View::PadList) { pad_list_rows(r); return r; }
     if (s.view == View::PadMap) { pad_map_rows(r); return r; }
+    if (s.view == View::HubServers) { hub_server_rows(r); return r; }
     if (s.view == View::Keyboard) {
         std::string chars = "1234567890abcdefghijklmnopqrstuvwxyz.:,-_/@";
         if (s.keyboard.upper)
@@ -2443,6 +2546,7 @@ std::string view_title() {
                     : s.view == View::ComboEdit  ? "Combined button"
                     : s.view == View::PadList    ? "Map a controller"
                     : s.view == View::PadMap     ? "Map a controller"
+                    : s.view == View::HubServers ? "Hub servers"
                     : s.view == View::KeyCapture ? "Press the key for chat (Esc: cancel)"
                                                  : "Unsaved changes");
 }

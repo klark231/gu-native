@@ -60,6 +60,7 @@ SDL_Window *ui_window(void);
 }
 #include "haptics.h"  // (a short tick on the phone when a control is pressed)
 #include "overlay.h"
+#include "settings_panel.h"  // (settings_panel_theme: the hub list bar's colours)
 #include "settings_locale.h"
 #include "touch.h"
 
@@ -918,17 +919,35 @@ void edit_event(State &s, const SDL_Event *e, float x, float y) {
 }  // namespace
 
 // ------------------------------------------------------------------ the Join Hub screen's list buttons
-// A panel under the game's table of hubs: "List  <  1  2  3  >  #25 to 48 of 55". A tap on a number chooses that list,
+// A floating bar low in the middle of the picture: "<  1  2  3  >" with "hubs #25 to 48 of 55" over it. A tap on a number chooses that list,
 // the arrows the one before / after; the search follows by itself (runtime/host_input.c presses Retry a moment later).
-// (Placed as the game's table is: it spans .46 to .885 of the width, and its lower edge is at .52 of the height.)
+// (Sized and placed by the picture, not by the game's table, so it fits every window shape; colours: [Application] Theme.)
 bool hub_strip_on() { return ldn_hub_browsing() && ldn_hub_lists() > 1; }
 int hub_strip_count() { return std::min(ldn_hub_lists(), 8) + 2; }  // (the arrows and the numbers)
-struct HubGeo { float px, py, pw, ph, bh, bw, pitch, bx, by; };
+// Sized by the game's picture (picture(): its height, and centred in it, whatever shape the window is), not by the
+// game's table, so it sits the same on 16:9, 21:9, 4:3 ... It floats low in the middle, clear of the thumbs' buttons
+// and the game's text box, with a line under the table's reach saying which hubs the list holds.
+struct HubGeo {
+    float px, py, pw, ph;  // the bar
+    float bh, bw, pitch, bx, by, gap;  // a button, the pitch between them, the first one
+    float u;               // the picture's height (scaled down when the bar would be too wide)
+    float cy, ch;          // the caption's middle and height
+};
 HubGeo hub_geo(float w, float h) {
     HubGeo g;
-    g.px = .459f * w, g.py = .529f * h, g.pw = .425f * w, g.ph = .098f * h;
-    g.bh = .062f * h, g.bw = .066f * h, g.pitch = .081f * h;
-    g.bx = g.px + .097f * h, g.by = g.py + (g.ph - g.bh) * .5f;
+    Pic p = picture(w, h);
+    int cnt = hub_strip_count();
+    float u = p.h, bw = .072f * u, gap = .014f * u, pad = .022f * u;
+    float inner = cnt * bw + (cnt - 1) * gap, full = inner + 2 * pad;
+    float k = std::min(1.0f, .56f * p.w / full);  // (a narrow picture: smaller)
+    u *= k, bw *= k, gap *= k, pad *= k, inner *= k, full *= k;
+    g.u = u, g.bw = bw, g.bh = bw, g.gap = gap, g.pitch = bw + gap;
+    g.pw = full, g.ph = bw + 2 * pad;
+    g.px = p.x0 + (p.w - full) * .5f;
+    g.py = p.y0 + .735f * p.h;
+    g.bx = g.px + pad, g.by = g.py + pad;
+    g.ch = .062f * u;
+    g.cy = g.py - .014f * u - g.ch * .5f;
     return g;
 }
 void hub_strip_rect(int i, float w, float h, ImVec2 *a, ImVec2 *b) {
@@ -938,11 +957,12 @@ void hub_strip_rect(int i, float w, float h, ImVec2 *a, ImVec2 *b) {
 }
 int hub_strip_hit(float x, float y, float w, float h) {  // the button under a finger, or -1
     if (!hub_strip_on()) return -1;
+    HubGeo g = hub_geo(w, h);
     for (int i = 0; i < hub_strip_count(); i++) {
         ImVec2 a, b;
         hub_strip_rect(i, w, h, &a, &b);
-        float m = (b.y - a.y) * .3f;  // (slop round each: a thumb on a phone)
-        if (x >= a.x - m && x <= b.x + m && y >= a.y - m && y <= b.y + m) return i;
+        float mx = g.gap * .5f, my = g.bh * .3f;  // (slop round each: a thumb on a phone; half the gap, so none overlap)
+        if (x >= a.x - mx && x <= b.x + mx && y >= a.y - my && y <= b.y + my) return i;
     }
     return -1;
 }
@@ -1432,43 +1452,62 @@ ImU32 fade(ImU32 c, float a) {
 ImVec2 P(ImVec2 c, float s, float x, float y) { return ImVec2(c.x + x * s, c.y + y * s); }
 ImVec2 add(ImVec2 a, ImVec2 b, float k) { return ImVec2(a.x + b.x * k, a.y + b.y * k); }
 
+// The hub list bar's colours follow the settings menu's theme ([Application] Theme)
+struct HubColors {
+    ImU32 panel, edge, button, lit, lit_edge, lit_ink, ink, accent;
+};
+HubColors hub_colors() {
+    switch (settings_panel_theme()) {
+    case THEME_BLUE:
+        return {IM_COL32(6, 10, 17, 238), IM_COL32(70, 140, 170, 255), IM_COL32(20, 32, 48, 255), IM_COL32(111, 216, 255, 255),
+                IM_COL32(190, 240, 255, 255), IM_COL32(6, 14, 24, 255), IM_COL32(244, 247, 252, 255), IM_COL32(111, 216, 255, 255)};
+    case THEME_GOLD:
+        return {IM_COL32(34, 25, 19, 240), IM_COL32(150, 112, 60, 255), IM_COL32(56, 41, 30, 255), IM_COL32(213, 162, 79, 255),
+                IM_COL32(255, 222, 150, 255), IM_COL32(30, 20, 12, 255), IM_COL32(242, 216, 170, 255), IM_COL32(213, 162, 79, 255)};
+    default:  // Hunter: the game's own wine, gold and bronze
+        return {IM_COL32(74, 24, 22, 242), IM_COL32(150, 104, 52, 255), IM_COL32(40, 14, 14, 255), GOLD, GLOW, DEEP, INK, GOLD};
+    }
+}
 void hub_strip_draw(ImDrawList *dl, ImFont *font, float w, float h, float a) {
     if (!hub_strip_on()) return;
-    const ImU32 PANEL = IM_COL32(74, 24, 22, 255), BTN = IM_COL32(40, 14, 14, 255), EDGE = IM_COL32(150, 104, 52, 255);
+    HubColors c = hub_colors();
     HubGeo g = hub_geo(w, h);
     int cnt = hub_strip_count(), chosen = ldn_hub_list_chosen();
-    float fs = g.bh * .52f, r = g.bh * .12f;
-    dl->AddRectFilled(ImVec2(g.px, g.py), ImVec2(g.px + g.pw, g.py + g.ph), fade(PANEL, a), r);
-    dl->AddRect(ImVec2(g.px, g.py), ImVec2(g.px + g.pw, g.py + g.ph), fade(EDGE, a * .8f), r, 0, g.bh * .04f);
-    ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, "List");
-    dl->AddText(font, fs, ImVec2(g.px + .019f * h, g.by + (g.bh - ts.y) * .5f), fade(GOLD, a), "List");
+    float fs = g.bh * .5f, r = g.bh * .2f, line = std::max(1.0f, g.bh * .045f);
+    ImVec2 p0(g.px, g.py), p1(g.px + g.pw, g.py + g.ph);
+    dl->AddRectFilled(p0, p1, fade(c.panel, a), r * 1.3f);
+    dl->AddRect(p0, p1, fade(c.edge, a * .9f), r * 1.3f, 0, line);
     for (int i = 0; i < cnt; i++) {
         ImVec2 p, q;
         hub_strip_rect(i, w, h, &p, &q);
         bool arrow = i == 0 || i == cnt - 1, lit = !arrow && i - 1 == chosen;
-        dl->AddRectFilled(p, q, fade(lit ? GOLD : BTN, a), r);
-        dl->AddRect(p, q, fade(lit ? GLOW : EDGE, a), r, 0, g.bh * .045f);
-        ImVec2 c((p.x + q.x) * .5f, (p.y + q.y) * .5f);
-        ImU32 ink = fade(lit ? DEEP : INK, a);
+        dl->AddRectFilled(p, q, fade(lit ? c.lit : c.button, a), r);
+        dl->AddRect(p, q, fade(lit ? c.lit_edge : c.edge, a), r, 0, line);
+        ImVec2 m((p.x + q.x) * .5f, (p.y + q.y) * .5f);
+        ImU32 ink = fade(lit ? c.lit_ink : c.ink, a);
         if (arrow) {
-            float d = i == 0 ? -1.0f : 1.0f, ch = g.bh * .16f;
-            ImVec2 tip(c.x + d * ch * .6f, c.y), t1(c.x - d * ch * .6f, c.y - ch), t2(c.x - d * ch * .6f, c.y + ch);
-            dl->AddLine(t1, tip, ink, g.bh * .07f), dl->AddLine(t2, tip, ink, g.bh * .07f);
+            float d = i == 0 ? -1.0f : 1.0f, ch = g.bh * .2f;
+            ImVec2 tip(m.x + d * ch * .7f, m.y), t1(m.x - d * ch * .5f, m.y - ch), t2(m.x - d * ch * .5f, m.y + ch);
+            dl->AddLine(t1, tip, ink, g.bh * .08f), dl->AddLine(t2, tip, ink, g.bh * .08f);
         } else {
             char t[8];
             snprintf(t, sizeof t, "%d", i);
             ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0, t);
-            dl->AddText(font, fs, ImVec2(c.x - sz.x * .5f, c.y - sz.y * .5f), ink, t);
+            dl->AddText(font, fs, ImVec2(m.x - sz.x * .5f, m.y - sz.y * .5f), ink, t);
         }
     }
-    int first = 0, last = 0, total = 0;  // how many hubs this list shows
+    // which hubs the chosen list holds, in a small chip over the bar
+    int first = 0, last = 0, total = 0;
     ldn_hub_list_range(&first, &last, &total);
-    char t[48];
+    char t[64];
     snprintf(t, sizeof t, "hubs #%d to %d of %d", first, last, total);
-    ImVec2 e1, e2;
-    hub_strip_rect(cnt - 1, w, h, &e1, &e2);
-    ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0, t);
-    dl->AddText(font, fs, ImVec2(e2.x + .03f * h, g.by + (g.bh - sz.y) * .5f), fade(INK, a), t);
+    float cs = g.ch * .62f;
+    ImVec2 sz = font->CalcTextSizeA(cs, FLT_MAX, 0, t);
+    float cw = sz.x + g.ch * 1.0f, cx = g.px + g.pw * .5f;
+    ImVec2 c0(cx - cw * .5f, g.cy - g.ch * .5f), c1(cx + cw * .5f, g.cy + g.ch * .5f);
+    dl->AddRectFilled(c0, c1, fade(c.panel, a), g.ch * .5f);
+    dl->AddRect(c0, c1, fade(c.edge, a * .9f), g.ch * .5f, 0, line);
+    dl->AddText(font, cs, ImVec2(cx - sz.x * .5f, g.cy - sz.y * .5f), fade(c.ink, a), t);
 }
 
 void sword(ImDrawList *dl, ImVec2 c, float s, float dx, float dy, ImU32 col) {
@@ -2270,7 +2309,7 @@ extern "C" void touch_draw(float w, float h) {
     }
     for (int i = 0; i < C_COUNT; i++)
         if (in_mode(i, s.menu)) control(dl, font, s.layout, i, w, h, s, a);
-    hub_strip_draw(dl, font, w, h, std::max(a, .9f));
+    hub_strip_draw(dl, font, w, h, 1.0f);  // (after every control, so over them, and solid: a button never shows through it)
     // the HUD parts that answer a finger: the item bar's turn, the art performed, the lock-on
     Zones z = zones();
     Rect item = zone_rect(z, TZ_ITEM, w, h), target = zone_rect(z, TZ_TARGET, w, h), arts = zone_rect(z, TZ_ARTS, w, h);
