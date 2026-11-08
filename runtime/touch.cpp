@@ -952,45 +952,6 @@ void hub_strip_press(int i) {
     else if (i == n + 1) ldn_hub_list_step(1);
     else ldn_hub_list_goto(i - 1);
 }
-void hub_strip_draw(ImDrawList *dl, ImFont *font, float w, float h, float a) {
-    if (!hub_strip_on()) return;
-    const ImU32 PANEL = IM_COL32(74, 24, 22, 255), BTN = IM_COL32(40, 14, 14, 255), EDGE = IM_COL32(150, 104, 52, 255);
-    HubGeo g = hub_geo(w, h);
-    int cnt = hub_strip_count(), chosen = ldn_hub_list_chosen();
-    float fs = g.bh * .52f, r = g.bh * .12f;
-    dl->AddRectFilled(ImVec2(g.px, g.py), ImVec2(g.px + g.pw, g.py + g.ph), fade(PANEL, a), r);
-    dl->AddRect(ImVec2(g.px, g.py), ImVec2(g.px + g.pw, g.py + g.ph), fade(EDGE, a * .8f), r, 0, g.bh * .04f);
-    ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, "List");
-    dl->AddText(font, fs, ImVec2(g.px + .019f * h, g.by + (g.bh - ts.y) * .5f), fade(GOLD, a), "List");
-    for (int i = 0; i < cnt; i++) {
-        ImVec2 p, q;
-        hub_strip_rect(i, w, h, &p, &q);
-        bool arrow = i == 0 || i == cnt - 1, lit = !arrow && i - 1 == chosen;
-        dl->AddRectFilled(p, q, fade(lit ? GOLD : BTN, a), r);
-        dl->AddRect(p, q, fade(lit ? GLOW : EDGE, a), r, 0, g.bh * .045f);
-        ImVec2 c((p.x + q.x) * .5f, (p.y + q.y) * .5f);
-        ImU32 ink = fade(lit ? DEEP : INK, a);
-        if (arrow) {
-            float d = i == 0 ? -1.0f : 1.0f, ch = g.bh * .16f;
-            ImVec2 tip(c.x + d * ch * .6f, c.y), t1(c.x - d * ch * .6f, c.y - ch), t2(c.x - d * ch * .6f, c.y + ch);
-            dl->AddLine(t1, tip, ink, g.bh * .07f), dl->AddLine(t2, tip, ink, g.bh * .07f);
-        } else {
-            char t[8];
-            snprintf(t, sizeof t, "%d", i);
-            ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0, t);
-            dl->AddText(font, fs, ImVec2(c.x - sz.x * .5f, c.y - sz.y * .5f), ink, t);
-        }
-    }
-    int first = 0, last = 0, total = 0;  // how many hubs this list shows
-    ldn_hub_list_range(&first, &last, &total);
-    char t[48];
-    snprintf(t, sizeof t, "hubs #%d to %d of %d", first, last, total);
-    ImVec2 e1, e2;
-    hub_strip_rect(cnt - 1, w, h, &e1, &e2);
-    ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0, t);
-    dl->AddText(font, fs, ImVec2(e2.x + .03f * h, g.by + (g.bh - sz.y) * .5f), fade(INK, a), t);
-}
-
 extern "C" bool touch_event(const SDL_Event *e) {
     if (e->type != SDL_EVENT_FINGER_DOWN && e->type != SDL_EVENT_FINGER_MOTION && e->type != SDL_EVENT_FINGER_UP &&
         e->type != SDL_EVENT_FINGER_CANCELED)
@@ -1470,6 +1431,45 @@ ImU32 fade(ImU32 c, float a) {
 }
 ImVec2 P(ImVec2 c, float s, float x, float y) { return ImVec2(c.x + x * s, c.y + y * s); }
 ImVec2 add(ImVec2 a, ImVec2 b, float k) { return ImVec2(a.x + b.x * k, a.y + b.y * k); }
+
+void hub_strip_draw(ImDrawList *dl, ImFont *font, float w, float h, float a) {
+    if (!hub_strip_on()) return;
+    const ImU32 PANEL = IM_COL32(74, 24, 22, 255), BTN = IM_COL32(40, 14, 14, 255), EDGE = IM_COL32(150, 104, 52, 255);
+    HubGeo g = hub_geo(w, h);
+    int cnt = hub_strip_count(), chosen = ldn_hub_list_chosen();
+    float fs = g.bh * .52f, r = g.bh * .12f;
+    dl->AddRectFilled(ImVec2(g.px, g.py), ImVec2(g.px + g.pw, g.py + g.ph), fade(PANEL, a), r);
+    dl->AddRect(ImVec2(g.px, g.py), ImVec2(g.px + g.pw, g.py + g.ph), fade(EDGE, a * .8f), r, 0, g.bh * .04f);
+    ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, "List");
+    dl->AddText(font, fs, ImVec2(g.px + .019f * h, g.by + (g.bh - ts.y) * .5f), fade(GOLD, a), "List");
+    for (int i = 0; i < cnt; i++) {
+        ImVec2 p, q;
+        hub_strip_rect(i, w, h, &p, &q);
+        bool arrow = i == 0 || i == cnt - 1, lit = !arrow && i - 1 == chosen;
+        dl->AddRectFilled(p, q, fade(lit ? GOLD : BTN, a), r);
+        dl->AddRect(p, q, fade(lit ? GLOW : EDGE, a), r, 0, g.bh * .045f);
+        ImVec2 c((p.x + q.x) * .5f, (p.y + q.y) * .5f);
+        ImU32 ink = fade(lit ? DEEP : INK, a);
+        if (arrow) {
+            float d = i == 0 ? -1.0f : 1.0f, ch = g.bh * .16f;
+            ImVec2 tip(c.x + d * ch * .6f, c.y), t1(c.x - d * ch * .6f, c.y - ch), t2(c.x - d * ch * .6f, c.y + ch);
+            dl->AddLine(t1, tip, ink, g.bh * .07f), dl->AddLine(t2, tip, ink, g.bh * .07f);
+        } else {
+            char t[8];
+            snprintf(t, sizeof t, "%d", i);
+            ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0, t);
+            dl->AddText(font, fs, ImVec2(c.x - sz.x * .5f, c.y - sz.y * .5f), ink, t);
+        }
+    }
+    int first = 0, last = 0, total = 0;  // how many hubs this list shows
+    ldn_hub_list_range(&first, &last, &total);
+    char t[48];
+    snprintf(t, sizeof t, "hubs #%d to %d of %d", first, last, total);
+    ImVec2 e1, e2;
+    hub_strip_rect(cnt - 1, w, h, &e1, &e2);
+    ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0, t);
+    dl->AddText(font, fs, ImVec2(e2.x + .03f * h, g.by + (g.bh - sz.y) * .5f), fade(INK, a), t);
+}
 
 void sword(ImDrawList *dl, ImVec2 c, float s, float dx, float dy, ImU32 col) {
     float n = sqrtf(dx * dx + dy * dy);
