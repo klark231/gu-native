@@ -1,0 +1,15 @@
+[package]
+name = "mhgu-crossplay"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Crossplay with emulator LDN servers and rooms (RyuLdn and suyu), in Rust."
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+# ENet transpiled to Rust (MIT): the wire of suyu-family multiplayer rooms.
+rusty_enet = "0.4"
+# The rooms compress every game packet (upstream links zstd too).
+zstd = "0.13"

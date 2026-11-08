@@ -30,7 +30,7 @@
 
 namespace {
 enum class View { Main, Keyboard, CloseChanges, Exit, Restart, Reset, Move, Conflicts, KeyCapture, Keybinds, TouchButtons, ComboEdit,
-                  PadList, PadMap, HubServers };
+                  PadList, PadMap, RoomBrowser };
 enum class Command { None, Save };
 struct Row {
     std::string id, title, value;
@@ -395,15 +395,17 @@ bool equal(const Config &a, const Config &b) {
     SAME(fxaa_mode);
     SAME(face_buttons);
     SAME(ldn_port);
+    SAME(crossplay);
+    SAME(ryu_host);
+    SAME(ryu_port);
+    SAME(room_host);
+    SAME(room_port);
     SAME(sync_small_monsters);
     SAME(bonus_content);
     SAME(village_in_hub);
-    SAME(hub_full_list);
     SAME(mouse_sensitivity);
     SAME(touch_controls);
-    SAME(touch_scheme);
     SAME(touch_hud);
-    SAME(touch_auto_run);
     SAME(touch_camera);
     SAME(touch_opacity);
     SAME(aspect_ratio);
@@ -432,13 +434,16 @@ bool equal(const Config &a, const Config &b) {
 #undef SAME
     if (a.lock_on != b.lock_on)
         return false;
-    if (memcmp(a.touch_show, b.touch_show, sizeof a.touch_show) || memcmp(a.touch_show_trad, b.touch_show_trad, sizeof a.touch_show_trad) || memcmp(a.touch_combo, b.touch_combo, sizeof a.touch_combo) ||
+    if (memcmp(a.touch_show, b.touch_show, sizeof a.touch_show) || memcmp(a.touch_combo, b.touch_combo, sizeof a.touch_combo) ||
         memcmp(a.touch_combo_pad, b.touch_combo_pad, sizeof a.touch_combo_pad))
         return false;
     if (memcmp(a.binds, b.binds, sizeof a.binds))
         return false;
     if (strcmp(a.ldn_join, b.ldn_join) || strcmp(a.ldn_server, b.ldn_server) || strcmp(a.ldn_key, b.ldn_key) ||
-        strcmp(a.chat_key, b.chat_key))
+        strcmp(a.chat_key, b.chat_key) || strcmp(a.ryu_servers, b.ryu_servers) || strcmp(a.ryu_password, b.ryu_password) ||
+        strcmp(a.room_server, b.room_server) || strcmp(a.room_name, b.room_name) ||
+        strcmp(a.room_password, b.room_password) || strcmp(a.web_api_url, b.web_api_url) ||
+        strcmp(a.last_room, b.last_room) || strcmp(a.last_room_name, b.last_room_name))
         return false;
     for (int n = 0; n < 4; ++n)
         if (a.hp.scale[n] != b.hp.scale[n])
@@ -740,108 +745,6 @@ void hub_check(std::vector<Row> &rows) {
     r.activate = []() { ldn_hub_check(s.draft.ldn_server, s.draft.ldn_key); };
     rows.push_back(std::move(r));
 }
-// The hub servers (runtime/net/ldn.c lobby_servers_of): ini Server holds them in one text, separated by spaces or
-// commas (empty: the defaults, "Off": none). The Hub servers view lists them one to a row, so one can be changed,
-// removed or added without writing over the others.
-constexpr size_t HUB_SERVERS_MAX = 8;
-std::vector<std::string> hub_servers() {
-    std::string t = *s.draft.ldn_server ? s.draft.ldn_server : LDN_DEFAULT_SERVER;
-    std::vector<std::string> out;
-    if (t.size() == 3 && (t[0] | 0x20) == 'o' && (t[1] | 0x20) == 'f' && (t[2] | 0x20) == 'f') return out;
-    std::string cur;
-    for (char ch : t + " ") {
-        if (ch == ' ' || ch == ',' || ch == '\t') {
-            if (!cur.empty()) out.push_back(cur);
-            cur.clear();
-        } else cur += ch;
-    }
-    return out;
-}
-// Stores the list as the ini text (the defaults as empty, none as "Off"); false (error set): not valid or too long
-bool hub_servers_set(const std::vector<std::string> &list, std::string &error) {
-    std::string t;
-    for (const std::string &h : list) t += (t.empty() ? "" : " ") + h;
-    if (t.empty()) t = "Off";
-    else if (t == LDN_DEFAULT_SERVER) t.clear();
-    if (t.size() >= sizeof s.draft.ldn_server) {
-        error = tr("Too many hub servers: the list is too long.");
-        return false;
-    }
-    Config temp = s.draft;
-    SDL_strlcpy(temp.ldn_server, t.c_str(), sizeof temp.ldn_server);
-    char why[512];
-    if (!config_validate(&temp, why, sizeof why)) {
-        error = settings_text(s.draft.language, why);
-        return false;
-    }
-    s.draft = temp;
-    return true;
-}
-// One typed server name: no blanks inside, not empty
-bool hub_server_name(const std::string &typed, std::string &name, std::string &error) {
-    size_t a = typed.find_first_not_of(" \t"), b = typed.find_last_not_of(" \t");
-    name = a == std::string::npos ? "" : typed.substr(a, b - a + 1);
-    if (name.empty() || name.find_first_of(" ,\t") != std::string::npos) {
-        error = tr("Type one server name, such as host or host:port.");
-        return false;
-    }
-    return true;
-}
-std::string hub_servers_summary() {
-    std::vector<std::string> l = hub_servers();
-    return l.empty() ? tr("Off") : l.size() == 1 ? l[0] : fmt("%d servers", (int)l.size());
-}
-void hub_server_rows(std::vector<Row> &r) {
-    std::vector<std::string> list = hub_servers();
-    if (list.empty()) header(r, "hs.none", tr("No hub server: only your local network is searched"));
-    for (size_t i = 0; i < list.size(); i++) {
-        std::string id = std::to_string(i);
-        Row row;
-        row.id = "hs." + id;
-        row.title = fmt("Server %d", (int)i + 1);
-        row.value = list[i];
-        row.help = tr("Select to change this server's address. Leave a name starting with - to keep it in the list switched off.");
-        row.activate = [i]() {
-            keyboard(fmt("Server %d", (int)i + 1), hub_servers()[i], 120, [i](const std::string &typed, std::string &error) {
-                std::vector<std::string> l = hub_servers();
-                std::string name;
-                if (i >= l.size() || !hub_server_name(typed, name, error)) return false;
-                l[i] = name;
-                return hub_servers_set(l, error);
-            });
-        };
-        r.push_back(std::move(row));
-        Row del;
-        del.id = "hsd." + id;
-        del.title = fmt("Remove server %d", (int)i + 1);
-        del.action = true;
-        del.help = tr("Takes this server out of the list. Hubs listed only there are no longer searched.");
-        del.activate = [i]() {
-            std::vector<std::string> l = hub_servers();
-            std::string error;
-            if (i < l.size()) l.erase(l.begin() + (long)i);
-            hub_servers_set(l, error);
-        };
-        r.push_back(std::move(del));
-    }
-    action(r, "hs.add", tr("Add a server"), []() {
-        keyboard(tr("New hub server"), "", 120, [](const std::string &typed, std::string &error) {
-            std::vector<std::string> l = hub_servers();
-            std::string name;
-            if (l.size() >= HUB_SERVERS_MAX) {
-                error = tr("At most 8 hub servers.");
-                return false;
-            }
-            if (!hub_server_name(typed, name, error)) return false;
-            l.push_back(name);
-            return hub_servers_set(l, error);
-        });
-    }, hub_servers().size() < HUB_SERVERS_MAX);
-    r.back().help = tr("Another hub server: hubs are listed on all of them and a search asks all of them.");
-    action(r, "hs.reset", tr("Restore the default servers"), []() { s.draft.ldn_server[0] = 0; });
-    r.back().help = tr("The two servers the game comes with.");
-    action(r, "hs.back", tr("Back"), []() { pop(); });
-}
 // The keybinds' rows (config.h BIND_*): what each is called
 const char *const bind_titles[BINDS] = {"Move forward", "Move back", "Move left", "Move right", "Walk", "A", "B", "X",
                                         "Y", "L", "R", "ZL", "ZR", "Plus", "Minus", "D-pad up", "D-pad down",
@@ -980,16 +883,13 @@ void reset_section() {
         c.combo_window = f.combo_window;
         c.mouse_sensitivity = f.mouse_sensitivity;
         c.touch_controls = f.touch_controls;
-        c.touch_scheme = f.touch_scheme;
         c.touch_hud = f.touch_hud;
-        c.touch_auto_run = f.touch_auto_run;
         c.touch_camera = f.touch_camera;
         c.touch_opacity = f.touch_opacity;
         c.touch_vibration = f.touch_vibration;
         c.phone_rumble = f.phone_rumble;
         c.lock_on = f.lock_on;
         memcpy(c.touch_show, f.touch_show, sizeof c.touch_show);
-        memcpy(c.touch_show_trad, f.touch_show_trad, sizeof c.touch_show_trad);
         memcpy(c.touch_combo, f.touch_combo, sizeof c.touch_combo);
         memcpy(c.touch_combo_pad, f.touch_combo_pad, sizeof c.touch_combo_pad);
         SDL_strlcpy(c.chat_key, f.chat_key, sizeof c.chat_key);
@@ -1000,9 +900,19 @@ void reset_section() {
         SDL_strlcpy(c.ldn_join, f.ldn_join, sizeof c.ldn_join);
         SDL_strlcpy(c.ldn_server, f.ldn_server, sizeof c.ldn_server);
         SDL_strlcpy(c.ldn_key, f.ldn_key, sizeof c.ldn_key);
+        c.crossplay = f.crossplay;
+        SDL_strlcpy(c.ryu_servers, f.ryu_servers, sizeof c.ryu_servers);
+        c.ryu_host = f.ryu_host;
+        c.ryu_port = f.ryu_port;
+        SDL_strlcpy(c.ryu_password, f.ryu_password, sizeof c.ryu_password);
+        SDL_strlcpy(c.room_server, f.room_server, sizeof c.room_server);
+        c.room_host = f.room_host;
+        c.room_port = f.room_port;
+        SDL_strlcpy(c.room_name, f.room_name, sizeof c.room_name);
+        SDL_strlcpy(c.room_password, f.room_password, sizeof c.room_password);
+        SDL_strlcpy(c.web_api_url, f.web_api_url, sizeof c.web_api_url);
         c.sync_small_monsters = f.sync_small_monsters;
         c.village_in_hub = f.village_in_hub;
-        c.hub_full_list = f.hub_full_list;
         break;
     case 4:
         c.hp = f.hp;
@@ -1468,14 +1378,7 @@ std::vector<Row> main_rows() {
 #endif
         add_choice(r, "touch", "Touch controls", c.touch_controls, {tr("Auto"), tr("On"), tr("Off")},
                    [](int v) { c.touch_controls = v; }, ini("Controls"));
-        add_choice(r, "touch.scheme", "Touch layout", c.touch_scheme, {tr("Adaptive"), tr("Traditional")},
-                   [](int v) { c.touch_scheme = v; }, ini("Layout"));
-        r.back().help = tr("Adaptive: the buttons change with what you do: the menus' and the bows' and bowguns' own. Traditional: as an emulator's, the same buttons always: A B X Y, L R ZL ZR, + -, the d-pad and the stick. Each has a layout of its own in the editor.");
         add_bool(r, "touch.hud", "Move the HUD for touch", &c.touch_hud, ini("MoveHUD"));
-        if (c.touch_scheme == TS_TRADITIONAL) {  // (the Adaptive layout has no R button: it always runs with the stick)
-            add_bool(r, "touch.autorun", "Run with the stick", &c.touch_auto_run, ini("AutoRun"));
-            r.back().help = tr("On: the thumb past the stick's rim runs. Off: the stick only walks, and the R button runs.");
-        }
         add_bool(r, "lock.on", "Lock-on", &c.lock_on, ini("LockOn"));
         r.back().help = tr("The target icon, or a controller's right stick click, keeps the camera on the monster as in the newer games, and bows and bowguns fire at it. Off: the icon turns the camera to it once, as in the original game.");
         action(r, "touch.buttons", tr("Buttons on the screen"), []() { push(View::TouchButtons, "tb.0"); });
@@ -1510,14 +1413,36 @@ std::vector<Row> main_rows() {
         number(r, "port", "Host port (TCP / UDP)", &c.ldn_port, (int)lo("Port"), (int)hi("Port"), 1, ini("Port"));
         text(r, "hosts", "Search hosts", c.ldn_join, sizeof c.ldn_join, *c.ldn_join ? c.ldn_join : tr("LAN"), ini("Join"));
         // (internet hubs through a hub server of the player's choice, server/: none is built in, LDN_DEFAULT_SERVER)
-        action(r, "server", tr("Hub server"), []() { push(View::HubServers, "hs.0"); });
-        r.back().value = hub_servers_summary();
-        r.back().help = tr("The servers that list internet hubs. Select to change, remove or add servers.");
-        keyed(r.back(), ini("Server"));
+        text(r, "server", "Hub server", c.ldn_server, sizeof c.ldn_server,
+             *c.ldn_server ? std::string(c.ldn_server)
+             : *LDN_DEFAULT_SERVER ? std::string(tr("Default")) + " (" LDN_DEFAULT_SERVER ")" : std::string(tr("None")),
+             ini("Server"));
         text(r, "key", "Matchmaking key", c.ldn_key, sizeof c.ldn_key, *c.ldn_key ? c.ldn_key : tr("Public"), ini("Key"));
         hub_check(r);
-        add_bool(r, "fullhubs", "Show all hubs", &c.hub_full_list, ini("FullHubList"));
-        r.back().help = tr("Join Hub: each search asks every hub server several times and merges the answers, so all the hubs are in the lists (the numbered buttons) from the first search, without pressing Retry. A little more network use.");
+        header(r, "xp.header", tr("Crossplay"));
+        add_choice(r, "crossplay", "Crossplay", c.crossplay, {tr("Off"), tr("Ryujinx"), tr("Yuzu Room"), tr("Mixed")},
+                   [](int v) { s.draft.crossplay = v; }, ini("Crossplay"));
+        r.back().help = tr("Play with console emulators: Ryujinx (RyuLdn servers), Yuzu-family rooms (Eden, Suyu, Yuzu, Citron), or both at once (Mixed). Small monster sync and HP scaling are off in those hubs.");
+        text(r, "ryu.servers", "RyuLdn servers", c.ryu_servers, sizeof c.ryu_servers,
+             *c.ryu_servers ? std::string(c.ryu_servers) : std::string(tr("None")), ini("RyuServers"));
+        add_bool(r, "ryu.host", "Run a RyuLdn server", &c.ryu_host, ini("RyuHost"));
+        number(r, "ryu.port", "RyuLdn port", &c.ryu_port, (int)lo("RyuPort"), (int)hi("RyuPort"), 1, ini("RyuPort"));
+        text(r, "ryu.password", "RyuLdn passphrase", c.ryu_password, sizeof c.ryu_password,
+             *c.ryu_password ? std::string("********") : std::string(tr("None")), ini("RyuPassword"));
+        text(r, "room.server", "Yuzu Room server", c.room_server, sizeof c.room_server,
+             *c.room_server ? std::string(c.room_server) : std::string(tr("None")), ini("RoomServer"));
+        add_bool(r, "room.host", "Run a Yuzu Room", &c.room_host, ini("RoomHost"));
+        number(r, "room.port", "Yuzu Room port", &c.room_port, (int)lo("RoomPort"), (int)hi("RoomPort"), 1, ini("RoomPort"));
+        text(r, "room.name", "Yuzu Room name", c.room_name, sizeof c.room_name, std::string(c.room_name), ini("RoomName"));
+        text(r, "room.password", "Yuzu Room password", c.room_password, sizeof c.room_password,
+             *c.room_password ? std::string("********") : std::string(tr("None")), ini("RoomPassword"));
+        text(r, "webapi", "Eden Web API URL", c.web_api_url, sizeof c.web_api_url,
+             *c.web_api_url ? std::string(c.web_api_url) : std::string(tr("None")), ini("WebApiUrl"));
+        action(r, "rooms", tr("Room Browser"), []() {
+            webrooms_refresh(s.draft.web_api_url);
+            push(View::RoomBrowser, "rb.refresh");
+        });
+        r.back().help = tr("Lists the public Yuzu-family rooms (Eden, Suyu) from the Eden Web API above. Pick one to join it.");
         add_bool(r, "sync", "Sync small monsters", &c.sync_small_monsters, ini("SyncSmallMonsters"));
         add_bool(r, "village", "Village quests in Hub", &c.village_in_hub, ini("VillageQuestsInHub"));
 #ifndef __ANDROID__  // (Discord's Rich Presence is its desktop app's)
@@ -1705,16 +1630,10 @@ int s_combo;  // the combined button being edited
 void touch_button_rows(std::vector<Row> &r) {
     Config &c = s.draft;
     header(r, "tb.head", tr("Buttons on the screen"));
-    if (c.touch_scheme == TS_TRADITIONAL) {  // (the layout chosen in Controls; each keeps its own set, every Traditional button on by default)
-        for (int i = 0; i <= TB_STICK; i++) {
-            add_bool(r, ("tbt." + std::to_string(i)).c_str(), TB_TITLES[i], &c.touch_show_trad[i], nullptr);
-            r.back().key = std::string("Trad") + TB_KEYS[i];
-        }
-    } else
-        for (int i = 0; i < TB_COUNT; i++) {
-            add_bool(r, ("tb." + std::to_string(i)).c_str(), TB_TITLES[i], &c.touch_show[i], nullptr);
-            r.back().key = TB_KEYS[i];
-        }
+    for (int i = 0; i < TB_COUNT; i++) {
+        add_bool(r, ("tb." + std::to_string(i)).c_str(), TB_TITLES[i], &c.touch_show[i], nullptr);
+        r.back().key = TB_KEYS[i];
+    }
     header(r, "tc.head", tr("Combined buttons"));
     for (int k = 0; k < TOUCH_COMBOS; k++) {
         action(r, "tc." + std::to_string(k), fmt("Button %d", k + 1), [k]() {
@@ -1803,6 +1722,116 @@ void pad_map_rows(std::vector<Row> &r) {
     });
 }
 
+// The Room Browser (runtime/net/webapi.c): the public Yuzu-family rooms the Eden Web API lists. Joining one points the
+// Yuzu Room server at it, turns Crossplay on for rooms and saves, so the game's next search or hub joins it.
+struct RoomFilters { int hide_locked = 0, hide_full = 0, hide_empty = 0; } room_filters;
+std::string room_search;  // the Room Browser's search text (name, host or game)
+std::string lower_text(std::string t) {
+    for (char &c : t) c = (char)SDL_tolower((unsigned char)c);
+    return t;
+}
+// The room joined last, as the settings keep it ("address:port", and its name unless that is empty)
+bool is_last_room(const WebRoom &w) {
+    char at[96];
+    snprintf(at, sizeof at, "%s:%u", w.address, (unsigned)w.port);
+    return s.draft.last_room[0] && !strcmp(s.draft.last_room, at) &&
+           (!s.draft.last_room_name[0] || !strcmp(s.draft.last_room_name, w.name));
+}
+bool join_web_room(const WebRoom &w, const std::string &password) {
+    Config temp = s.draft;
+    snprintf(temp.room_server, sizeof temp.room_server, "%s:%u", w.address, (unsigned)w.port);
+    snprintf(temp.last_room, sizeof temp.last_room, "%s", temp.room_server);
+    SDL_strlcpy(temp.last_room_name, w.name, sizeof temp.last_room_name);
+    for (char *c = temp.last_room_name; *c; c++)  // (the settings file can't hold these: a name with them matches any)
+        if (*c == ';' || *c == '#' || *c == '\n' || *c == '\r') { temp.last_room_name[0] = 0; break; }
+    SDL_strlcpy(temp.room_password, password.c_str(), sizeof temp.room_password);
+    if (temp.crossplay == XP_OFF) temp.crossplay = XP_ROOM;
+    else if (temp.crossplay == XP_RYU) temp.crossplay = XP_MIXED;  // (the RyuLdn servers stay in use)
+    char why[512];
+    if (!config_validate(&temp, why, sizeof why)) {
+        s.error = settings_text(s.draft.language, why);
+        return false;
+    }
+    s.draft = temp;
+    s.command = Command::Save;
+    return true;
+}
+void room_browser_rows(std::vector<Row> &r) {
+    char err[96];
+    int state = webrooms_state(err, sizeof err);
+    action(r, "rb.refresh", tr("Refresh"), []() { webrooms_refresh(s.draft.web_api_url); }, state != WEBROOMS_LOADING);
+    r.back().value = state == WEBROOMS_LOADING ? tr("Loading...") : "";
+    r.back().help = tr("Asks the Eden Web API for the public rooms again.");
+    add_bool(r, "rb.locked", "Hide locked", &room_filters.hide_locked);
+    r.back().help = tr("Hides the rooms that need a password.");
+    add_bool(r, "rb.full", "Hide full", &room_filters.hide_full);
+    r.back().help = tr("Hides the rooms with no free place.");
+    add_bool(r, "rb.empty", "Hide empty", &room_filters.hide_empty);
+    r.back().help = tr("Hides the rooms nobody is in.");
+    action(r, "rb.search", tr("Search"), []() {
+        keyboard(tr("Search rooms"), room_search, 40, [](const std::string &typed, std::string &) {
+            room_search = typed;
+            return true;
+        });
+    });
+    r.back().value = room_search.empty() ? std::string(tr("None")) : room_search;
+    r.back().help = tr("Shows only the rooms whose name, host or game has this text.");
+    if (state == WEBROOMS_ERROR) header(r, "rb.error", fmt("Can't get the room list: %s", err));
+    WebRoom rooms[WEBROOMS_MAX];
+    int n = webrooms_get(rooms, WEBROOMS_MAX), shown = 0;
+    // The rooms that pass the filters: the one joined last pinned first, then the fullest first, the empty ones at the end
+    std::vector<int> order;
+    const std::string query = lower_text(room_search);
+    for (int i = 0; i < n; i++) {
+        const WebRoom &w = rooms[i];
+        if (room_filters.hide_locked && w.locked) continue;
+        if (room_filters.hide_full && w.max_players > 0 && w.players >= w.max_players) continue;
+        if (room_filters.hide_empty && w.players == 0) continue;
+        if (!query.empty() && lower_text(w.name).find(query) == std::string::npos &&
+            lower_text(w.owner).find(query) == std::string::npos && lower_text(w.game).find(query) == std::string::npos)
+            continue;
+        order.push_back(i);
+    }
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+        bool la = is_last_room(rooms[a]), lb = is_last_room(rooms[b]);
+        if (la != lb) return la;
+        return rooms[a].players > rooms[b].players;
+    });
+    for (int i : order) {
+        const WebRoom &w = rooms[i];
+        shown++;
+        std::string title = w.name[0] ? w.name : w.address;
+        std::string value = std::to_string(w.players) + "/" + std::to_string(w.max_players);
+        bool last = is_last_room(w);
+        if (w.locked) value += std::string("  ") + tr("Locked");
+        if (last) value += std::string("  ") + tr("Last joined");
+        WebRoom room = w;
+        action(r, "rb.room." + std::to_string(i), title, [room]() {
+            if (!room.locked) {
+                if (join_web_room(room, "")) pop();
+                return;
+            }
+            // (the password typed for this room last time is already in the box)
+            keyboard(tr("Room password"), is_last_room(room) ? std::string(s.draft.room_password) : std::string(),
+                     sizeof s.draft.room_password - 1, [room](const std::string &typed, std::string &error) {
+                if (typed.empty()) {
+                    error = tr("Type the room's password.");
+                    return false;
+                }
+                return join_web_room(room, typed);  // (the keyboard closes itself: back in the list)
+            });
+        });
+        r.back().value = value;
+        std::string help = std::string(room.address) + ":" + std::to_string(room.port);
+        if (room.owner[0]) help += std::string("  ") + tr("Host") + ": " + room.owner;
+        if (room.game[0]) help += std::string("\n") + room.game;
+        r.back().help = help;
+    }
+    if (state == WEBROOMS_OK && !shown)
+        header(r, "rb.none", tr(n ? "No room matches the filters" : "No public rooms right now"));
+    action(r, "rb.back", tr("Back"), []() { pop(); });
+}
+
 std::vector<Row> rows_for_view(bool *open) {
     if (s.view == View::Main)
         return main_rows();
@@ -1811,9 +1840,9 @@ std::vector<Row> rows_for_view(bool *open) {
     if (s.view == View::ComboEdit) { combo_rows(r); return r; }
     if (s.view == View::PadList) { pad_list_rows(r); return r; }
     if (s.view == View::PadMap) { pad_map_rows(r); return r; }
-    if (s.view == View::HubServers) { hub_server_rows(r); return r; }
+    if (s.view == View::RoomBrowser) { room_browser_rows(r); return r; }
     if (s.view == View::Keyboard) {
-        std::string chars = "1234567890abcdefghijklmnopqrstuvwxyz.:,-_/@";
+        std::string chars = "1234567890abcdefghijklmnopqrstuvwxyz.:,-_/@!$%&*+=?~()";
         if (s.keyboard.upper)
             for (char &c : chars)
                 c = (char)SDL_toupper(c);
@@ -2556,7 +2585,7 @@ std::string view_title() {
                     : s.view == View::ComboEdit  ? "Combined button"
                     : s.view == View::PadList    ? "Map a controller"
                     : s.view == View::PadMap     ? "Map a controller"
-                    : s.view == View::HubServers ? "Hub servers"
+                    : s.view == View::RoomBrowser ? "Room Browser"
                     : s.view == View::KeyCapture ? "Press the key for chat (Esc: cancel)"
                                                  : "Unsaved changes");
 }

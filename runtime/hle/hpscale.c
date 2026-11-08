@@ -91,7 +91,7 @@ static uint32_t u32f(float f) { uint32_t w; memcpy(&w, &f, 4); return w; }
 static void nando_row(Cpu *c) {
     uint32_t em = c->r[0], column = c->r[1];
     fnhook_call_original(c, FN_NANDO_ROW);
-    if (column != 0) return;
+    if (column != 0 || ldn_crossplay()) return;  // (crossplay hubs: the emulators' players don't scale HP)
     uint32_t row = c->r[0], sen = LD32(G_SENEMY), tbl = sane(sen) ? LD32(sen + 0x257c) : 0;
     // (outside quests the getter gives a fixed row, not one of the table's)
     if (!sane(tbl) || row < LD32(tbl + 0x64) || row >= LD32(tbl + 0x64) + LD32(tbl + 0x68) * ROW_SIZE) return;
@@ -124,7 +124,7 @@ void hpscale_tick(void) {
     }
     static uint64_t last;
     static bool was_up;
-    bool up = ldn_net_up();
+    bool up = ldn_net_up() && !ldn_crossplay();
     if (!up && was_up) {
         pthread_mutex_lock(&g_lock);
         if (g_have_host) LOG("[hpscale] left the hub: own [Monster HP] settings again\n");

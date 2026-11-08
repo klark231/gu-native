@@ -64,6 +64,11 @@ jobs:
           JOBS=$(nproc) bash deps/build_deps.sh arm64-v8a
           JOBS=$(nproc) bash deps/build_ffmpeg.sh arm64-v8a
 
+      - name: Rust (crossplay crate, Android target)
+        run: |
+          rustup toolchain install stable --profile minimal --target aarch64-linux-android
+          rustup default stable
+
       # MHGU_DEV=1 (job env) is what native/build_native.sh passes to CMake as -DMHGU_DEV
       - name: Runtime (libmain.so, test build)
         run: JOBS=$(nproc) bash native/build_native.sh arm64-v8a

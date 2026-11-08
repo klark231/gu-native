@@ -8,7 +8,7 @@ API=28
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(dirname "$HERE")
 SRC="$ROOT"
-. "$ROOT/deps/env.sh"  # SDK, NDK, CMAKE, NINJA, HOST_TAG (Windows Git Bash or Linux)
+. "$ROOT/deps/env.sh"  # SDK, NDK, CMAKE, NINJA, HOST_TAG, EXE (Windows Git Bash or Linux; cygpath shim on Linux)
 OUT="$HERE/build/$ABI"
 m() { cygpath -m "$1"; }
 
@@ -20,14 +20,31 @@ GAMELIB_ID=$( (cat tools/gen.py tools/lifter.py tools/neon.py tools/nso.py tools
                runtime/cpu.h runtime/vfp.h runtime/neon_rt.h runtime/gamelib.h | tr -d '\r'; echo "$GENFLAGS") | sha256sum | cut -c1-16)
 SHADER_ID=$(cat runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h | tr -d '\r' | sha256sum | cut -c1-16)
 VERSION="$(cat "$ROOT/VERSION" 2>/dev/null || echo dev)"
+# Crossplay (Ryujinx, Yuzu rooms): crates/mhgu-crossplay, a Rust static library for this ABI (needs rustup with the
+# aarch64-linux-android / x86_64-linux-android target; runtime/net/ldn.c links it)
+case $ABI in
+  arm64-v8a) RT=aarch64-linux-android; RTU=AARCH64 ; RTL=aarch64_linux_android ;;
+  x86_64)    RT=x86_64-linux-android;  RTU=X86_64  ; RTL=x86_64_linux_android ;;
+  *) echo "build_native.sh: unsupported ABI $ABI"; exit 1 ;;
+esac
+RUST_CC="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/clang"; [ -x "$RUST_CC" ] || RUST_CC="$RUST_CC$EXE"
+[ -x "$RUST_CC" ] || { echo "build_native.sh: no NDK clang at $RUST_CC"; exit 1; }
+LLVM_AR="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/llvm-ar"; [ -x "$LLVM_AR" ] || LLVM_AR="$LLVM_AR$EXE"
+TARGET_FLAGS="--target=$RT$API"
+(cd "$ROOT" && env "CARGO_TARGET_${RTU}_LINUX_ANDROID_LINKER=$RUST_CC" "CC_$RTL=$RUST_CC" "AR_$RTL=$LLVM_AR" \
+  "CFLAGS_$RTL=$TARGET_FLAGS" "CARGO_TARGET_${RTU}_LINUX_ANDROID_RUSTFLAGS=-C link-arg=$TARGET_FLAGS" \
+  cargo build --release --lib -p mhgu-crossplay --target "$RT" --target-dir "$(m "$ROOT/target")") \
+  || { echo "build_native.sh: cargo build -p mhgu-crossplay --target $RT failed"; exit 1; }
+MHGU_XP_LIB="$ROOT/target/$RT/release/libmhgu_crossplay.a"
+[ -f "$MHGU_XP_LIB" ] || { echo "build_native.sh: $MHGU_XP_LIB is missing"; exit 1; }
 cd "$HERE"
-mkdir -p "$HERE/build"  # native/build/ is gitignored, so on a fresh checkout it does not exist yet and the "> $OUT.configure.log" redirect fails
 
 "$CMAKE" -S "$(m "$HERE")" -B "$(m "$OUT")" -G Ninja -DCMAKE_MAKE_PROGRAM="$(m "$NINJA")" \
   -DCMAKE_TOOLCHAIN_FILE="$(m "$NDK/build/cmake/android.toolchain.cmake")" -DANDROID_ABI=$ABI \
   -DANDROID_PLATFORM=android-$API -DANDROID_STL=c++_shared -DCMAKE_BUILD_TYPE=$TYPE \
   -DMHGU_SRC="$(m "$SRC")" -DDEPS="$(m "$ROOT/deps/out/$ABI")" -DGEN="$(m "$SRC/generated")" \
-  -DGAMELIB_ID=$GAMELIB_ID -DSHADER_ID=$SHADER_ID -DMHGU_VERSION="$VERSION" -DMHGU_DEV=${MHGU_DEV:-OFF} > "$OUT.configure.log" 2>&1 \
+  -DGAMELIB_ID=$GAMELIB_ID -DSHADER_ID=$SHADER_ID -DMHGU_VERSION="$VERSION" -DMHGU_DEV=${MHGU_DEV:-OFF} \
+  -DMHGU_XP_LIB="$(m "$MHGU_XP_LIB")" > "$OUT.configure.log" 2>&1 \
   || { tail -30 "$OUT.configure.log"; exit 1; }
 "$CMAKE" --build "$(m "$OUT")" --parallel ${JOBS:-12} 2>&1 | grep -E "error|warning: implicit|FAILED|^ninja: build stopped" | head -60
 "$CMAKE" --build "$(m "$OUT")" --parallel ${JOBS:-12} > "$OUT.build.log" 2>&1 || { tail -40 "$OUT.build.log"; exit 1; }

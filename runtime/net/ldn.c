@@ -34,6 +34,56 @@
 #include "../overlay.h"
 #include "../settings_locale.h"
 #include "net.h"
+// Each caller thread owns one snapshot of the saved crossplay settings.
+static __thread Config xp_config;
+static void crossplay_snapshot(void) { config_live_crossplay(&xp_config); }
+
+// ---- crossplay: the Rust modules (crates/mhgu-crossplay), their C API
+typedef struct { uint32_t src_ip, dst_ip; uint16_t src_port, dst_port; uint32_t proto; } RyuProxy;
+extern bool mhgu_ryu_enabled(void);
+extern void mhgu_ryu_set_config(const char *servers, const char *host, const char *pass);
+extern void mhgu_ryu_set_self(const char *addr);
+extern void mhgu_ryu_set_hooks(void (*lobby)(const uint8_t *), void (*data)(const RyuProxy *, const uint8_t *, uint32_t));
+extern int mhgu_ryu_server_count(void);
+extern int mhgu_ryu_scan(const uint8_t *filter, uint8_t *infos, int *server_of, int max);
+extern uint32_t mhgu_ryu_create(int server, const uint8_t *net, const uint8_t *sec, const uint8_t *user,
+                                const uint8_t *adv, uint32_t adv_size, uint8_t *info, uint32_t *ip, uint32_t *mask);
+extern uint32_t mhgu_ryu_connect(int server, const uint8_t *info, const uint8_t *sec, const uint8_t *user, uint16_t lcv,
+                                 uint8_t *out, uint32_t *ip, uint32_t *mask);
+extern void mhgu_ryu_leave(void);
+extern bool mhgu_ryu_in_lobby(void);
+extern void mhgu_ryu_set_advertise(const uint8_t *data, uint32_t len);
+extern void mhgu_ryu_set_accept_policy(uint8_t policy);
+extern bool mhgu_ryu_reject(uint32_t node_id, uint32_t reason);
+extern void mhgu_ryu_send(const RyuProxy *p, const uint8_t *data, uint32_t len);
+extern bool mhgu_ryusrv_start(const char *addr, uint16_t port, char *err, int err_size);
+extern void mhgu_ryusrv_stop(void);
+extern bool mhgu_ryusrv_running(void);
+
+typedef void (*RoomLdnCb)(uint8_t, const uint8_t *, const uint8_t *, bool, const uint8_t *, uint32_t);
+typedef void (*RoomProxyCb)(const uint8_t *, uint16_t, const uint8_t *, uint16_t, uint8_t, bool, const uint8_t *, uint32_t);
+extern void mhgu_room_set_hooks(RoomLdnCb ldn, RoomProxyCb proxy, void (*lost)(void), void (*members)(const uint8_t (*)[4], int));
+extern bool mhgu_room_join(const char *server, const char *nick, const char *password, uint8_t *ip, char *err, int err_size);
+extern void mhgu_room_leave(void);
+extern bool mhgu_room_connected(void);
+extern void mhgu_room_own_ip(uint8_t *ip);
+extern void mhgu_room_send_ldn(uint8_t type, const uint8_t *lip, const uint8_t *rip, bool bc, const uint8_t *data, uint32_t len);
+extern void mhgu_room_send_proxy(const uint8_t *sip, uint16_t sport, const uint8_t *dip, uint16_t dport, uint8_t proto, bool bc,
+                                 const uint8_t *data, uint32_t len);
+extern bool mhgu_roomsrv_start(int port, const char *name, const char *password, const char *host_nick, char *err, int err_size);
+extern void mhgu_roomsrv_stop(void);
+extern bool mhgu_roomsrv_running(void);
+
+extern void mhgu_xb_begin(const uint8_t *info, uint32_t host_ip, uint32_t mask);
+extern void mhgu_xb_end(void);
+extern bool mhgu_xb_active(void);
+extern int mhgu_xb_players(void);
+extern void mhgu_xb_lobby(const uint8_t *info);
+extern void mhgu_xb_room_ldn(uint8_t type, const uint8_t *lip, const uint8_t *rip, bool bc, const uint8_t *data, uint32_t len);
+extern void mhgu_xb_room_members(const uint8_t (*ips)[4], int n);
+extern void mhgu_xb_room_proxy(const uint8_t *sip, uint16_t sport, const uint8_t *dip, uint16_t dport, uint8_t proto, bool bc,
+                               const uint8_t *data, uint32_t len);
+
 
 #ifdef _WIN32
 typedef SOCKET hsock;
@@ -75,6 +125,8 @@ enum {
 enum { NODE_IP = 0x00, NODE_MAC = 0x04, NODE_ID = 0x0A, NODE_CONNECTED = 0x0B, NODE_NAME = 0x0C, NODE_LCV = 0x2E };
 #define MAX_NODES 8
 #define ADV_MAX 0x180
+// Yuzu-family room LDN packets (crates/mhgu-crossplay/src/room.rs)
+enum { RLDN_SCAN, RLDN_SCAN_RESP, RLDN_CONNECT, RLDN_SYNC_NETWORK, RLDN_DISCONNECT, RLDN_DESTROY_NETWORK };
 // NetworkConfig (0x20): IntentId 0x10, u16 channel, u8 node count max, u8 -, u16 local communication version
 // SecurityConfig (0x44): u16 mode, u16 passphrase size, passphrase[0x40]; UserConfig (0x30): user name[0x21]
 // SecurityParameter (0x20): data[0x10], session id[0x10]
@@ -95,15 +147,7 @@ enum { DR_NONE, DR_BY_USER, DR_BY_SYSTEM, DR_DESTROYED_BY_USER, DR_DESTROYED_BY_
 
 // ---- link protocol
 #define PROTO_MAGIC "MHGL"
-#define PROTO_VERSION 2  // the one used when nothing says otherwise (gu-native's own)
-// Link versions spoken: 2 (this port, gu-native) and 3 (the MHGURecomp PC build). The frames are laid out the same in both, but
-// a host only accepts a hello of its own version and a hub server only lists hubs of the asker's version. So we speak both: a
-// hub we host is listed under both versions, a search asks each version, and a found hub remembers the one it speaks.
-static const uint16_t LINK_VERSIONS[] = {2, 3};
-#define N_LINK_VERSIONS 2
-static bool link_version_ok(uint16_t v) { return v == LINK_VERSIONS[0] || v == LINK_VERSIONS[1]; }
-// The room of Android players without a key on the MHGURecomp servers (-separate-phones, on by default): searches add it.
-#define PHONE_PUBLIC_KEY "public-phone"
+#define PROTO_VERSION 2
 enum { F_HELLO = 1, F_INFO, F_WELCOME, F_REFUSE, F_PACKET, F_DESTROY, F_AUX };  // F_AUX: the port's own messages (emsync.c, hle/hpscale.c)
 typedef struct {
     char magic[4];
@@ -127,7 +171,7 @@ typedef struct { char magic[4]; uint32_t token; uint8_t kind, pad[3]; } UHdr;
 #define UDP_SILENCE_NS 15000000000ull
 
 // The hub server (server/server.go has the protocol): control frames like the link's; requests start with a header
-// "MHGS", u16 LOBBY_PROTO, u16 link version (2 or 3), room[16] (the matchmaking key's hash).
+// "MHGS", u16 LOBBY_PROTO, u16 PROTO_VERSION, room[16] (the matchmaking key's hash).
 #define LOBBY_PROTO 1
 #define LOBBY_PORT 39510
 #define LOBBY_HEADER 24
@@ -175,14 +219,19 @@ static struct {
     volatile bool uth_run;
     // host: the hub's listing on the hub server
     pthread_t lobby_th;
-    volatile bool lobby_run;
-    volatile uint32_t lobby_seq;  // counts the NetworkInfo's changes: each listing thread sends it when it moved on
+    volatile bool lobby_run, lobby_dirty;  // dirty: the NetworkInfo changed, send it
     struct sockaddr_in lobby_addr;
+    // crossplay
+    bool ryu;                    // the network is a lobby on a RyuLdn server
+    uint32_t ryu_mask;
+    bool room;                   // the network is a hub in a Yuzu-family room
+    bool room_client[MAX_NODES]; // host: the room players in the hub, by node
+    uint8_t room_cip[MAX_NODES][4];
 } L = {.mu = PTHREAD_MUTEX_INITIALIZER, .listen_s = BADSOCK, .disc_s = BADSOCK, .us = BADSOCK};
 
 // Scan results: where each found network's host is (hub: on the hub server at addr, 0: the host's own address).
-#define MAX_FOUND 512  // (a list holds up to HUB_LIST_MAX hubs)
-static struct { uint8_t bssid[6], session[16]; struct sockaddr_in addr; uint64_t hub; char server[256], key[64]; uint16_t ver; } found[MAX_FOUND];  // (ver, key: what the hub was listed under)
+#define MAX_FOUND 32
+static struct { uint8_t bssid[6], session[16]; struct sockaddr_in addr; uint64_t hub; uint8_t info[NETINFO_SIZE]; int ryu; bool room; } found[MAX_FOUND];
 static int nfound;
 
 static void signal_change(void) {
@@ -350,10 +399,10 @@ static bool udp_send(hsock s, const struct sockaddr_in *to, const Link *l, uint8
     return k == (int)n;
 }
 
-static Hello make_hello(bool scan_only, const uint8_t *user_name, uint16_t version) {
+static Hello make_hello(bool scan_only, const uint8_t *user_name) {
     Hello h = {0};
     memcpy(h.magic, PROTO_MAGIC, 4);
-    h.version = version;
+    h.version = PROTO_VERSION;
     h.scan_only = scan_only;
     h.lcv = L.lcv;
     memcpy(h.mac, L.mac, 6);
@@ -363,9 +412,10 @@ static Hello make_hello(bool scan_only, const uint8_t *user_name, uint16_t versi
 
 // ---- the virtual network's packets (vsock.c -> here)
 uint32_t ldn_own_ip(void) { return L.own_ip; }
-uint32_t ldn_broadcast_ip(void) { return L.subnet ? L.subnet | 0xFF : 0xFFFFFFFFu; }
+uint32_t ldn_broadcast_ip(void) { return L.subnet ? L.subnet | (L.ryu && L.ryu_mask ? ~L.ryu_mask : 0xFFu) : 0xFFFFFFFFu; }
 bool ldn_net_up(void) { return L.state == ST_AP_CREATED || L.state == ST_STATION_CONNECTED; }
 bool ldn_hosting(void) { return L.state == ST_AP_CREATED; }
+bool ldn_crossplay(void) { return L.ryu || L.room; }
 bool ldn_party(int *n, int *max, char *id, size_t size) {
     pthread_mutex_lock(&L.mu);
     bool up = ldn_net_up();
@@ -398,7 +448,25 @@ static void host_route(int from, const VPacket *p, const void *data, uint32_t le
     }
 }
 
+static void ip_bytes(uint32_t ip, uint8_t b[4]) { b[0] = (uint8_t)(ip >> 24); b[1] = (uint8_t)(ip >> 16); b[2] = (uint8_t)(ip >> 8); b[3] = (uint8_t)ip; }
+static void ryu_xmit(const VPacket *p, const void *data, uint32_t len) {
+    bool all = p->dst_ip == ldn_broadcast_ip() || p->dst_ip == 0xFFFFFFFFu;
+    RyuProxy r = {p->src_ip, all ? ldn_broadcast_ip() : p->dst_ip, p->src_port, p->dst_port, 17};
+    mhgu_ryu_send(&r, data, len);
+}
+static void room_xmit(const VPacket *p, const void *data, uint32_t len) {
+    bool all = p->dst_ip == ldn_broadcast_ip() || p->dst_ip == 0xFFFFFFFFu;
+    uint8_t s[4], d[4];
+    ip_bytes(p->src_ip, s);
+    ip_bytes(p->dst_ip, d);
+    mhgu_room_send_proxy(s, p->src_port, d, p->dst_port, 4, all, data, len);
+}
 void ldn_send(const VPacket *p, const void *data, uint32_t len) {
+    if (L.ryu || L.room) {  // (an emulator's network: its server or room carries the packets)
+        if (!ldn_net_up()) return;
+        if (L.ryu) ryu_xmit(p, data, len); else room_xmit(p, data, len);
+        return;
+    }
     if (L.state == ST_AP_CREATED) { host_route(0, p, data, len); return; }
     if (L.state != ST_STATION_CONNECTED) return;
     bool all = p->dst_ip == ldn_broadcast_ip() || p->dst_ip == 0xFFFFFFFFu;
@@ -411,6 +479,7 @@ void ldn_send(const VPacket *p, const void *data, uint32_t len) {
 
 // The port's own messages to every other game in the network (reliable, in order: the TCP link).
 void ldn_send_aux(const void *data, uint32_t len) {
+    if (L.ryu || L.room) return;  // (the emulators' players don't speak the port's messages)
     if (L.state == ST_AP_CREATED) {
         for (int i = 1; i < MAX_NODES; i++)
             if (L.nodes[i].alive) link_send(&L.nodes[i], F_AUX, data, len, NULL, 0);
@@ -484,11 +553,395 @@ static void link_received(int from, const VPacket *p, const void *data, uint32_t
     pthread_mutex_unlock(&lag_mu);
 }
 
+// ---- crossplay: a lobby on a RyuLdn server (Ryujinx/Yuzu family)
+static void ryu_lobby_changed(const uint8_t *info) {
+    pthread_mutex_lock(&L.mu);
+    if (!L.ryu) { pthread_mutex_unlock(&L.mu); return; }
+    if (info) {
+        bool ok = info_sane((uint8_t *)info);
+        if (ok) memcpy(L.info, info, NETINFO_SIZE);
+        LOG("[ldn] RyuLdn lobby update: %d of %d players%s\n", info[NI_NODE_COUNT], info[NI_NODE_MAX], ok ? "" : " (rejected as malformed)");
+    } else if (L.state == ST_AP_CREATED) {
+        L.state = ST_ACCESS_POINT, L.reason = DR_DESTROYED_BY_SYSTEM;
+        LOG("[ldn] the RyuLdn server closed the hub\n");
+    } else if (L.state == ST_STATION_CONNECTED) {
+        L.state = ST_ERROR, L.reason = DR_SIGNAL_LOST;
+        LOG("[ldn] connection to the RyuLdn lobby ended\n");
+    }
+    bool gone = !info;
+    pthread_mutex_unlock(&L.mu);
+    if (mhgu_xb_active()) mhgu_xb_lobby(info);
+    if (gone) vsock_network_down();
+    signal_change();
+}
+
+static void ryu_data_received(const RyuProxy *r, const uint8_t *data, uint32_t len) {
+    if (!L.ryu || r->proto != 17) return;
+    VPacket p = {.src_ip = r->src_ip, .dst_ip = r->dst_ip, .src_port = r->src_port, .dst_port = r->dst_port,
+                 .proto = VPROTO_UDP, .kind = 0};
+    vsock_deliver(&p, data, len);
+}
+
+static void ryu_stop(void) {
+    if (!L.ryu) return;
+    mhgu_xb_end();
+    mhgu_ryu_leave();
+    L.ryu = false;
+    L.ryu_mask = 0;
+    vsock_network_down();
+}
+
+// ---- crossplay: a Yuzu-family room
+static uint32_t ip_u32(const uint8_t b[4]) { return (uint32_t)b[0] << 24 | (uint32_t)b[1] << 16 | (uint32_t)b[2] << 8 | b[3]; }
+static void room_mac(uint8_t mac[6]) { uint8_t ip[4]; mhgu_room_own_ip(ip); mac[0] = 0x02, mac[1] = 0; memcpy(mac + 2, ip, 4); }
+
+static struct { uint8_t info[NETINFO_SIZE]; } room_scan[MAX_FOUND];
+static int room_nscan;
+static bool room_scanning, room_info_dirty;
+static pthread_mutex_t room_scan_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static void room_sync_all(void) {
+    uint8_t own[4], info[NETINFO_SIZE];
+    mhgu_room_own_ip(own);
+    pthread_mutex_lock(&L.mu);
+    memcpy(info, L.info, NETINFO_SIZE);
+    pthread_mutex_unlock(&L.mu);
+    for (int i = 1; i < MAX_NODES; i++)
+        if (L.room_client[i]) mhgu_room_send_ldn(RLDN_SYNC_NETWORK, own, L.room_cip[i], false, info, NETINFO_SIZE);
+}
+
+static void room_stop(void) {
+    if (!L.room) return;
+    if (L.state == ST_AP_CREATED) {
+        uint8_t own[4];
+        mhgu_room_own_ip(own);
+        for (int i = 1; i < MAX_NODES; i++)
+            if (L.room_client[i]) mhgu_room_send_ldn(RLDN_DESTROY_NETWORK, own, L.room_cip[i], false, NULL, 0);
+    } else if (L.state == ST_STATION_CONNECTED) {
+        uint8_t own[4], host[4];
+        mhgu_room_own_ip(own);
+        ip_bytes(rd32(node_at(L.info, 0) + NODE_IP), host);
+        uint8_t node[NODE_SIZE] = {0};
+        wr32(node + NODE_IP, L.own_ip);
+        room_mac(node + NODE_MAC);
+        mhgu_room_send_ldn(RLDN_DISCONNECT, own, host, false, node, NODE_SIZE);
+    }
+    memset(L.room_client, 0, sizeof L.room_client);
+    L.room = false;
+    vsock_network_down();
+}
+
+static bool room_from_host_locked(const uint8_t ip[4]) { return ip_u32(ip) == rd32(node_at(L.info, 0) + NODE_IP); }
+static bool room_in_hub_locked(uint32_t ip) {
+    for (int i = 0; i < MAX_NODES; i++)
+        if (node_at(L.info, i)[NODE_CONNECTED] && rd32(node_at(L.info, i) + NODE_IP) == ip) return true;
+    return false;
+}
+
+static void room_ldn_received(uint8_t type, const uint8_t lip[4], const uint8_t rip[4], bool bc, const uint8_t *data, uint32_t len) {
+    if (mhgu_xb_active() && (type == RLDN_SCAN || type == RLDN_CONNECT || type == RLDN_DISCONNECT)) {
+        mhgu_xb_room_ldn(type, lip, rip, bc, data, len);
+        return;
+    }
+    uint8_t own[4];
+    mhgu_room_own_ip(own);
+    switch (type) {
+    case RLDN_SCAN: {
+        uint8_t info[NETINFO_SIZE];
+        bool host;
+        pthread_mutex_lock(&L.mu);
+        host = L.room && L.state == ST_AP_CREATED;
+        if (host) memcpy(info, L.info, NETINFO_SIZE);
+        pthread_mutex_unlock(&L.mu);
+        if (host) mhgu_room_send_ldn(RLDN_SCAN_RESP, own, lip, false, info, NETINFO_SIZE);
+        break;
+    }
+    case RLDN_SCAN_RESP:
+        if (len >= NETINFO_SIZE && info_sane((uint8_t *)data)) {
+            pthread_mutex_lock(&room_scan_mu);
+            if (room_scanning) {
+                int i = 0;
+                while (i < room_nscan && memcmp(room_scan[i].info + NI_BSSID, (const uint8_t *)data + NI_BSSID, 6)) i++;
+                if (i < MAX_FOUND) { memcpy(room_scan[i].info, data, NETINFO_SIZE); if (i == room_nscan) room_nscan++; }
+            }
+            pthread_mutex_unlock(&room_scan_mu);
+        }
+        break;
+    case RLDN_CONNECT: {
+        if (len < NODE_SIZE) break;
+        bool changed = false, refused = false, again = false;
+        pthread_mutex_lock(&L.mu);
+        if (L.room && L.state == ST_AP_CREATED) {
+            uint16_t lcv = rd16((const uint8_t *)data + NODE_LCV);
+            for (int k = 1; k < MAX_NODES; k++) again |= L.room_client[k] && !memcmp(L.room_cip[k], lip, 4);
+            refused = !again && (L.info[NI_NODE_COUNT] >= L.info[NI_NODE_MAX] || L.info[NI_ACCEPT_POLICY] == 1 ||
+                                 (lcv && lcv != L.lcv));
+        }
+        if (L.room && L.state == ST_AP_CREATED && !again && !refused) {
+            int i = 1;
+            while (i < MAX_NODES && node_at(L.info, i)[NODE_CONNECTED]) i++;
+            refused = i == MAX_NODES;
+            if (i < MAX_NODES) {
+                uint8_t *nd = node_at(L.info, i);
+                memcpy(nd, data, NODE_SIZE);
+                nd[NODE_ID] = (uint8_t)i, nd[NODE_CONNECTED] = 1;
+                L.room_client[i] = true;
+                memcpy(L.room_cip[i], lip, 4);
+                L.info[NI_NODE_COUNT]++;
+                changed = true;
+                LOG("[ldn] room member %u.%u.%u.%u joined the hub as node %d\n", lip[0], lip[1], lip[2], lip[3], i);
+            }
+        }
+        pthread_mutex_unlock(&L.mu);
+        if (refused) mhgu_room_send_ldn(RLDN_DESTROY_NETWORK, own, lip, false, NULL, 0);
+        if (changed || again) room_sync_all();
+        if (changed) signal_change();
+        break;
+    }
+    case RLDN_DISCONNECT: {
+        if (len < NODE_SIZE) break;
+        bool changed = false;
+        pthread_mutex_lock(&L.mu);
+        if (L.room && L.state == ST_AP_CREATED)
+            for (int i = 1; i < MAX_NODES; i++)
+                if (L.room_client[i] && !memcmp(L.room_cip[i], lip, 4)) {
+                    memset(node_at(L.info, i), 0, NODE_SIZE);
+                    node_at(L.info, i)[NODE_ID] = (uint8_t)i;
+                    L.room_client[i] = false;
+                    if (L.info[NI_NODE_COUNT] > 1) L.info[NI_NODE_COUNT]--;
+                    changed = true;
+                }
+        pthread_mutex_unlock(&L.mu);
+        if (changed) { room_sync_all(); signal_change(); }
+        break;
+    }
+    case RLDN_SYNC_NETWORK:
+        if (len >= NETINFO_SIZE && info_sane((uint8_t *)data)) {
+            pthread_mutex_lock(&L.mu);
+            if (L.room && (L.state == ST_STATION || L.state == ST_STATION_CONNECTED) && room_from_host_locked(lip)) {
+                memcpy(L.info, data, NETINFO_SIZE);
+                L.state = ST_STATION_CONNECTED, L.reason = DR_NONE;
+            }
+            pthread_mutex_unlock(&L.mu);
+            signal_change();
+        }
+        break;
+    case RLDN_DESTROY_NETWORK: {
+        bool gone = false;
+        pthread_mutex_lock(&L.mu);
+        if (L.room && L.state == ST_STATION_CONNECTED && room_from_host_locked(lip)) {
+            L.state = ST_STATION, L.reason = DR_DESTROYED_BY_SYSTEM;
+            L.own_ip = L.subnet = 0, gone = true;
+            L.room = false;
+        }
+        pthread_mutex_unlock(&L.mu);
+        if (gone) { LOG("[ldn] the room's hub was closed by its host\n"); vsock_network_down(); signal_change(); }
+        break;
+    }
+    }
+}
+
+static void room_proxy_received(const uint8_t sip[4], uint16_t sport, const uint8_t dip[4], uint16_t dport, uint8_t proto, bool bc,
+                                const uint8_t *data, uint32_t len) {
+    if (mhgu_xb_active()) { mhgu_xb_room_proxy(sip, sport, dip, dport, proto, bc, data, len); return; }
+    if (!L.room || proto != 4) return;
+    pthread_mutex_lock(&L.mu);
+    bool ours = L.room && ldn_net_up() && room_in_hub_locked(ip_u32(sip));
+    pthread_mutex_unlock(&L.mu);
+    if (!ours) return;
+    VPacket p = {.src_ip = ip_u32(sip), .dst_ip = ip_u32(dip), .src_port = sport, .dst_port = dport, .proto = VPROTO_UDP, .kind = 0};
+    vsock_deliver(&p, data, len);
+}
+
+static void room_members_changed(const uint8_t (*ips)[4], int n) {
+    if (mhgu_xb_active()) { mhgu_xb_room_members(ips, n); return; }
+    bool changed = false;
+    pthread_mutex_lock(&L.mu);
+    if (L.room && L.state == ST_AP_CREATED) {
+        for (int i = 1; i < MAX_NODES; i++) {
+            if (!L.room_client[i]) continue;
+            bool present = false;
+            for (int j = 0; j < n; j++) present |= !memcmp(L.room_cip[i], ips[j], 4);
+            if (present) continue;
+            memset(node_at(L.info, i), 0, NODE_SIZE);
+            node_at(L.info, i)[NODE_ID] = (uint8_t)i;
+            L.room_client[i] = false;
+            if (L.info[NI_NODE_COUNT] > 1) L.info[NI_NODE_COUNT]--;
+            changed = true;
+        }
+    }
+    pthread_mutex_unlock(&L.mu);
+    if (changed) { room_sync_all(); signal_change(); }
+}
+static void room_lost(void) {
+    LOG("[room] the room connection ended\n");
+    mhgu_xb_end();
+    bool gone = false;
+    pthread_mutex_lock(&L.mu);
+    if (L.room) {
+        if (L.state == ST_AP_CREATED) L.state = ST_ACCESS_POINT, L.reason = DR_DESTROYED_BY_SYSTEM, gone = true;
+        else if (L.state == ST_STATION_CONNECTED) L.state = ST_ERROR, L.reason = DR_SIGNAL_LOST, gone = true;
+        if (gone) { memset(L.room_client, 0, sizeof L.room_client); L.room = false; }
+    }
+    pthread_mutex_unlock(&L.mu);
+    if (gone) { vsock_network_down(); signal_change(); }
+}
+
+static void mixed_bridge_start(void) {
+    pthread_mutex_lock(&L.mu);
+    if (L.ryu && L.state == ST_AP_CREATED && mhgu_room_connected() && !mhgu_xb_active())
+        mhgu_xb_begin(L.info, L.own_ip, L.ryu_mask);
+    pthread_mutex_unlock(&L.mu);
+}
+static bool ryu_configured(void) {
+    return (xp_config.crossplay == XP_RYU || xp_config.crossplay == XP_MIXED) &&
+           (xp_config.ryu_servers[0] || xp_config.ryu_host);
+}
+static bool room_configured(void) {
+    return (xp_config.crossplay == XP_ROOM || xp_config.crossplay == XP_MIXED) &&
+           (xp_config.room_server[0] || xp_config.room_host);
+}
+static char roomsrv_self[32];
+static pthread_mutex_t roomsrv_addr_mu = PTHREAD_MUTEX_INITIALIZER;
+static const char *room_server(void) {
+    static __thread char addr[sizeof xp_config.room_server];
+    pthread_mutex_lock(&roomsrv_addr_mu);
+    snprintf(addr, sizeof addr, "%s", roomsrv_self[0] ? roomsrv_self : xp_config.room_server);
+    pthread_mutex_unlock(&roomsrv_addr_mu);
+    return addr;
+}
+static bool room_enabled(void) { return room_configured() && (room_server()[0] != 0); }
+
+static pthread_t room_keep_th;
+static pthread_mutex_t room_keep_mu = PTHREAD_MUTEX_INITIALIZER;
+static bool room_keep_started;
+static int room_wanted;
+static Config room_keep_config;
+static void *room_keeper(void *arg) {
+    (void)arg;
+    xp_config = room_keep_config;  // keep the connection on the settings applied when it started
+    uint64_t next = 0;
+    while (__atomic_load_n(&room_wanted, __ATOMIC_ACQUIRE)) {
+        uint64_t now = plat_now_ns();
+        if (now >= next && room_enabled() && !mhgu_room_connected()) {
+            uint8_t ip[4];
+            char err[96];
+            if (!mhgu_room_join(room_server(), xp_config.room_name, xp_config.room_password, ip, err, sizeof err)) {
+                LOG("[ldn] room join failed: %s\n", err);
+                next = now + 15000000000ull;
+            }
+        }
+        mixed_bridge_start();
+        plat_sleep_until_ns(plat_now_ns() + 500000000ull);
+    }
+    return NULL;
+}
+static void room_start(void) {
+    if (!room_enabled()) return;
+    pthread_mutex_lock(&room_keep_mu);
+    if (room_keep_started) { pthread_mutex_unlock(&room_keep_mu); return; }
+    static bool hooked;
+    if (!hooked) {
+        hooked = true;
+        mhgu_room_set_hooks(room_ldn_received, room_proxy_received, room_lost, room_members_changed);
+    }
+    room_keep_config = xp_config;
+    __atomic_store_n(&room_wanted, 1, __ATOMIC_RELEASE);
+    if (!pthread_create(&room_keep_th, NULL, room_keeper, NULL)) room_keep_started = true;
+    else __atomic_store_n(&room_wanted, 0, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&room_keep_mu);
+}
+static void room_shutdown(void) {
+    pthread_mutex_lock(&room_keep_mu);
+    __atomic_store_n(&room_wanted, 0, __ATOMIC_RELEASE);
+    if (room_keep_started) {
+        pthread_join(room_keep_th, NULL);
+        room_keep_started = false;
+    }
+    room_stop();
+    mhgu_room_leave();
+    pthread_mutex_unlock(&room_keep_mu);
+}
+
+static void ryusrv_wanted(void) {
+    if (!xp_config.ryu_host || mhgu_ryusrv_running()) return;
+    int port = xp_config.ryu_port > 0 ? xp_config.ryu_port : 30456;
+    char err[96] = "";
+    if (!mhgu_ryusrv_start("0.0.0.0", (uint16_t)port, err, sizeof err)) {
+        LOG("[ldn] can't run the RyuLdn server on port %d: %s\n", port, err);
+        return;
+    }
+    char addr[32];
+    snprintf(addr, sizeof addr, "127.0.0.1:%d", port);
+    mhgu_ryu_set_self(addr);
+    LOG("[ldn] Ryujinx players can use this PC as their LDN server (port %d)\n", port);
+}
+static void ryusrv_unwanted(void) {
+    if (!mhgu_ryusrv_running()) return;
+    mhgu_ryu_set_self(NULL);
+    mhgu_ryusrv_stop();
+}
+static void roomsrv_wanted(void) {
+    if (!xp_config.room_host || mhgu_roomsrv_running()) return;
+    int port = xp_config.room_port > 0 ? xp_config.room_port : 24872;
+    char err[96] = "";
+    if (!mhgu_roomsrv_start(port, xp_config.room_name, xp_config.room_password, xp_config.room_name, err, sizeof err)) {
+        LOG("[ldn] can't run the room server on port %d: %s\n", port, err);
+        return;
+    }
+    pthread_mutex_lock(&roomsrv_addr_mu);
+    snprintf(roomsrv_self, sizeof roomsrv_self, "127.0.0.1:%d", port);
+    pthread_mutex_unlock(&roomsrv_addr_mu);
+    LOG("[ldn] Yuzu-family players can join this PC's room (port %d)\n", port);
+}
+static void roomsrv_unwanted(void) {
+    if (!mhgu_roomsrv_running()) return;
+    pthread_mutex_lock(&roomsrv_addr_mu);
+    roomsrv_self[0] = 0;
+    pthread_mutex_unlock(&roomsrv_addr_mu);
+    mhgu_roomsrv_stop();
+}
+
+// Saved settings apply before the next search or hub creation. Existing connections
+// retain their transport until they leave; each reconnect reads the saved snapshot.
+static void crossplay_prepare(void) {
+    static Config applied;
+    static bool prepared;
+    static pthread_mutex_t prepare_mu = PTHREAD_MUTEX_INITIALIZER;
+    crossplay_snapshot();
+    pthread_mutex_lock(&prepare_mu);
+    pthread_mutex_lock(&L.mu);
+    bool active = L.state == ST_AP_CREATED || L.state == ST_STATION_CONNECTED;
+    pthread_mutex_unlock(&L.mu);
+    bool room_changed = prepared && (applied.crossplay != xp_config.crossplay ||
+        applied.room_host != xp_config.room_host || applied.room_port != xp_config.room_port ||
+        strcmp(applied.room_server, xp_config.room_server) || strcmp(applied.room_name, xp_config.room_name) ||
+        strcmp(applied.room_password, xp_config.room_password));
+    bool ryu_changed = prepared && (applied.crossplay != xp_config.crossplay ||
+        applied.ryu_host != xp_config.ryu_host || applied.ryu_port != xp_config.ryu_port ||
+        strcmp(applied.ryu_servers, xp_config.ryu_servers) || strcmp(applied.ryu_password, xp_config.ryu_password));
+    if (!active) {
+        if (room_changed) { room_shutdown(); roomsrv_unwanted(); }
+        if (ryu_changed) ryusrv_unwanted();
+        applied = xp_config;
+        prepared = true;
+    } else if (prepared) {
+        xp_config = applied;
+    }
+    mhgu_ryu_set_config(xp_config.ryu_servers, "", xp_config.ryu_password);
+    if (ryu_configured()) ryusrv_wanted();
+    if (room_configured()) {
+        roomsrv_wanted();
+        room_start();
+    }
+    pthread_mutex_unlock(&prepare_mu);
+}
+
 // ---- host
 static void push_info_locked(int except) {  // to every station (and the hub server's list): the network changed
     for (int i = 1; i < MAX_NODES; i++)
         if (i != except && L.nodes[i].alive) link_send(&L.nodes[i], F_INFO, L.info, NETINFO_SIZE, NULL, 0);
-    L.lobby_seq++;
+    L.lobby_dirty = true;
 }
 
 // A station's connection: accepted here, or opened to the hub server for a player it announced (relay_pair != 0).
@@ -504,7 +957,7 @@ static void *station_thread(void *arg) {
     Hello h;
     if (n < (int)sizeof h || type != F_HELLO) { hclose(acc.s); return NULL; }
     memcpy(&h, buf, sizeof h);
-    if (memcmp(h.magic, PROTO_MAGIC, 4) || !link_version_ok(h.version)) {
+    if (memcmp(h.magic, PROTO_MAGIC, 4) || h.version != PROTO_VERSION) {
         uint32_t r = R_CONNECT_REJECTED;
         frame_send(acc.s, F_REFUSE, &r, 4, NULL, 0);
         hclose(acc.s);
@@ -652,10 +1105,10 @@ static void *host_thread(void *arg) {
                 }
                 continue;
             }
-            if (n >= 6 && !memcmp(probe, PROTO_MAGIC, 4) && link_version_ok(rd16(probe + 4))) {
+            if (n >= 6 && !memcmp(probe, PROTO_MAGIC, 4) && rd16(probe + 4) == PROTO_VERSION) {
                 uint8_t reply[8 + NETINFO_SIZE];
                 memcpy(reply, PROTO_MAGIC, 4);
-                wr16(reply + 4, rd16(probe + 4));  // (the asker's version)
+                wr16(reply + 4, PROTO_VERSION);
                 wr16(reply + 6, (uint16_t)g_config.ldn_port);
                 pthread_mutex_lock(&L.mu);
                 memcpy(reply + 8, L.info, NETINFO_SIZE);
@@ -668,63 +1121,31 @@ static void *host_thread(void *arg) {
 }
 
 // ---- the hub server (internet hubs)
-// ini Server: empty = the default server (LDN_DEFAULT_SERVER, config.h), "Off" = none. It can also be a list of up to
-// MAX_HUBS servers, separated by commas or spaces: the hubs you create are listed on all of them, a search asks all of
-// them (and the LAN) and a hub is joined through the server that listed it. That is how two communities' servers are
-// "stitched" together for you. A name that starts with '-' is switched off but kept in the list. A web address is
-// accepted too: "http://name/" is the server "name". Server and Key are live settings (config_live_ldn): a change
-// applies from the next search, join or connection to a server on.
+// ini Server: empty = the default server (LDN_DEFAULT_SERVER, config.h), "Off" = none. Its name into out
+// (LOBBY_NAME bytes); false: no internet hubs. Server and Key are live settings (config_live_ldn): a change applies
+// from the next search, join or connection to the server on.
 #define LOBBY_NAME sizeof g_config.ldn_server
-#define MAX_HUBS 8
-// One name as typed -> the server's name (lower case: names are compared as they are); false: nothing in it
-static bool lobby_clean(const char *s, size_t n, char *out) {
-    char t[LOBBY_NAME];
-    if (n >= sizeof t) n = sizeof t - 1;
-    memcpy(t, s, n);
-    t[n] = 0;
-    char *p = t;
-    if (!strncmp(p, "http://", 7) || !strncmp(p, "HTTP://", 7)) p += 7;
-    else if (!strncmp(p, "https://", 8) || !strncmp(p, "HTTPS://", 8)) p += 8;
-    p[strcspn(p, "/?")] = 0;  // (a web address's path is not part of the server)
-    size_t k = 0;
-    for (; p[k]; k++) out[k] = (p[k] >= 'A' && p[k] <= 'Z') ? (char)(p[k] + 32) : p[k];
-    out[k] = 0;
-    return k > 0;
+static bool lobby_server_of(const char *s, char *out) {
+    if ((s[0] | 0x20) == 'o' && (s[1] | 0x20) == 'f' && (s[2] | 0x20) == 'f' && !s[3]) s = "";
+    else if (!*s) s = LDN_DEFAULT_SERVER;
+    snprintf(out, LOBBY_NAME, "%s", s);
+    return *out;
 }
-// The servers named in an ini Server text, into out; how many (0: no internet hubs)
-static int lobby_servers_of(const char *s, char out[MAX_HUBS][LOBBY_NAME]) {
-    if ((s[0] | 0x20) == 'o' && (s[1] | 0x20) == 'f' && (s[2] | 0x20) == 'f' && !s[3]) return 0;
-    if (!*s) s = LDN_DEFAULT_SERVER;
-    int n = 0;
-    while (*s && n < MAX_HUBS) {
-        while (*s == ' ' || *s == ',' || *s == '\t') s++;
-        const char *e = s;
-        while (*e && *e != ' ' && *e != ',' && *e != '\t') e++;
-        char name[LOBBY_NAME];
-        if (e > s && *s != '-' && lobby_clean(s, (size_t)(e - s), name)) {
-            bool dup = false;
-            for (int i = 0; i < n; i++) dup |= !strcmp(out[i], name);
-            if (!dup) memcpy(out[n++], name, sizeof name);
-        }
-        s = e;
-    }
-    return n;
-}
-static int lobby_servers(char out[MAX_HUBS][LOBBY_NAME]) {
+static bool lobby_server(char *out) {
     char s[LOBBY_NAME];
     config_live_ldn(s, sizeof s, NULL, 0);
-    return lobby_servers_of(s, out);
+    return lobby_server_of(s, out);
 }
 
 // A request's header. The room is a hash of the matchmaking key (key NULL: ini Key; spaces around it ignored): hubs
 // are listed only for players whose key matches, all of them without one. The server never sees the key itself.
-static bool lobby_header(uint8_t *h, const char *key, uint16_t ver) {
+static bool lobby_header(uint8_t *h, const char *key) {
     static const char salt[] = "MHGURecomp matchmaking key:";
     char live[sizeof g_config.ldn_key];
     if (!key) config_live_ldn(NULL, 0, live, sizeof live), key = live;
     memcpy(h, "MHGS", 4);
     wr16(h + 4, LOBBY_PROTO);
-    wr16(h + 6, ver);
+    wr16(h + 6, PROTO_VERSION);
     memset(h + 8, 0, 16);
     const char *k = key;
     while (*k == ' ') k++;
@@ -813,16 +1234,7 @@ static void hub_report(int what, const char *srv, int state, int ms, int hubs) {
 // Host: one thread per created network keeps it listed and opens a connection for each player the server announces.
 // Threads of a network that is gone (lobby_gen moved on) end by themselves; nobody waits for them.
 static volatile uint32_t lobby_gen;
-static volatile int lobby_up[MAX_HUBS];  // how many link versions of a server's slot are listed now (a failure is told only when none is)
-typedef struct { uint32_t gen; struct sockaddr_in addr; uint64_t ticket; uint16_t ver; bool phone; } LobbyTicket;
-typedef struct { uint32_t gen; int slot; uint16_t ver; bool phone; } LobbyArg;  // (phone: listed in the phones' public room too)
-static bool live_key_empty(void) {
-    char k[sizeof g_config.ldn_key];
-    config_live_ldn(NULL, 0, k, sizeof k);
-    for (const char *c = k; *c; c++)
-        if (*c != ' ') return false;
-    return true;
-}  // (a thread per server of the list: the slot is its place in it)
+typedef struct { uint32_t gen; struct sockaddr_in addr; uint64_t ticket; } LobbyTicket;
 
 static bool lobby_wait(uint32_t gen, int ms) {  // false: the network is gone
     for (uint64_t end = plat_now_ns() + (uint64_t)ms * 1000000ull; plat_now_ns() < end && lobby_gen == gen;)
@@ -837,7 +1249,7 @@ static void *lobby_attach_thread(void *arg) {
     hsock s = connect_to(&t.addr, 3000);
     if (s == BADSOCK) return NULL;
     uint8_t req[LOBBY_HEADER + 8], type;
-    lobby_header(req, t.phone ? PHONE_PUBLIC_KEY : NULL, t.ver);
+    lobby_header(req, NULL);
     memcpy(req + LOBBY_HEADER, &t.ticket, 8);
     hset_timeout(s, 5000);
     int n;
@@ -853,35 +1265,27 @@ static void *lobby_attach_thread(void *arg) {
 }
 
 static void *lobby_thread(void *arg) {
-    LobbyArg la = *(LobbyArg *)arg;
-    free(arg);
-    uint32_t gen = la.gen;
+    uint32_t gen = (uint32_t)(uintptr_t)arg;
     static __thread uint8_t buf[MAX_FRAME];
     uint8_t req[LOBBY_HEADER + NETINFO_SIZE], type;
     while (lobby_gen == gen) {
         char srv[LOBBY_NAME];
         struct sockaddr_in addr;
         hsock s = BADSOCK;
-        char list[MAX_HUBS][LOBBY_NAME];
-        if (lobby_servers(list) <= la.slot) break;  // (taken out of the list: this thread is done)
-        if (la.phone && !live_key_empty()) {  // (the phones' public room is for a hub without a key of its own)
-            if (!lobby_wait(gen, 5000)) break;
-            continue;
-        }
-        snprintf(srv, sizeof srv, "%s", list[la.slot]);
+        if (!lobby_server(srv)) break;
         bool named = resolve_host(srv, LOBBY_PORT, &addr);
         if (named) s = connect_to(&addr, 3000);
         if (s == BADSOCK) {
-            LOG("[ldn] hub server %s %s: this hub is not listed online (v%u, trying again in 30 s)\n", srv,
-                named ? "unreachable" : "not found", (unsigned)la.ver);
-            if (lobby_gen == gen && !lobby_up[la.slot]) hub_report(NOTE_HOST, srv, named ? HUB_UNREACHABLE : HUB_NOT_FOUND, -1, -1);
+            LOG("[ldn] hub server %s %s: this hub is not listed online (trying again in 30 s)\n", srv,
+                named ? "unreachable" : "not found");
+            if (lobby_gen == gen) hub_report(NOTE_HOST, srv, named ? HUB_UNREACHABLE : HUB_NOT_FOUND, -1, -1);
             if (!lobby_wait(gen, 30000)) break;
             continue;
         }
-        bool keyed = lobby_header(req, la.phone ? PHONE_PUBLIC_KEY : NULL, la.ver);
+        bool keyed = lobby_header(req, NULL);
         pthread_mutex_lock(&L.mu);
         memcpy(req + LOBBY_HEADER, L.info, NETINFO_SIZE);
-        uint32_t seen = L.lobby_seq;
+        L.lobby_dirty = false;
         pthread_mutex_unlock(&L.mu);
         hset_timeout(s, 5000);
         int n = -1;
@@ -889,25 +1293,24 @@ static void *lobby_thread(void *arg) {
         if (frame_send(s, S_HOST, req, sizeof req, NULL, 0)) n = frame_recv(s, &type, buf);
         if (n < 8 || type != S_HOSTED) {
             bool error = n >= 4 && type == S_ERROR;
-            LOG("[ldn] hub server %s: can't list this hub as v%u%s (%s); trying again in 30 s\n", srv, (unsigned)la.ver, la.phone ? " in the phones' room" : "",
+            LOG("[ldn] hub server %s: can't list this hub (%s); trying again in 30 s\n", srv,
                 error ? lobby_error(rd32(buf)) : "no answer");
             hclose(s);
-            if (lobby_gen == gen && !lobby_up[la.slot]) hub_report(NOTE_HOST, srv, error ? lobby_state(rd32(buf)) : HUB_NO_ANSWER, -1, -1);
+            if (lobby_gen == gen) hub_report(NOTE_HOST, srv, error ? lobby_state(rd32(buf)) : HUB_NO_ANSWER, -1, -1);
             if (!lobby_wait(gen, 30000)) break;
             continue;
         }
-        LOG("[ldn] hub listed on the hub server %s (link v%u%s): %s\n", srv, (unsigned)la.ver, la.phone ? ", phones' room" : "",
+        LOG("[ldn] hub listed on the hub server %s: %s\n", srv,
             keyed ? "players with the same matchmaking key see it" : "public, every player sees it");
-        if (lobby_gen == gen) __sync_fetch_and_add(&lobby_up[la.slot], 1);
         hub_report(NOTE_HOST, srv, HUB_ONLINE, (int)((plat_now_ns() - asked) / 1000000), -1);
         uint64_t now = plat_now_ns(), last_rx = now, next_ping = now + LOBBY_PING_NS;
         while (lobby_gen == gen) {
             now = plat_now_ns();
-            if (L.lobby_seq != seen) {
+            if (L.lobby_dirty) {
                 uint8_t info[NETINFO_SIZE];
                 pthread_mutex_lock(&L.mu);
                 memcpy(info, L.info, NETINFO_SIZE);
-                seen = L.lobby_seq;
+                L.lobby_dirty = false;
                 pthread_mutex_unlock(&L.mu);
                 if (!frame_send(s, S_UPDATE, info, NETINFO_SIZE, NULL, 0)) break;
             }
@@ -926,16 +1329,15 @@ static void *lobby_thread(void *arg) {
             if (type == S_INCOMING && n >= 8) {
                 LobbyTicket *t = malloc(sizeof *t);
                 pthread_t th;
-                t->gen = gen, t->addr = addr, t->ticket = rd64(buf), t->ver = la.ver, t->phone = la.phone;
+                t->gen = gen, t->addr = addr, t->ticket = rd64(buf);
                 if (pthread_create(&th, NULL, lobby_attach_thread, t)) free(t);
                 else pthread_detach(th);
             }
         }
         hclose(s);
         if (lobby_gen != gen) break;
-        __sync_fetch_and_sub(&lobby_up[la.slot], 1);
-        LOG("[ldn] lost the hub server (v%u): this hub is not listed online (trying again in 10 s)\n", (unsigned)la.ver);
-        if (!lobby_up[la.slot]) hub_report(NOTE_HOST, srv, HUB_LOST, -1, -1);
+        LOG("[ldn] lost the hub server: this hub is not listed online (trying again in 10 s)\n");
+        hub_report(NOTE_HOST, srv, HUB_LOST, -1, -1);
         if (!lobby_wait(gen, 10000)) break;
     }
     return NULL;
@@ -943,48 +1345,33 @@ static void *lobby_thread(void *arg) {
 
 static void lobby_host_start(void) {
     uint32_t gen = ++lobby_gen;
-    char list[MAX_HUBS][LOBBY_NAME];
+    pthread_t th;
+    char srv[LOBBY_NAME];
     pthread_mutex_lock(&hub_mu);
     note_last[NOTE_HOST] = HUB_ONLINE;  // (each hub tells of its own first failure)
     pthread_mutex_unlock(&hub_mu);
-    int n = lobby_servers(list);
-    for (int i = 0; i < MAX_HUBS; i++) lobby_up[i] = 0;
-    for (int i = 0; i < n; i++) {  // (listed on every server of the list, under each link version)
-        // (without a key of our own: the public room under each version - gu-native 0.1.6 asks v2, the PC build v3 - and
-        // the phones' public room under v3, where the MHGURecomp Android build looks: PCs and phones of both builds see it)
-        for (int v = 0; v < N_LINK_VERSIONS + 1; v++) {
-            pthread_t th;
-            LobbyArg *a = malloc(sizeof *a);
-            if (!a) continue;
-            a->gen = gen, a->slot = i, a->ver = LINK_VERSIONS[v < N_LINK_VERSIONS ? v : 1], a->phone = v == N_LINK_VERSIONS;
-            if (pthread_create(&th, NULL, lobby_thread, a)) free(a);
-            else pthread_detach(th);
-        }
-    }
+    if (lobby_server(srv) && !pthread_create(&th, NULL, lobby_thread, (void *)(uintptr_t)gen)) pthread_detach(th);
 }
 static void lobby_host_stop(void) { lobby_gen++; }
 
 // Station: the hubs the server lists for a key (NULL: ini Key). A HUB_* state; ms: the request's round trip.
-#define LOBBY_LIST_MAX 512
+#define LOBBY_LIST_MAX 24
 typedef struct {
     uint8_t infos[LOBBY_LIST_MAX][NETINFO_SIZE];
     uint64_t ids[LOBBY_LIST_MAX];
-    uint16_t vers[LOBBY_LIST_MAX];  // the link version each hub was listed under
-    uint8_t phone[LOBBY_LIST_MAX];  // 1: listed in the phones' public room (key PHONE_PUBLIC_KEY)
     int n, state, ms;
     struct sockaddr_in addr;
     char server[LOBBY_NAME];
 } LobbyList;
 
-// One request: the hubs of one room and link version, appended to r (r->n is not reset: lobby_list_all does that)
-static int lobby_list(const char *srv, const char *key, uint16_t ver, int connect_ms, LobbyList *r) {
+static int lobby_list(const char *srv, const char *key, int connect_ms, LobbyList *r) {
     static __thread uint8_t buf[MAX_FRAME];
-    r->ms = -1;
+    r->n = 0, r->ms = -1;
     if (!resolve_host(srv, LOBBY_PORT, &r->addr)) return HUB_NOT_FOUND;
     hsock s = connect_to(&r->addr, connect_ms);
     if (s == BADSOCK) return HUB_UNREACHABLE;
     uint8_t req[LOBBY_HEADER], type;
-    lobby_header(req, key, ver);
+    lobby_header(req, key);
     hset_timeout(s, 2000);
     uint64_t asked = plat_now_ns();
     int n = frame_send(s, S_LIST, req, sizeof req, NULL, 0) ? frame_recv(s, &type, buf) : -1;
@@ -995,62 +1382,16 @@ static int lobby_list(const char *srv, const char *key, uint16_t ver, int connec
     uint32_t count = rd32(buf);
     for (uint32_t i = 0; i < count && r->n < LOBBY_LIST_MAX && 4 + (i + 1) * (8 + NETINFO_SIZE) <= (uint32_t)n; i++) {
         const uint8_t *e = buf + 4 + i * (8 + NETINFO_SIZE);
-        bool dup = false;  // (a hub listed under several link versions / rooms arrives once per listing: keep the first)
-        for (int j = 0; j < r->n && !dup; j++) dup = !memcmp(r->infos[j] + NI_BSSID, e + 8 + NI_BSSID, 6);
-        if (dup) continue;
         r->ids[r->n] = rd64(e);
-        r->vers[r->n] = ver;
-        r->phone[r->n] = key && !strcmp(key, PHONE_PUBLIC_KEY);
         memcpy(r->infos[r->n++], e + 8, NETINFO_SIZE);
     }
     return HUB_ONLINE;
 }
 
-// Every link version we speak, and (no key of our own) the phones' public room too (v3 only). Online if any of them answered; the
-// state of a failure is the most telling one (a server that does not serve a version says so, but that is not "down").
-#define FULL_ROUNDS 6  // the most times FullHubList asks one server for its hubs
-static int lobby_list_all(const char *srv, const char *key, int connect_ms, LobbyList *r) {
-    char live[sizeof g_config.ldn_key];
-    if (!key) config_live_ldn(NULL, 0, live, sizeof live), key = live;
-    const char *keys[2] = {key, PHONE_PUBLIC_KEY};
-    bool keyless = true;
-    for (const char *k = key; *k; k++) keyless &= *k == ' ';
-    int nk = keyless ? 2 : 1, best = HUB_UNKNOWN, ms = -1;
-    bool any = false;
-    r->n = 0;
-    // ini FullHubList: a server may answer each request with only a sample of its hubs, so every room / version is asked
-    // again (lobby_list keeps each hub once) until a whole round brings nothing new, at most FULL_ROUNDS times. A server
-    // that answers with all its hubs ends after the second round, so the cost is one extra round of quick requests.
-    int rounds = config_live_hub_full_list() ? FULL_ROUNDS : 1;
-    for (int round = 0; round < rounds; round++) {
-        int before = r->n;
-        for (int ki = 0; ki < nk; ki++) {
-            for (int v = 0; v < N_LINK_VERSIONS; v++) {
-                if (ki == 1 && LINK_VERSIONS[v] < 3) continue;  // (nobody lists in the phones' room under v2)
-                int st = lobby_list(srv, keys[ki], LINK_VERSIONS[v], connect_ms, r);
-                if (st == HUB_NOT_FOUND || st == HUB_UNREACHABLE) {
-                    if (!any) best = st, ms = -1;
-                    r->ms = any ? ms : -1;
-                    return any ? HUB_ONLINE : st;  // (no point asking again)
-                }
-                if (st == HUB_ONLINE) {
-                    if (!any || r->ms < ms) ms = r->ms;
-                    any = true;
-                } else if (!any && (best == HUB_UNKNOWN || best == HUB_NO_ANSWER)) {
-                    best = st;  // (a refusal says more than silence)
-                }
-            }
-        }
-        if (!any || (round > 0 && r->n == before) || r->n >= LOBBY_LIST_MAX) break;  // (nothing new: that is all of them)
-    }
-    r->ms = ms;
-    return any ? HUB_ONLINE : best == HUB_UNKNOWN ? HUB_NO_ANSWER : best;
-}
-
 static void *lobby_list_thread(void *arg) {  // (while the LAN is searched; r->server set)
     LobbyList *r = arg;
     static int last = HUB_ONLINE;
-    r->state = lobby_list_all(r->server, NULL, 1500, r);
+    r->state = lobby_list(r->server, NULL, 1500, r);
     if (r->state != last && r->state != HUB_ONLINE)
         LOG("[ldn] hub server %s: %s: only LAN / Join hubs are searched\n", r->server,
             r->state == HUB_NOT_FOUND ? "not found" : r->state == HUB_UNREACHABLE ? "unreachable" : "no list");
@@ -1064,27 +1405,13 @@ typedef struct { uint32_t check; char server[LOBBY_NAME], key[sizeof g_config.ld
 
 static void *hub_check_thread(void *arg) {
     HubCheck *c = arg;
-    char list[MAX_HUBS][LOBBY_NAME];
-    int ns = lobby_servers_of(c->server, list);
     LobbyList *r = malloc(sizeof *r);
-    // every server of the list is asked: online if any answers (the quickest one's time, all their hubs counted)
-    int state = HUB_UNKNOWN, bad = HUB_UNKNOWN, ms = -1, hubs = 0, up = 0;
-    const char *shown = ns ? list[0] : c->server;
-    for (int i = 0; i < ns && r; i++) {
-        int st = lobby_list_all(list[i], c->key, 3000, r);
-        LOG("[ldn] hub server check: %s: state %d, %d ms, %d hub(s) for this key\n", list[i], st, r->ms,
-            st == HUB_ONLINE ? r->n : -1);
-        if (st == HUB_ONLINE) {
-            if (!up || r->ms < ms) ms = r->ms, shown = list[i];
-            up++, hubs += r->n;
-        } else if (bad == HUB_UNKNOWN) {
-            bad = st;
-        }
-    }
-    state = up ? HUB_ONLINE : bad;
+    int state = r ? lobby_list(c->server, c->key, 3000, r) : HUB_UNKNOWN;
+    int ms = r ? r->ms : -1, hubs = state == HUB_ONLINE ? r->n : -1;
     pthread_mutex_lock(&hub_mu);
-    if (hub_now.check == c->check) hub_set_locked(shown, c->key, state, up ? ms : -1, up ? hubs : -1);
+    if (hub_now.check == c->check) hub_set_locked(c->server, c->key, state, ms, hubs);
     pthread_mutex_unlock(&hub_mu);
+    LOG("[ldn] hub server check: %s: state %d, %d ms, %d hub(s) for this key\n", c->server, state, ms, hubs);
     free(r);
     free(c);
     return NULL;
@@ -1095,13 +1422,11 @@ void ldn_hub_check(const char *server, const char *key) {
     pthread_t th;
     if (!c) return;
     hnet_init();
-    char list[MAX_HUBS][LOBBY_NAME];
-    bool on = lobby_servers_of(server, list) > 0;
-    snprintf(c->server, sizeof c->server, "%s", server);  // (the whole text: the thread asks each server in it)
+    bool on = lobby_server_of(server, c->server);
     snprintf(c->key, sizeof c->key, "%s", key);
     pthread_mutex_lock(&hub_mu);
     c->check = ++hub_now.check;
-    hub_set_locked(on ? list[0] : c->server, c->key, on ? HUB_CHECKING : HUB_OFF, -1, -1);
+    hub_set_locked(c->server, c->key, on ? HUB_CHECKING : HUB_OFF, -1, -1);
     pthread_mutex_unlock(&hub_mu);
     if (on && !pthread_create(&th, NULL, hub_check_thread, c)) {
         pthread_detach(th);
@@ -1109,21 +1434,18 @@ void ldn_hub_check(const char *server, const char *key) {
     }
     if (on) {
         pthread_mutex_lock(&hub_mu);
-        hub_set_locked(list[0], c->key, HUB_UNKNOWN, -1, -1);
+        hub_set_locked(c->server, c->key, HUB_UNKNOWN, -1, -1);
         pthread_mutex_unlock(&hub_mu);
     }
     free(c);
 }
 
 int ldn_hub_status(const char *server, const char *key, int *ms, int *hubs) {
-    char list[MAX_HUBS][LOBBY_NAME];
-    int n = lobby_servers_of(server, list);
-    if (!n) return HUB_OFF;
+    char name[LOBBY_NAME];
+    if (!lobby_server_of(server, name)) return HUB_OFF;
     pthread_mutex_lock(&hub_mu);
-    bool known = false;  // (the last state belongs to one of the servers in the list)
-    for (int i = 0; i < n; i++) known |= !strcmp(hub_now.server, list[i]);
     // (the server's state holds whatever the key; the hub count only for the key it was for)
-    int state = known ? hub_now.state : HUB_UNKNOWN;
+    int state = strcmp(hub_now.server, name) ? HUB_UNKNOWN : hub_now.state;
     if (ms) *ms = hub_now.ms;
     if (hubs) *hubs = strcmp(hub_now.key, key) ? -1 : hub_now.hubs;
     pthread_mutex_unlock(&hub_mu);
@@ -1131,10 +1453,10 @@ int ldn_hub_status(const char *server, const char *key, int *ms, int *hubs) {
 }
 
 // Joining a listed hub: the server asks its host to connect and splices the two. 0, else an nn::ldn result.
-static uint32_t lobby_join(const struct sockaddr_in *addr, const char *server, const char *key, uint16_t ver, uint64_t hub, hsock *out, uint32_t *pair, uint64_t *secret) {
+static uint32_t lobby_join(const struct sockaddr_in *addr, uint64_t hub, hsock *out, uint32_t *pair, uint64_t *secret) {
     static uint8_t buf[MAX_FRAME];
-    char srv[LOBBY_NAME];  // (the server that listed the hub: the one of the list it was found on)
-    snprintf(srv, sizeof srv, "%s", *server ? server : inet_ntoa(addr->sin_addr));
+    char srv[LOBBY_NAME];
+    if (!lobby_server(srv)) snprintf(srv, sizeof srv, "%s", inet_ntoa(addr->sin_addr));
     hsock s = connect_to(addr, 3000);
     if (s == BADSOCK) {
         LOG("[ldn] can't reach the hub server\n");
@@ -1142,7 +1464,7 @@ static uint32_t lobby_join(const struct sockaddr_in *addr, const char *server, c
         return R_CONNECT_TIMEOUT;
     }
     uint8_t req[LOBBY_HEADER + 8], type;
-    lobby_header(req, *key ? key : NULL, ver);  // (the room the hub was listed in: not always our own key)
+    lobby_header(req, NULL);
     memcpy(req + LOBBY_HEADER, &hub, 8);
     hset_timeout(s, 12000);  // (the server waits up to 10 s for the host)
     int n = frame_send(s, S_JOIN, req, sizeof req, NULL, 0) ? frame_recv(s, &type, buf) : -1;
@@ -1172,8 +1494,8 @@ static bool host_start(void) {
     hsock ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     bool bound = ls != BADSOCK && !bind(ls, (struct sockaddr *)&a, sizeof a);
     bool any_port = false;  // the port is taken: still hosting through the hub server, on a port of the system's choice
-    char srv[MAX_HUBS][LOBBY_NAME];
-    bool online = lobby_servers(srv) > 0;
+    char srv[LOBBY_NAME];
+    bool online = lobby_server(srv);
     if (ls != BADSOCK && !bound && online) {
         a.sin_port = 0;
         any_port = bound = !bind(ls, (struct sockaddr *)&a, sizeof a);
@@ -1359,41 +1681,33 @@ static int scan_addresses(struct sockaddr_in *out, int max) {
 #define SEARCH_NS 1500000000ull      // how long a LAN search listens
 #define SEARCH_ASK_NS 500000000ull   // and how often it asks
 // Collects the networks of hosts that answer: by address (TCP) and by LAN broadcast (UDP).
-static int discover(uint8_t (*infos)[NETINFO_SIZE], struct sockaddr_in *addrs, uint16_t *vers, int max) {
+static int discover(uint8_t (*infos)[NETINFO_SIZE], struct sockaddr_in *addrs, int max) {
     hnet_init();
     int n = 0;
     static __thread uint8_t buf[MAX_FRAME];
     struct sockaddr_in targets[8];
     int nt = scan_addresses(targets, 8);
+    Hello h = make_hello(true, NULL);
     for (int i = 0; i < nt && n < max; i++) {
-        for (int v = 0; v < N_LINK_VERSIONS; v++) {  // (a host answers only a hello of its own version: ask each)
-            hsock s = connect_to(&targets[i], 1500);
-            if (s == BADSOCK) break;
-            Hello h = make_hello(true, NULL, LINK_VERSIONS[v]);
-            hset_timeout(s, 1500);
-            uint8_t type;
-            int k;
-            bool got = frame_send(s, F_HELLO, &h, sizeof h, NULL, 0) && (k = frame_recv(s, &type, buf)) >= NETINFO_SIZE &&
-                       type == F_INFO;
-            if (got) {
-                memcpy(infos[n], buf, NETINFO_SIZE);
-                vers[n] = LINK_VERSIONS[v];
-                addrs[n++] = targets[i];
-            }
-            hclose(s);
-            if (got) break;
+        hsock s = connect_to(&targets[i], 1500);
+        if (s == BADSOCK) continue;
+        hset_timeout(s, 1500);
+        uint8_t type;
+        int k;
+        if (frame_send(s, F_HELLO, &h, sizeof h, NULL, 0) && (k = frame_recv(s, &type, buf)) >= NETINFO_SIZE && type == F_INFO) {
+            memcpy(infos[n], buf, NETINFO_SIZE);
+            addrs[n++] = targets[i];
         }
+        hclose(s);
     }
     hsock u = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (u == BADSOCK) return n;
     int one = 1;
     setsockopt(u, SOL_SOCKET, SO_BROADCAST, (const char *)&one, sizeof one);
-    uint8_t probe[N_LINK_VERSIONS][8];  // (one probe per link version)
-    for (int v = 0; v < N_LINK_VERSIONS; v++) {
-        memcpy(probe[v], PROTO_MAGIC, 4);
-        wr16(probe[v] + 4, LINK_VERSIONS[v]);
-        wr16(probe[v] + 6, 0);
-    }
+    uint8_t probe[8];
+    memcpy(probe, PROTO_MAGIC, 4);
+    wr16(probe + 4, PROTO_VERSION);
+    wr16(probe + 6, 0);
     struct sockaddr_in to = {0};
     to.sin_family = AF_INET;
     to.sin_port = htons((uint16_t)g_config.ldn_port);
@@ -1403,15 +1717,13 @@ static int discover(uint8_t (*infos)[NETINFO_SIZE], struct sockaddr_in *addrs, u
     for (uint64_t now; (now = plat_now_ns()) < end && n < max;) {
         if (now >= next_ask) {
             next_ask = now + SEARCH_ASK_NS;
-            for (int v = 0; v < N_LINK_VERSIONS; v++) {
-                to.sin_addr.s_addr = htonl(INADDR_BROADCAST);
-                sendto(u, (const char *)probe[v], sizeof probe[v], 0, (struct sockaddr *)&to, sizeof to);
+            to.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+            sendto(u, (const char *)probe, sizeof probe, 0, (struct sockaddr *)&to, sizeof to);
 #ifdef __ANDROID__
-                probe_networks(u, probe[v], sizeof probe[v], to);
+            probe_networks(u, probe, sizeof probe, to);
 #endif
-                to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-                sendto(u, (const char *)probe[v], sizeof probe[v], 0, (struct sockaddr *)&to, sizeof to);
-            }
+            to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            sendto(u, (const char *)probe, sizeof probe, 0, (struct sockaddr *)&to, sizeof to);
         }
         fd_set r;
         FD_ZERO(&r);
@@ -1422,13 +1734,12 @@ static int discover(uint8_t (*infos)[NETINFO_SIZE], struct sockaddr_in *addrs, u
         struct sockaddr_in from;
         socklen_t fl = sizeof from;
         int k = recvfrom(u, (char *)buf, MAX_FRAME, 0, (struct sockaddr *)&from, &fl);
-        if (k < 8 + NETINFO_SIZE || memcmp(buf, PROTO_MAGIC, 4) || !link_version_ok(rd16(buf + 4))) continue;
+        if (k < 8 + NETINFO_SIZE || memcmp(buf, PROTO_MAGIC, 4) || rd16(buf + 4) != PROTO_VERSION) continue;
         bool dup = false;
         for (int i = 0; i < n; i++) dup |= !memcmp(infos[i] + NI_BSSID, buf + 8 + NI_BSSID, 6);
         if (dup) continue;
         memcpy(infos[n], buf + 8, NETINFO_SIZE);
         from.sin_port = htons(rd16(buf + 6));
-        vers[n] = rd16(buf + 4);
         addrs[n++] = from;
     }
     hclose(u);
@@ -1441,7 +1752,17 @@ HLE_FUNC("_ZN2nn3ldn10InitializeEv", ldn_initialize) { NTRACE();
     lan_wifi(true);
     pthread_mutex_lock(&L.mu);
     if (!L.ev) L.ev = kernel_create_event_pair(&(uint32_t){0}, &L.ev_r);
+    static bool hooked;
+    if (!hooked) {
+        hooked = true;
+        mhgu_ryu_set_hooks(ryu_lobby_changed, ryu_data_received);
+    }
+    crossplay_snapshot();
+    mhgu_ryu_set_config(xp_config.ryu_servers, "", xp_config.ryu_password);
     if (L.state == ST_NONE) {
+        ryusrv_wanted();
+        roomsrv_wanted();
+        room_start();
         L.state = ST_INITIALIZED, L.reason = DR_NONE;
         rand_bytes(L.mac, 6);
         L.mac[0] = (uint8_t)((L.mac[0] & 0xFC) | 0x02);  // locally administered, unicast
@@ -1452,10 +1773,14 @@ HLE_FUNC("_ZN2nn3ldn10InitializeEv", ldn_initialize) { NTRACE();
     RET(0);
 }
 
-static void browse_touch(void);  // (Join Hub screen open, see ldn_hub_browsing)
-static void browse_end(void);
 static void to_initialized(void) {
     int st = L.state;
+    if (L.ryu || L.room) {
+        if (L.ryu) ryu_stop();
+        else room_stop();
+        L.own_ip = L.subnet = 0;
+        return;
+    }
     if (st == ST_AP_CREATED || st == ST_ACCESS_POINT) host_stop(DR_DESTROYED_BY_USER);
     if (st == ST_STATION_CONNECTED || st == ST_STATION || st == ST_ERROR) station_leave();
     if (st == ST_AP_CREATED) vsock_network_down();
@@ -1464,8 +1789,10 @@ static void to_initialized(void) {
 
 HLE_FUNC("_ZN2nn3ldn8FinalizeEv", ldn_finalize) { NTRACE();
     lan_wifi(false);
-    browse_end();
     to_initialized();
+    room_shutdown();
+    roomsrv_unwanted();
+    ryusrv_unwanted();
     L.state = ST_NONE;
     (void)c;
 }
@@ -1492,7 +1819,7 @@ HLE_FUNC("_ZN2nn3ldn14GetNetworkInfoEPNS0_11NetworkInfoE", ldn_get_network_info)
 HLE_FUNC("_ZN2nn3ldn14GetIpv4AddressEPNS0_11Ipv4AddressEPNS0_10SubnetMaskE", ldn_get_ipv4) { NTRACE();
     if (!ldn_net_up()) { RET(R_INVALID_STATE); return; }
     if (ARG(0)) ST32(ARG(0), L.own_ip);
-    if (ARG(1)) ST32(ARG(1), 0xFFFFFF00u);
+    if (ARG(1)) ST32(ARG(1), L.ryu && L.ryu_mask ? L.ryu_mask : 0xFFFFFF00u);
     RET(0);
 }
 
@@ -1529,9 +1856,34 @@ HLE_FUNC("_ZN2nn3ldn16CloseAccessPointEv", ldn_close_ap) { NTRACE();
     RET(0);
 }
 
+static uint32_t create_ryu(const uint8_t *cfg, const uint8_t *sec, const uint8_t *user) {
+    uint8_t info[NETINFO_SIZE];
+    uint32_t ip = 0, mask = 0;
+    L.ryu = true;
+    uint32_t r = mhgu_ryu_create(mhgu_ryusrv_running() ? -1 : 0, cfg, sec, user, L.adv, L.adv_size, info, &ip, &mask);
+    if (r) {
+        L.ryu = false;
+        LOG("[ldn] creating the hub on the RyuLdn server failed (result %#x)\n", r);
+        return r;
+    }
+    pthread_mutex_lock(&L.mu);
+    if (info_sane(info)) memcpy(L.info, info, NETINFO_SIZE);
+    L.own_ip = ip, L.ryu_mask = mask, L.subnet = ip & mask, L.lcv = rd16(cfg + 0x14);
+    L.state = ST_AP_CREATED, L.reason = DR_NONE;
+    pthread_mutex_unlock(&L.mu);
+    LOG("[ldn] hub created on the RyuLdn server: %s, up to %d players\n", ipstr(L.own_ip), L.info[NI_NODE_MAX]);
+    if (room_configured()) mixed_bridge_start();
+    signal_change();
+    return 0;
+}
+
 static uint32_t create_network(const uint8_t *cfg, const uint8_t *sec, const uint8_t *sec_param, const uint8_t *user) {
-    browse_end();  // (hosting: not browsing)
     if (L.state != ST_ACCESS_POINT) return R_INVALID_STATE;
+    crossplay_prepare();
+    if (ryu_configured()) return create_ryu(cfg, sec, user);
+    bool via_room = room_configured() && mhgu_room_connected();
+    if (room_configured() && !via_room) return R_CONNECT_FAILURE;  // (a Yuzu Room hub needs the room)
+    if (via_room) room_mac(L.mac);
     pthread_mutex_lock(&L.mu);
     memset(L.info, 0, NETINFO_SIZE);
     memcpy(L.info, cfg, 0x10);  // IntentId
@@ -1557,8 +1909,16 @@ static uint32_t create_network(const uint8_t *cfg, const uint8_t *sec, const uin
     L.info[NI_NODE_MAX] = max >= 1 && max <= MAX_NODES ? max : MAX_NODES;
     L.info[NI_NODE_COUNT] = 1;
     L.lcv = rd16(cfg + 0x14);
-    L.subnet = 0xA9FE0000u | (uint32_t)(1 + arc4random() % 254) << 8;  // 169.254.x.0/24
-    L.own_ip = L.subnet | 1;
+    if (via_room) {
+        uint8_t ip[4];
+        mhgu_room_own_ip(ip);
+        L.own_ip = ip_u32(ip), L.subnet = L.own_ip & 0xFFFFFF00u;
+        memset(L.room_client, 0, sizeof L.room_client);
+        memcpy(L.info + NI_SSID, "\x12YuzuFakeSsidForLdn", 19);  // (what the emulators' scans expect)
+    } else {
+        L.subnet = 0xA9FE0000u | (uint32_t)(1 + arc4random() % 254) << 8;  // 169.254.x.0/24
+        L.own_ip = L.subnet | 1;
+    }
     uint8_t *nd = node_at(L.info, 0);
     wr32(nd + NODE_IP, L.own_ip);
     memcpy(nd + NODE_MAC, L.mac, 6);
@@ -1573,9 +1933,10 @@ static uint32_t create_network(const uint8_t *cfg, const uint8_t *sec, const uin
     memset(L.nodes, 0, sizeof L.nodes);
     for (int i = 0; i < MAX_NODES; i++) pthread_mutex_init(&L.nodes[i].wmu, NULL);
     pthread_mutex_unlock(&L.mu);
-    host_start();
+    if (via_room) L.room = true;
+    else host_start();
     L.state = ST_AP_CREATED;
-    LOG("[ldn] network created: %s, up to %d players, version %u\n", ipstr(L.own_ip), L.info[NI_NODE_MAX], L.lcv);
+    LOG("[ldn] network created%s: %s, up to %d players, version %u\n", via_room ? " in the room" : "", ipstr(L.own_ip), L.info[NI_NODE_MAX], L.lcv);
     signal_change();
     return 0;
 }
@@ -1592,7 +1953,9 @@ HLE_FUNC("_ZN2nn3ldn20CreateNetworkPrivateERKNS0_13NetworkConfigERKNS0_14Securit
 
 HLE_FUNC("_ZN2nn3ldn14DestroyNetworkEv", ldn_destroy) { NTRACE();
     if (L.state != ST_AP_CREATED) { RET(R_INVALID_STATE); return; }
-    host_stop(DR_DESTROYED_BY_USER);
+    if (L.ryu) ryu_stop();
+    else if (L.room) room_stop();
+    else host_stop(DR_DESTROYED_BY_USER);
     vsock_network_down();
     L.state = ST_ACCESS_POINT;
     L.own_ip = L.subnet = 0;
@@ -1610,22 +1973,57 @@ HLE_FUNC("_ZN2nn3ldn16SetAdvertiseDataEPKvj", ldn_set_advertise) { NTRACE();
         wr16(L.info + NI_ADV_SIZE, (uint16_t)n);
         memset(L.info + NI_ADV, 0, ADV_MAX);
         memcpy(L.info + NI_ADV, L.adv, n);
-        push_info_locked(0);
+        if (L.ryu) mhgu_ryu_set_advertise(L.adv, n);
+        else if (L.room) room_info_dirty = true;
+        else push_info_locked(0);
     }
     pthread_mutex_unlock(&L.mu);
+    if (room_info_dirty) { room_info_dirty = false; room_sync_all(); }
     RET(0);
 }
 
 HLE_FUNC("_ZN2nn3ldn22SetStationAcceptPolicyENS0_12AcceptPolicyE", ldn_set_accept) { NTRACE();
     pthread_mutex_lock(&L.mu);
     L.accept_policy = (int)ARG(0);
-    if (L.state == ST_AP_CREATED) { L.info[NI_ACCEPT_POLICY] = (uint8_t)ARG(0); push_info_locked(0); }
+    if (L.state == ST_AP_CREATED) {
+        L.info[NI_ACCEPT_POLICY] = (uint8_t)ARG(0);
+        if (L.ryu) mhgu_ryu_set_accept_policy((uint8_t)ARG(0));
+        else if (L.room) room_info_dirty = true;
+        else push_info_locked(0);
+    }
     pthread_mutex_unlock(&L.mu);
+    if (room_info_dirty) { room_info_dirty = false; room_sync_all(); }
     RET(0);
 }
 
 // Reject(Ipv4Address): the host sends a player away
 HLE_FUNC("_ZN2nn3ldn6RejectENS0_11Ipv4AddressE", ldn_reject) { NTRACE();
+    if (L.ryu) {
+        for (int i = 1; i < MAX_NODES; i++)
+            if (node_at(L.info, i)[NODE_CONNECTED] && rd32(node_at(L.info, i) + NODE_IP) == ARG(0))
+                mhgu_ryu_reject((uint32_t)i, DR_REJECTED);
+        RET(0);
+        return;
+    }
+    if (L.room) {
+        uint8_t own[4], to[MAX_NODES][4];
+        int n = 0;
+        mhgu_room_own_ip(own);
+        pthread_mutex_lock(&L.mu);
+        for (int i = 1; i < MAX_NODES; i++)
+            if (L.room_client[i] && rd32(node_at(L.info, i) + NODE_IP) == ARG(0)) {
+                memcpy(to[n++], L.room_cip[i], 4);
+                memset(node_at(L.info, i), 0, NODE_SIZE);
+                node_at(L.info, i)[NODE_ID] = (uint8_t)i;
+                L.room_client[i] = false;
+                if (L.info[NI_NODE_COUNT] > 1) L.info[NI_NODE_COUNT]--;
+            }
+        pthread_mutex_unlock(&L.mu);
+        for (int i = 0; i < n; i++) mhgu_room_send_ldn(RLDN_DESTROY_NETWORK, own, to[i], false, NULL, 0);
+        if (n) { room_sync_all(); signal_change(); }
+        RET(0);
+        return;
+    }
     uint32_t r = DR_REJECTED;
     for (int i = 1; i < MAX_NODES; i++)
         if (L.nodes[i].alive && L.nodes[i].ip == ARG(0)) {
@@ -1639,7 +2037,6 @@ HLE_FUNC("_ZN2nn3ldn6RejectENS0_11Ipv4AddressE", ldn_reject) { NTRACE();
 HLE_FUNC("_ZN2nn3ldn11OpenStationEv", ldn_open_station) { NTRACE();
     if (L.state != ST_INITIALIZED) { RET(R_INVALID_STATE); return; }
     L.state = ST_STATION;
-    browse_touch();
     signal_change();
     RET(0);
 }
@@ -1660,198 +2057,147 @@ static bool filter_ok(const uint8_t *info, const uint8_t *f) {
     return true;
 }
 
-// A hub server answers one search with only some of its hubs (a few picked at random when it has many), so the hubs of
-// the last searches are kept and listed together: the list of a Retry grows until it holds them all.
-#define SEEN_MAX MAX_FOUND
-#define HUB_LIST_MAX 500  // the most hubs one list (all its pages) holds
-#define HUB_PAGE 18       // hubs the game's Join Hub screen lists at once (it takes more, but shows 3 pages of 6)
-static int list_per = HUB_PAGE, list_total = 0;  // hubs in a list; hubs found
-static int list_next = -1, list_given, list_pages = 1, list_selected = 0;  // the list the next search gives (-1: the one after the last); the last one given; how many lists
-#define SEEN_KEEP_NS (25ull * 1000000000ull)
-static struct {
-    uint8_t info[NETINFO_SIZE];
-    uint64_t id, at;
-    struct sockaddr_in addr;
-    char server[LOBBY_NAME];
-    uint16_t ver;
-    uint8_t phone;
-} seen[SEEN_MAX];
-static bool seen_live(int i, uint64_t now) { return seen[i].at && now - seen[i].at <= SEEN_KEEP_NS; }
-static void seen_add(const uint8_t *info, uint64_t id, uint16_t ver, uint8_t phone, const struct sockaddr_in *addr,
-                     const char *server, uint64_t now) {
-    int idx = -1, empty = -1, oldest = 0;
-    for (int i = 0; i < SEEN_MAX; i++) {
-        if (!seen_live(i, now)) {
-            if (empty < 0) empty = i;
-            continue;
-        }
-        if (!memcmp(seen[i].info + NI_BSSID, info + NI_BSSID, 6)) { idx = i; break; }
-        if (seen[i].at < seen[oldest].at) oldest = i;
-    }
-    if (idx < 0) idx = empty >= 0 ? empty : oldest;
-    memcpy(seen[idx].info, info, NETINFO_SIZE);
-    seen[idx].id = id, seen[idx].ver = ver, seen[idx].phone = phone, seen[idx].addr = *addr, seen[idx].at = now;
-    snprintf(seen[idx].server, sizeof seen[idx].server, "%s", server);
-}
-
 // Scan(NetworkInfo *out, int *count, int max, const ScanFilter &, int channel)
 HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan) { NTRACE();
     uint32_t out = ARG(0), pcount = ARG(1);
     int max = (int)ARG(2);
     const uint8_t *filter = ARGP(3);
     if (L.state != ST_STATION && L.state != ST_ACCESS_POINT) { RET(R_INVALID_STATE); return; }
-    browse_touch();
+    crossplay_prepare();
     static uint8_t infos[MAX_FOUND][NETINFO_SIZE];
-    static LobbyList online[MAX_HUBS];
-    // (static, like infos: 512 entries are too much for a game thread's stack; a scan never runs twice at once)
-    static struct sockaddr_in addrs[MAX_FOUND];
-    static uint64_t hubs[MAX_FOUND];
-    static uint16_t vers[MAX_FOUND];  // the link version each found network speaks
-    static uint8_t phone[MAX_FOUND];  // found in the phones' public room
-    static const char *names[MAX_FOUND];  // (the hub server a found hub is on; LAN hubs: none)
-    static int order[MAX_FOUND];  // found[i] is infos[order[i]]
-    memset(hubs, 0, sizeof hubs), memset(phone, 0, sizeof phone), memset(names, 0, sizeof names);
-    char list[MAX_HUBS][LOBBY_NAME];
-    pthread_t lt[MAX_HUBS];
-    bool started[MAX_HUBS] = {false};
+    static LobbyList online;
+    struct sockaddr_in addrs[MAX_FOUND];
+    uint64_t hubs[MAX_FOUND] = {0};
+    pthread_t lt;
     hnet_init();  // (before the thread's first socket call)
-    int ns = lobby_servers(list);
-    for (int s = 0; s < ns; s++) {  // every server of the list is asked at once, while the LAN is searched
-        snprintf(online[s].server, sizeof online[s].server, "%s", list[s]);
-        started[s] = !pthread_create(&lt[s], NULL, lobby_list_thread, &online[s]);
+    bool asked = lobby_server(online.server) && !pthread_create(&lt, NULL, lobby_list_thread, &online);
+    int n = discover(infos, addrs, 16), k = 0;
+    int ryu_of[MAX_FOUND] = {0};
+    bool room_of[MAX_FOUND] = {0};
+    if (asked) {  // the server's hubs after the LAN's (a hub found both ways is joined directly)
+        pthread_join(lt, NULL);
+        for (int j = 0; j < online.n && n < MAX_FOUND; j++) {
+            bool dup = false;
+            for (int i = 0; i < n; i++) dup |= !memcmp(infos[i] + NI_BSSID, online.infos[j] + NI_BSSID, 6);
+            if (dup) continue;
+            memcpy(infos[n], online.infos[j], NETINFO_SIZE);
+            addrs[n] = online.addr;
+            hubs[n++] = online.ids[j];
+        }
     }
-    int n = discover(infos, addrs, vers, 16), k = 0, listed = 0;
-    uint64_t now = plat_now_ns();
-    for (int s = 0; s < ns; s++) {  // the servers' hubs after the LAN's (a hub found twice is joined by the first way)
-        if (!started[s]) continue;
-        pthread_join(lt[s], NULL);
-        if (online[s].state != HUB_ONLINE) continue;
-        listed += online[s].n;
-        for (int j = 0; j < online[s].n; j++)
-            seen_add(online[s].infos[j], online[s].ids[j], online[s].vers[j], online[s].phone[j], &online[s].addr,
-                     online[s].server, now);
+    if (ryu_configured() && mhgu_ryu_server_count() > 0 && n < MAX_FOUND) {  // RyuLdn servers' lobbies
+        static uint8_t rinfo[MAX_FOUND][NETINFO_SIZE];
+        int rsrv[MAX_FOUND];
+        int rn = mhgu_ryu_scan(filter, (uint8_t *)rinfo, rsrv, MAX_FOUND - n);
+        for (int j = 0; j < rn; j++) {
+            memcpy(infos[n], rinfo[j], NETINFO_SIZE);
+            memset(&addrs[n], 0, sizeof addrs[n]);
+            ryu_of[n++] = rsrv[j] + 1;
+        }
     }
-    for (int c = 0; c < SEEN_MAX && n < MAX_FOUND; c++) {  // the hubs of this search and of the last ones, after the LAN's
-        if (!seen_live(c, now)) continue;
-        bool dup = false;
-        for (int i = 0; i < n; i++) dup |= !memcmp(infos[i] + NI_BSSID, seen[c].info + NI_BSSID, 6);
-        if (dup) continue;
-        memcpy(infos[n], seen[c].info, NETINFO_SIZE);
-        addrs[n] = seen[c].addr;
-        names[n] = seen[c].server;
-        vers[n] = seen[c].ver;
-        phone[n] = seen[c].phone;
-        hubs[n++] = seen[c].id;
+    if (xp_config.crossplay == XP_ROOM && room_enabled() && mhgu_room_connected() && n < MAX_FOUND) {  // the room's hubs
+        uint8_t own[4], all[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+        mhgu_room_own_ip(own);
+        pthread_mutex_lock(&room_scan_mu);
+        room_nscan = 0, room_scanning = true;
+        pthread_mutex_unlock(&room_scan_mu);
+        mhgu_room_send_ldn(RLDN_SCAN, own, all, true, NULL, 0);
+        plat_sleep_until_ns(plat_now_ns() + 700000000ull);
+        pthread_mutex_lock(&room_scan_mu);
+        room_scanning = false;
+        for (int j = 0; j < room_nscan && n < MAX_FOUND; j++) {
+            memcpy(infos[n], room_scan[j].info, NETINFO_SIZE);
+            memset(&addrs[n], 0, sizeof addrs[n]);
+            room_of[n++] = true;
+        }
+        pthread_mutex_unlock(&room_scan_mu);
     }
     nfound = 0;
-    for (int i = 0; i < n && nfound < HUB_LIST_MAX; i++) {
+    for (int i = 0; i < n; i++) {
         if (!info_sane(infos[i]) || !filter_ok(infos[i], filter)) continue;
+        found[nfound].ryu = ryu_of[i];
+        found[nfound].room = room_of[i];
+        memcpy(found[nfound].info, infos[i], NETINFO_SIZE);
         memcpy(found[nfound].bssid, infos[i] + NI_BSSID, 6);
         memcpy(found[nfound].session, infos[i] + NI_SESSION_ID, 16);
         found[nfound].hub = hubs[i];
-        snprintf(found[nfound].server, sizeof found[nfound].server, "%s", names[i] ? names[i] : "");
-        snprintf(found[nfound].key, sizeof found[nfound].key, "%s", phone[i] ? PHONE_PUBLIC_KEY : "");
-        found[nfound].ver = vers[i];
-        found[nfound].addr = addrs[i];
-        order[nfound++] = i;
+        found[nfound++].addr = addrs[i];
+        if (k < max) memcpy((uint8_t *)G2H(out) + (size_t)k++ * NETINFO_SIZE, infos[i], NETINFO_SIZE);
     }
-    // One fixed order: the LAN's hubs first, then the hubs of the servers by their BSSID (stable for as long as a hub
-    // lives, whatever order a server or a search answered in). A stable insertion sort of order[].
-    for (int i = 1; i < nfound; i++) {
-        int v = order[i], j = i - 1;
-        while (j >= 0) {
-            int a = order[j];
-            int c = (hubs[a] != 0) - (hubs[v] != 0);
-            if (!c) c = memcmp(infos[a] + NI_BSSID, infos[v] + NI_BSSID, 6);
-            if (c <= 0) break;
-            order[j + 1] = order[j], j--;
-        }
-        order[j + 1] = v;
-    }
-    // Pages: the game takes only `max` networks per search, so the first search gives the first `max` of the list, the
-    // next one (Retry) the next `max`, and so on up to HUB_LIST_MAX hubs; after the last page it starts over. The order
-    // is the same from one search to the next (the fixed order above), so no hub is skipped or shown twice.
-    int per = max < HUB_PAGE ? max : HUB_PAGE;  // (what the game's Join Hub screen shows: 3 pages of 6)
-    int pages = per > 0 ? (nfound + per - 1) / per : 1;
-    if (pages < 1) pages = 1;
-    if (list_selected >= pages) list_selected = 0;
-    if (list_next >= 0) list_selected = list_next, list_next = -1;  // (a tap on a list's number: that one)
-    if (list_selected >= pages) list_selected = 0;
-    int cur_list = list_selected, first = cur_list * per;
-    list_given = cur_list, list_pages = pages, list_per = per > 0 ? per : HUB_PAGE, list_total = nfound;
-    list_selected = (cur_list + 1) % pages;  // (a plain Retry gives the next list)
-    for (int t = first; t < nfound && k < per; t++)
-        memcpy((uint8_t *)G2H(out) + (size_t)k++ * NETINFO_SIZE, infos[order[t]], NETINFO_SIZE);
     if (pcount) ST32(pcount, k);
-    for (int t = 0; t < k; t++) {  // what the game was given, to compare with its Join Hub list (which hubs it drops, and why)
-        int i = order[first + t];
-        uint8_t *nd = node_at(infos[i], 0);
-        LOG("[ldn] scan give %d: %d/%d players, adv %u bytes, host '%.32s', %s v%u\n", t, infos[i][NI_NODE_COUNT],
-            infos[i][NI_NODE_MAX], (unsigned)rd16(infos[i] + NI_ADV_SIZE), (const char *)(nd + NODE_NAME),
-            hubs[i] ? (names[i] ? names[i] : "hub") : "LAN", (unsigned)vers[i]);
-    }
-    {  // (every search: the page it gave is part of the line)
-        LOG("[ldn] scan: %d network(s) found (%d listed on the hub servers), page from #%d: %d given to the game (room for %d)\n",
-            nfound, listed, first, k, max);
+    static int last = -1, last_online = -1, last_max = -1;
+    int listed = asked && online.state == HUB_ONLINE ? online.n : 0;
+    if (nfound != last || listed != last_online || max != last_max) {
+        LOG("[ldn] scan: %d network(s) found (%d listed on the hub server), %d given to the game (room for %d)\n",
+            nfound, listed, k, max);
+        last = nfound, last_online = listed, last_max = max;
     }
     RET(0);
 }
 
-// The Join Hub screen is open (a station that has not joined): the list buttons (runtime/touch.cpp) change the hub list.
-// (the game may leave the station state once its table of hubs is up, so the screen counts as open for a while after
-// the last search or station call, until a hub is joined, hosted or the game shuts the LAN down)
-static uint64_t browse_ns;  // plat_now_ns() of the last Join Hub search / OpenStation; 0: not browsing
-#define BROWSE_HOLD_NS (90ull * 1000000000ull)
-static void browse_touch(void) { browse_ns = plat_now_ns(); }
-static void browse_end(void) { browse_ns = 0; }
-bool ldn_hub_browsing(void) {
-    if (L.state == ST_STATION) return true;
-    if (!browse_ns || (L.state != ST_INITIALIZED && L.state != ST_ACCESS_POINT)) return false;
-    return plat_now_ns() - browse_ns < BROWSE_HOLD_NS;
-}
-int ldn_hub_lists(void) { return list_pages; }  // how many lists the last search had
-// The next search gives the list before / after the one chosen last (dir -1 / +1); several steps in a row add up.
-// false: only one list, nothing to change.
-bool ldn_hub_list_step(int dir) {
-    if (list_pages <= 1) return false;
-    int base = list_next >= 0 ? list_next : list_given;
-    list_next = ((base + (dir < 0 ? -1 : 1)) % list_pages + list_pages) % list_pages;
-    return true;
-}
-// The next search gives list `n` (0 based), as a tap on its number does. false: no such list.
-bool ldn_hub_list_goto(int n) {
-    if (n < 0 || n >= list_pages) return false;
-    list_next = n;
-    return true;
-}
-// Which hubs the chosen list holds: #first to #last (1 based) of total.
-void ldn_hub_list_range(int *first, int *last, int *total) {
-    int c = list_next >= 0 ? list_next : list_given, f = c * list_per + 1, l = (c + 1) * list_per;
-    *first = f, *last = l < list_total ? l : list_total, *total = list_total;
-}
-// The list chosen now (the one the next search gives): what the buttons show lit.
-int ldn_hub_list_chosen(void) { return list_next >= 0 ? list_next : list_given; }
-// Whether a list was chosen that the Join Hub screen does not show yet (a search by itself puts it there).
-bool ldn_hub_list_pending(void) { return list_next >= 0 && list_next != list_given; }
-
 static uint32_t connect_network(const uint8_t *info, const uint8_t *user, uint16_t lcv) {
-    browse_end();  // (a hub is being joined: the list is left)
     if (L.state != ST_STATION) return R_INVALID_STATE;
     int i = 0;
     while (i < nfound && memcmp(found[i].bssid, info + NI_BSSID, 6)) i++;
     if (i == nfound) return R_CONNECT_NOT_FOUND;
+    if (found[i].ryu) {  // a lobby on a RyuLdn server
+        uint8_t sec[0x44] = {0}, out[NETINFO_SIZE];
+        uint32_t ip = 0, mask = 0;
+        memcpy(sec, found[i].info + NI_SEC_MODE, 2);
+        L.ryu = true;
+        uint32_t r = mhgu_ryu_connect(found[i].ryu - 1, found[i].info, sec, user, lcv, out, &ip, &mask);
+        if (r) {
+            L.ryu = false;
+            LOG("[ldn] joining the RyuLdn lobby failed (result %#x)\n", r);
+            return r;
+        }
+        pthread_mutex_lock(&L.mu);
+        if (info_sane(out)) memcpy(L.info, out, NETINFO_SIZE);
+        L.lcv = lcv, L.own_ip = ip, L.ryu_mask = mask, L.subnet = ip & mask;
+        L.state = ST_STATION_CONNECTED, L.reason = DR_NONE;
+        pthread_mutex_unlock(&L.mu);
+        LOG("[ldn] joined a RyuLdn lobby as %s\n", ipstr(L.own_ip));
+        signal_change();
+        return 0;
+    }
+    if (found[i].room) {  // a hub in a Yuzu-family room
+        if (!mhgu_room_connected()) return R_CONNECT_FAILURE;
+        uint8_t ipb[4], hostb[4];
+        mhgu_room_own_ip(ipb);
+        pthread_mutex_lock(&L.mu);
+        memcpy(L.info, found[i].info, NETINFO_SIZE);
+        L.room = true, L.own_ip = ip_u32(ipb), L.subnet = L.own_ip & 0xFFFFFF00u, L.lcv = lcv;
+        pthread_mutex_unlock(&L.mu);
+        uint8_t node[NODE_SIZE] = {0};
+        wr32(node + NODE_IP, L.own_ip);
+        room_mac(node + NODE_MAC);
+        node[NODE_CONNECTED] = 1;
+        memcpy(node + NODE_NAME, user, 0x20);
+        wr16(node + NODE_LCV, lcv);
+        ip_bytes(rd32(node_at(found[i].info, 0) + NODE_IP), hostb);
+        mhgu_room_send_ldn(RLDN_CONNECT, ipb, hostb, false, node, NODE_SIZE);
+        for (int w = 0; w < 300 && L.state != ST_STATION_CONNECTED; w++) plat_sleep_until_ns(plat_now_ns() + 10000000ull);
+        if (L.state != ST_STATION_CONNECTED) {
+            L.room = false, L.own_ip = L.subnet = 0;
+            LOG("[ldn] the room's host did not answer the join\n");
+            return R_CONNECT_TIMEOUT;
+        }
+        LOG("[ldn] joined a hub in the room as %s\n", ipstr(L.own_ip));
+        signal_change();
+        return 0;
+    }
     hsock s;
     uint32_t pair = 0;
     uint64_t secret = 0;
     if (found[i].hub) {
-        uint32_t r = lobby_join(&found[i].addr, found[i].server, found[i].key, found[i].ver, found[i].hub, &s, &pair, &secret);
+        uint32_t r = lobby_join(&found[i].addr, found[i].hub, &s, &pair, &secret);
         if (r) return r;
     } else if ((s = connect_to(&found[i].addr, 3000)) == BADSOCK) {
         LOG("[ldn] can't reach the host at %s\n", inet_ntoa(found[i].addr.sin_addr));
         return R_CONNECT_TIMEOUT;
     }
     L.lcv = lcv;
-    Hello h = make_hello(false, user, found[i].ver);
+    Hello h = make_hello(false, user);
     static uint8_t buf[MAX_FRAME];
     uint8_t type;
     int n;
@@ -1913,6 +2259,7 @@ static uint32_t connect_private(Cpu *c) {
     for (int i = 0; i < nfound; i++)
         if (!memcmp(found[i].session, session, 0x10)) {
             uint8_t info[NETINFO_SIZE] = {0};
+            if (found[i].ryu) memcpy(info, found[i].info, NETINFO_SIZE);
             memcpy(info + NI_BSSID, found[i].bssid, 6);
             return connect_network(info, ARGP(3), (uint16_t)STK(0));
         }
@@ -1926,7 +2273,9 @@ HLE_FUNC("_ZN2nn3ldn14ConnectPrivateERKNS0_13NetworkConfigERKNS0_14SecurityConfi
 
 HLE_FUNC("_ZN2nn3ldn10DisconnectEv", ldn_disconnect) { NTRACE();
     if (L.state != ST_STATION_CONNECTED && L.state != ST_ERROR) { RET(R_INVALID_STATE); return; }
-    station_leave();
+    if (L.ryu) ryu_stop();
+    else if (L.room) room_stop();
+    else station_leave();
     L.state = ST_STATION, L.reason = DR_BY_USER;
     L.own_ip = L.subnet = 0;
     signal_change();

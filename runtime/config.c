@@ -32,9 +32,12 @@
 #define CONFIG_DEFAULT_SIZE 1920, 1080
 #define CONFIG_DEFAULT_FXAA 1
 #endif
-#define CONFIG_DEFAULT_VALUES DISPLAY_BORDERLESS, CONFIG_DEFAULT_SIZE, 0, 0, 60, 1, 1, CONFIG_DEFAULT_FXAA, FACE_POSITION, 39500, "", 0, 0, 1, 1, {{1, 1, 1, 1}, 2}, 1.0f, 0.0f, 1.0f, UI_CENTER, 1, 100, 0, 0, 100, MENU_CONFIRM_ORIGINAL, 1, 0, FSR_NATIVE, 0.8f, 1, 0.9f, 1, FSR_UP_3, UPDATES_ASK, 1, 1.0f, 0, COMBO_LENIENT, "", "", "/", FXAA_ORIGINAL, 0, DEFAULT_BINDS, THEME_HUNTER, 1, 1, 1, TOUCH_AUTO, 1, 1.0f, 0.8f, 100, 1, 1, 0, 1, 0, 1, \
-    1, 0, 1, 1, TOUCH_SHOW_DEFAULT, {{""}}, {0}, 0, TOUCH_SHOW_TRAD_DEFAULT, 0
-// (hub_full_list is the 0 after the empty ldn_join text; in Config's order, config.h: a new field there needs its value here, in its place - shadows, adreno_fix, bloom, reverb before
+#define CONFIG_DEFAULT_VALUES DISPLAY_BORDERLESS, CONFIG_DEFAULT_SIZE, 0, 0, 60, 1, 1, CONFIG_DEFAULT_FXAA, FACE_POSITION, 39500, "", 0, 1, 1, {{1, 1, 1, 1}, 2}, 1.0f, 0.0f, 1.0f, UI_CENTER, 1, 100, 0, 0, 100, MENU_CONFIRM_ORIGINAL, 1, 0, FSR_NATIVE, 0.8f, 1, 0.9f, 1, FSR_UP_3, UPDATES_ASK, 1, 1.0f, 0, COMBO_LENIENT, "", "", "/", FXAA_ORIGINAL, 0, DEFAULT_BINDS, THEME_HUNTER, 1, 1, 1, TOUCH_AUTO, 1, 1.0f, 0.8f, 100, 1, 1, 0, 1, 0, 1, \
+    1, 0, 1, 1, TOUCH_SHOW_DEFAULT, \
+    .crossplay = XP_OFF, .ryu_servers = "", .ryu_host = 0, .ryu_port = 30456, .ryu_password = "", \
+    .room_server = "", .room_host = 0, .room_port = 24872, .room_name = "MHGU", .room_password = "", \
+    .web_api_url = WEB_API_DEFAULT_URL
+// (in Config's order, config.h: a new field there needs its value here, in its place - shadows, adreno_fix, bloom, reverb before
 // touch_show: without them the touch buttons' defaults moved two places and most buttons were off)
 Config g_config = {CONFIG_DEFAULT_VALUES};
 Config config_defaults(void) { Config c = {CONFIG_DEFAULT_VALUES}; return c; }
@@ -239,21 +242,10 @@ static const char DEFAULT_INI[] =
     "; Default: Auto\n"
     "Controls = Auto\n"
     "\n"
-    "; Adaptive: the buttons change with what you do (the menu's, a bow's or a bowgun's). Traditional: as an emulator's, the same\n"
-    "; buttons always (A B X Y, L R ZL ZR, + -, the d-pad), with a layout of their own in touch_layout_traditional.txt\n"
-    "; Adaptive, Traditional\n"
-    "; Default: Adaptive\n"
-    "Layout = Adaptive\n"
-    "\n"
     "; While they show, the HUD moves out of the thumbs' way: the status to the left edge, the item bar to the bottom\n"
     "; middle, the Hunter Arts and the target camera to the top right\n"
     "; Default: On\n"
     "MoveHUD = On\n"
-    "\n"
-    "; Traditional layout only: the thumb past the stick's rim runs (holds R) while the weapon is sheathed. Off: only the R button\n"
-    "; runs, so the stick just walks. (The Adaptive layout always runs with the stick.)\n"
-    "; Default: Off\n"
-    "AutoRun = Off\n"
     "\n"
     "; Which of the game's buttons are on the screen in a hunt. A hunt needs none of those off by default\n"
     "ShowAttacks = On\n"
@@ -269,22 +261,6 @@ static const char DEFAULT_INI[] =
     "ShowL3 = Off\n"
     "ShowR3 = Off\n"
     "ShowStick = On\n"
-    "\n"
-    "; The same for the Traditional layout: every one of its buttons is on by default\n"
-    "; Default: On\n"
-    "TradShowAttacks = On\n"
-    "TradShowDodge = On\n"
-    "TradShowGuard = On\n"
-    "TradShowSheathe = On\n"
-    "TradShowPlus = On\n"
-    "TradShowMinus = On\n"
-    "TradShowDpad = On\n"
-    "TradShowL = On\n"
-    "TradShowZL = On\n"
-    "TradShowZR = On\n"
-    "TradShowL3 = On\n"
-    "TradShowR3 = On\n"
-    "TradShowStick = On\n"
     "\n"
     "; With a bow or a bowgun in hand, a layout of their own in a hunt, and which of its buttons show\n"
     "ShowRanged = On\n"
@@ -370,10 +346,7 @@ static const char DEFAULT_INI[] =
     "\n"
     "; Hub server for playing over the internet without port forwarding: hubs you create are listed there, and\n"
     "; Search Hubs shows its hubs next to the LAN's. host or host:port (default port 39510).\n"
-    "; Several servers can be named, separated by commas or spaces (up to 8): your hubs are listed on all of them,\n"
-    "; and Search Hubs shows the hubs of all of them. A name starting with - is kept but switched off.\n"
-    "; Hubs are listed for both link versions (2: this port, 3: the MHGURecomp PC build), so both find them.\n"
-    "; Empty: the default (hunterhubid-gu-hub.duckdns.org and morerokk-mhgurecomp-ldnserver.duckdns.org). Off: no internet hubs.\n"
+    "; Empty or Off: no internet hubs.\n"
     "; Default:\n"
     "Server =\n"
     "\n"
@@ -382,16 +355,65 @@ static const char DEFAULT_INI[] =
     "; Default:\n"
     "Key =\n"
     "\n"
+    "; Crossplay mode: Off keeps native hubs only; Ryujinx uses RyuLdn servers; Yuzu Room uses Yuzu-family rooms (Eden, Suyu,\n"
+    "; Yuzu, Citron); Mixed uses both at once. Everyone must run the same game version (1.4.0). Small monster sync and HP\n"
+    "; scaling are port features: they are off in crossplay hubs.\n"
+    "; Default: Off\n"
+    "Crossplay = Off\n"
+    "\n"
+    "; RyuLdn server addresses, host[:port], comma separated. Default port: 30456. Empty: none (RyuHost can run one here).\n"
+    "; Default:\n"
+    "RyuServers =\n"
+    "\n"
+    "; Run a RyuLdn server on this device for Ryujinx players. Others use this device's address and RyuPort.\n"
+    "; Internet play needs port forwarding or a shared VPN.\n"
+    "; Default: Off\n"
+    "RyuHost = Off\n"
+    "\n"
+    "; TCP port of the RyuLdn server this device runs (1 to 65535).\n"
+    "; Default: 30456\n"
+    "RyuPort = 30456\n"
+    "\n"
+    "; RyuLdn lobby passphrase. Empty: public. A private lobby is Ryujinx- and eight hexadecimal digits, the same on every client.\n"
+    "; Default:\n"
+    "RyuPassword =\n"
+    "\n"
+    "; Yuzu-family room server, host[:port] (Eden, Suyu, Yuzu, Citron). Default port: 24872. Empty: no remote room.\n"
+    "; The Room Browser in the Network tab fills this in from the rooms the Eden Web API lists.\n"
+    "; Default:\n"
+    "RoomServer =\n"
+    "\n"
+    "; Run a Yuzu-family room on this device. Others use this device's address and RoomPort.\n"
+    "; Internet play needs port forwarding or a shared VPN.\n"
+    "; Default: Off\n"
+    "RoomHost = Off\n"
+    "\n"
+    "; Port of the room this device runs (1 to 65535).\n"
+    "; Default: 24872\n"
+    "RoomPort = 24872\n"
+    "\n"
+    "; Your nickname in a room, and the name of the room this device runs.\n"
+    "; Default: MHGU\n"
+    "RoomName = MHGU\n"
+    "\n"
+    "; Room password. Empty: open. Everyone in the room uses the same one.\n"
+    "; Default:\n"
+    "RoomPassword =\n"
+    "\n"
+    "; The Eden Web API the Room Browser asks for the list of public rooms (a host, or http:// / https:// and a host).\n"
+    "; Eden and Suyu both come from Yuzu and share this room list.\n"
+    "; Default: api.ynet-fun.xyz\n"
+    "WebApiUrl = api.ynet-fun.xyz\n"
+    "\n"
+    "; The room the Room Browser joined last, kept so it is pinned at the top of the list. The browser writes these two.\n"
+    "; Default:\n"
+    "LastRoom =\n"
+    "LastRoomName =\n"
+    "\n"
     "; Sync small monsters between players in multiplayer.\n"
     "; (Currently off by default, pending a bug investigation where small monsters may refuse to attack players)\n"
     "; Default: Off\n"
     "SyncSmallMonsters = Off\n"
-    "\n"
-    "; Join Hub search: a hub server answers each search with only part of its hubs, so the list grows as you press Retry.\n"
-    "; On: each search asks every hub server several times at once and shows nearly all the hubs straight away.\n"
-    "; Off: one answer per search; press Retry to see more. (A little more network use when On.)\n"
-    "; Default: Off\n"
-    "FullHubList = Off\n"
     "\n"
     "[Monster HP]\n"
     "; Playercount-specific HP multipliers for monsters in Hub quests.\n"
@@ -566,6 +588,7 @@ static bool parse_aspect(const char *v, float *out) {
 #define ERR_FSR "Invalid FSR quality, provider, sharpness or reactive mask."
 #define ERR_NET "Invalid port or Join address list (no newlines, ';' or '#')."
 #define ERR_SERVER "Invalid hub server or matchmaking key (no newlines, ';' or '#')."
+#define ERR_XP "Invalid crossplay mode, port, server, room name, password or Web API URL (no newlines, ';' or '#')."
 #define ERR_HP "HP factors must be 0.05-20."
 #define ERR_VILLAGE "Invalid village HP or quest override count."
 #define ERR_CONFIRM "Invalid menu confirmation policy."
@@ -622,9 +645,7 @@ const ConfigSetting g_settings[] = {
     ON_OFF("Controls", "PhoneRumble", phone_rumble, false),
     ON_OFF("Controls", "LockOn", lock_on, false),
     {"Touch", "Controls", SET_CHOICE, F(touch_controls), 0, 0, 0, "Auto,On,Off", NULL, false, ERR_MISC},
-    {"Touch", "Layout", SET_CHOICE, F(touch_scheme), 0, 0, 0, "Adaptive|adaptive|0,Traditional|tradicional|1", NULL, false, ERR_MISC},
     ON_OFF("Touch", "MoveHUD", touch_hud, false),
-    ON_OFF("Touch", "AutoRun", touch_auto_run, false),
     ON_OFF("Touch", "ShowAttacks", touch_show[TB_ATTACKS], false),
     ON_OFF("Touch", "ShowDodge", touch_show[TB_DODGE], false),
     ON_OFF("Touch", "ShowGuard", touch_show[TB_GUARD], false),
@@ -640,19 +661,6 @@ const ConfigSetting g_settings[] = {
     ON_OFF("Touch", "ShowL3", touch_show[TB_L3], false),
     ON_OFF("Touch", "ShowR3", touch_show[TB_R3], false),
     ON_OFF("Touch", "ShowStick", touch_show[TB_STICK], false),
-    ON_OFF("Touch", "TradShowAttacks", touch_show_trad[TB_ATTACKS], false),
-    ON_OFF("Touch", "TradShowDodge", touch_show_trad[TB_DODGE], false),
-    ON_OFF("Touch", "TradShowGuard", touch_show_trad[TB_GUARD], false),
-    ON_OFF("Touch", "TradShowSheathe", touch_show_trad[TB_SHEATHE], false),
-    ON_OFF("Touch", "TradShowPlus", touch_show_trad[TB_PLUS], false),
-    ON_OFF("Touch", "TradShowMinus", touch_show_trad[TB_MINUS], false),
-    ON_OFF("Touch", "TradShowDpad", touch_show_trad[TB_DPAD], false),
-    ON_OFF("Touch", "TradShowL", touch_show_trad[TB_L], false),
-    ON_OFF("Touch", "TradShowZL", touch_show_trad[TB_ZL], false),
-    ON_OFF("Touch", "TradShowZR", touch_show_trad[TB_ZR], false),
-    ON_OFF("Touch", "TradShowL3", touch_show_trad[TB_L3], false),
-    ON_OFF("Touch", "TradShowR3", touch_show_trad[TB_R3], false),
-    ON_OFF("Touch", "TradShowStick", touch_show_trad[TB_STICK], false),
     ON_OFF("Touch", "ShowRanged", touch_show[TB_RANGED], false),
     ON_OFF("Touch", "ShowFire", touch_show[TB_FIRE], false),
     ON_OFF("Touch", "ShowSecond", touch_show[TB_SECOND], false),
@@ -677,8 +685,20 @@ const ConfigSetting g_settings[] = {
     {"Multiplayer", "Join", SET_TEXT, F(ldn_join), sizeof g_config.ldn_join, 0, 0, NULL, NULL, true, ERR_NET},
     {"Multiplayer", "Server", SET_TEXT, F(ldn_server), sizeof g_config.ldn_server, 0, 0, NULL, NULL, false, ERR_SERVER},
     {"Multiplayer", "Key", SET_TEXT, F(ldn_key), sizeof g_config.ldn_key, 0, 0, NULL, NULL, false, ERR_SERVER},
+    {"Multiplayer", "Crossplay", SET_CHOICE, F(crossplay), 0, 0, 0, "Off,Ryujinx,Yuzu Room|Room|Yuzu|Eden|Suyu,Mixed", NULL, false, ERR_XP},
+    {"Multiplayer", "RyuServers", SET_TEXT, F(ryu_servers), sizeof g_config.ryu_servers, 0, 0, NULL, NULL, false, ERR_XP},
+    ON_OFF("Multiplayer", "RyuHost", ryu_host, false),
+    {"Multiplayer", "RyuPort", SET_INT, F(ryu_port), 0, 1, 65535, NULL, NULL, false, ERR_XP},
+    {"Multiplayer", "RyuPassword", SET_TEXT, F(ryu_password), sizeof g_config.ryu_password, 0, 0, NULL, NULL, false, ERR_XP},
+    {"Multiplayer", "RoomServer", SET_TEXT, F(room_server), sizeof g_config.room_server, 0, 0, NULL, NULL, false, ERR_XP},
+    ON_OFF("Multiplayer", "RoomHost", room_host, false),
+    {"Multiplayer", "RoomPort", SET_INT, F(room_port), 0, 1, 65535, NULL, NULL, false, ERR_XP},
+    {"Multiplayer", "RoomName", SET_TEXT, F(room_name), sizeof g_config.room_name, 0, 0, NULL, NULL, false, ERR_XP},
+    {"Multiplayer", "RoomPassword", SET_TEXT, F(room_password), sizeof g_config.room_password, 0, 0, NULL, NULL, false, ERR_XP},
+    {"Multiplayer", "WebApiUrl", SET_TEXT, F(web_api_url), sizeof g_config.web_api_url, 0, 0, NULL, NULL, false, ERR_XP},
+    {"Multiplayer", "LastRoom", SET_TEXT, F(last_room), sizeof g_config.last_room, 0, 0, NULL, NULL, false, ERR_XP},
+    {"Multiplayer", "LastRoomName", SET_TEXT, F(last_room_name), sizeof g_config.last_room_name, 0, 0, NULL, NULL, false, ERR_XP},
     ON_OFF("Multiplayer", "SyncSmallMonsters", sync_small_monsters, true),
-    ON_OFF("Multiplayer", "FullHubList", hub_full_list, false),
     {"Monster HP", "1Player|1Players", SET_FACTOR, F(hp.scale[0]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, true, ERR_HP},
     {"Monster HP", "2Players|2Player", SET_FACTOR, F(hp.scale[1]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, true, ERR_HP},
     {"Monster HP", "3Players|3Player", SET_FACTOR, F(hp.scale[2]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, true, ERR_HP},
@@ -1158,6 +1178,25 @@ void config_load(void) {
     if ((e = getenv("MHGU_LDN_JOIN"))) snprintf(g_config.ldn_join, sizeof g_config.ldn_join, "%s", e);
     if ((e = getenv("MHGU_LDN_SERVER"))) snprintf(g_config.ldn_server, sizeof g_config.ldn_server, "%s", e);
     if ((e = getenv("MHGU_LDN_KEY"))) snprintf(g_config.ldn_key, sizeof g_config.ldn_key, "%s", e);
+    static const struct { const char *env, *key; } crossplay_env[] = {
+        {"MHGU_CROSSPLAY", "Crossplay"}, {"MHGU_RYU_SERVERS", "RyuServers"}, {"MHGU_RYU_HOST", "RyuHost"},
+        {"MHGU_RYU_PORT", "RyuPort"}, {"MHGU_RYU_PASSWORD", "RyuPassword"}, {"MHGU_ROOM_SERVER", "RoomServer"},
+        {"MHGU_ROOM_HOST", "RoomHost"}, {"MHGU_ROOM_PORT", "RoomPort"}, {"MHGU_ROOM_NAME", "RoomName"},
+        {"MHGU_ROOM_PASSWORD", "RoomPassword"}, {"MHGU_WEB_API", "WebApiUrl"}
+    };
+    for (unsigned i = 0; i < sizeof crossplay_env / sizeof *crossplay_env; ++i) {
+        const ConfigSetting *setting = config_setting(crossplay_env[i].key);
+        const char *value = getenv(crossplay_env[i].env);
+        if (!setting || !value) continue;
+        if (setting->kind == SET_BOOL && (!strcmp(value, "0") || !strcmp(value, "1"))) value = *value == '0' ? "Off" : "On";
+        if (!strcmp(crossplay_env[i].key, "Crossplay") && strlen(value) == 1 && *value >= '0' && *value <= '3') {
+            static const char *const modes[] = {"Off", "Ryujinx", "Yuzu Room", "Mixed"};
+            value = modes[*value - '0'];
+        }
+        if (setting->kind == SET_TEXT && strlen(value) >= setting->field2) continue;
+        Config candidate = g_config;
+        if (config_parse(setting, value, &candidate) && config_valid(setting, &candidate)) g_config = candidate;
+    }
     if ((e = getenv("MHGU_ASPECT"))) parse_aspect(e, &g_config.aspect_ratio);
     if ((e = getenv("MHGU_FOV")) && strtof(e, NULL) >= 0.5f && strtof(e, NULL) <= 2.0f) g_config.fov = strtof(e, NULL);
     if ((e = getenv("MHGU_UI_ANCHOR"))) config_parse(config_setting("UIAnchor"), e, &g_config);

@@ -105,7 +105,8 @@ void emsync_tick(void) {
     if (now - last < 33000000ull) return;
     last = now;
     static int was = -1;  // last logged state
-    if (!g_config.sync_small_monsters || !ldn_net_up()) { g_area = -1, g_claiming = false; return; }
+    // (crossplay: the emulators' players don't speak this, so no small monster sync there)
+    if (!g_config.sync_small_monsters || !ldn_net_up() || ldn_crossplay()) { g_area = -1, g_claiming = false; return; }
     uint32_t sen = LD32(G_SENEMY), spl = LD32(G_SPLAYER), mem = LD32(G_MEMBER);
     if (!sane(sen) || !sane(spl) || !sane(mem)) { g_area = -1, g_claiming = false; return; }
     int me = (int)LD32(mem + 0x30);

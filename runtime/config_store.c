@@ -22,8 +22,8 @@ static SDL_AtomicInt volume = {100}, confirm_exit = {1}, language = {0}, mute_in
 static SDL_AtomicInt live_fps, live_fov, live_mouse, live_draw = {0x3f800000}, live_fxaa = {1}, live_msaa = {1},
                      live_vsync = {1}, live_face, live_menu_confirm, live_background = {1}, live_combo, live_chat_key,
                      live_fxaa_mode, live_smooth, live_discord, live_discord_hunter, live_binds[BINDS][BIND_KEYS],
-                     live_touch, live_touch_scheme, live_touch_hud, live_auto_run, live_touch_show[TB_COUNT], live_touch_show_trad[TB_COUNT], live_touch_combo[TOUCH_COMBOS], live_touch_combo_pad[TOUCH_COMBOS], live_touch_cam, live_touch_opacity, live_lock_on = {1},
-                     live_touch_vibration = {1}, live_phone_rumble = {1}, live_show_stats, live_pause_bg = {1}, live_hub_full = {1},
+                     live_touch, live_touch_hud, live_touch_show[TB_COUNT], live_touch_combo[TOUCH_COMBOS], live_touch_combo_pad[TOUCH_COMBOS], live_touch_cam, live_touch_opacity, live_lock_on = {1},
+                     live_touch_vibration = {1}, live_phone_rumble = {1}, live_show_stats, live_pause_bg = {1},
                      live_shadows = {1}, live_bloom = {1}, live_reverb = {1};
 static void set_float(SDL_AtomicInt *slot, float value) {
     int bits; _Static_assert(sizeof bits == sizeof value, "32-bit float settings");
@@ -34,6 +34,7 @@ static float get_float(SDL_AtomicInt *slot) {
 }
 static SDL_SpinLock live_ldn_lock;  // [Multiplayer] Server / Key: read by the network threads (runtime/net/ldn.c)
 static char live_ldn_server[sizeof saved.ldn_server], live_ldn_key[sizeof saved.ldn_key];
+static Config live_crossplay;  // protected by live_ldn_lock
 // A save updates changed hot fields only. Saving the volume must not silently
 // remove an unchanged FOV/FPS override supplied by the development environment.
 static void publish_live(const Config *c, bool all) {
@@ -55,11 +56,8 @@ static void publish_live(const Config *c, bool all) {
     if (all || c->discord != saved.discord) SDL_SetAtomicInt(&live_discord, c->discord);
     if (all || c->discord_hunter != saved.discord_hunter) SDL_SetAtomicInt(&live_discord_hunter, c->discord_hunter);
     if (all || c->touch_controls != saved.touch_controls) SDL_SetAtomicInt(&live_touch, c->touch_controls);
-    if (all || c->touch_scheme != saved.touch_scheme) SDL_SetAtomicInt(&live_touch_scheme, c->touch_scheme);
     if (all || c->touch_hud != saved.touch_hud) SDL_SetAtomicInt(&live_touch_hud, c->touch_hud);
-    if (all || c->touch_auto_run != saved.touch_auto_run) SDL_SetAtomicInt(&live_auto_run, c->touch_auto_run);
     for (int i = 0; i < TB_COUNT; i++) SDL_SetAtomicInt(&live_touch_show[i], c->touch_show[i]);
-    for (int i = 0; i < TB_COUNT; i++) SDL_SetAtomicInt(&live_touch_show_trad[i], c->touch_show_trad[i]);
     for (int i = 0; i < TOUCH_COMBOS; i++) {
         SDL_SetAtomicInt(&live_touch_combo[i], (int)config_combo_mask(c->touch_combo[i]));
         SDL_SetAtomicInt(&live_touch_combo_pad[i], c->touch_combo_pad[i]);
@@ -70,7 +68,6 @@ static void publish_live(const Config *c, bool all) {
     if (all || c->touch_vibration != saved.touch_vibration) SDL_SetAtomicInt(&live_touch_vibration, c->touch_vibration);
     if (all || c->phone_rumble != saved.phone_rumble) SDL_SetAtomicInt(&live_phone_rumble, c->phone_rumble);
     if (all || c->show_stats != saved.show_stats) SDL_SetAtomicInt(&live_show_stats, c->show_stats);
-    if (all || c->hub_full_list != saved.hub_full_list) SDL_SetAtomicInt(&live_hub_full, c->hub_full_list);
     if (all || c->pause_background != saved.pause_background) SDL_SetAtomicInt(&live_pause_bg, c->pause_background);
     if (all || c->shadows != saved.shadows) SDL_SetAtomicInt(&live_shadows, c->shadows);
     if (all || c->bloom != saved.bloom) SDL_SetAtomicInt(&live_bloom, c->bloom);
@@ -84,6 +81,18 @@ static void publish_live(const Config *c, bool all) {
         if (all || strcmp(c->ldn_key, saved.ldn_key)) memcpy(live_ldn_key, c->ldn_key, sizeof live_ldn_key);
         SDL_UnlockSpinlock(&live_ldn_lock);
     }
+    SDL_LockSpinlock(&live_ldn_lock);
+    if (all || c->crossplay != saved.crossplay) live_crossplay.crossplay = c->crossplay;
+    if (all || strcmp(c->ryu_servers, saved.ryu_servers)) memcpy(live_crossplay.ryu_servers, c->ryu_servers, sizeof live_crossplay.ryu_servers);
+    if (all || c->ryu_host != saved.ryu_host) live_crossplay.ryu_host = c->ryu_host;
+    if (all || c->ryu_port != saved.ryu_port) live_crossplay.ryu_port = c->ryu_port;
+    if (all || strcmp(c->ryu_password, saved.ryu_password)) memcpy(live_crossplay.ryu_password, c->ryu_password, sizeof live_crossplay.ryu_password);
+    if (all || strcmp(c->room_server, saved.room_server)) memcpy(live_crossplay.room_server, c->room_server, sizeof live_crossplay.room_server);
+    if (all || c->room_host != saved.room_host) live_crossplay.room_host = c->room_host;
+    if (all || c->room_port != saved.room_port) live_crossplay.room_port = c->room_port;
+    if (all || strcmp(c->room_name, saved.room_name)) memcpy(live_crossplay.room_name, c->room_name, sizeof live_crossplay.room_name);
+    if (all || strcmp(c->room_password, saved.room_password)) memcpy(live_crossplay.room_password, c->room_password, sizeof live_crossplay.room_password);
+    SDL_UnlockSpinlock(&live_ldn_lock);
 }
 void config_store_loaded(const Config *c) {
     publish_live(c, !have_saved);
@@ -121,12 +130,9 @@ int config_live_smooth_gradients(void) { return SDL_GetAtomicInt(&live_smooth); 
 int config_live_discord(void) { return SDL_GetAtomicInt(&live_discord); }
 int config_live_discord_hunter(void) { return SDL_GetAtomicInt(&live_discord_hunter); }
 int config_live_touch_controls(void) { return SDL_GetAtomicInt(&live_touch); }
-int config_live_touch_scheme(void) { return SDL_GetAtomicInt(&live_touch_scheme); }
 int config_live_touch_hud(void) { return SDL_GetAtomicInt(&live_touch_hud); }
-int config_live_touch_auto_run(void) { return SDL_GetAtomicInt(&live_auto_run); }
 int config_live_lock_on(void) { return SDL_GetAtomicInt(&live_lock_on); }
 int config_live_touch_show(int button) { return SDL_GetAtomicInt(&live_touch_show[button]); }
-int config_live_touch_show_trad(int button) { return SDL_GetAtomicInt(&live_touch_show_trad[button]); }
 uint32_t config_live_touch_combo(int index) { return (uint32_t)SDL_GetAtomicInt(&live_touch_combo[index]); }
 int config_live_touch_combo_pad(int index) { return SDL_GetAtomicInt(&live_touch_combo_pad[index]); }
 
@@ -156,7 +162,6 @@ float config_live_touch_opacity(void) { return get_float(&live_touch_opacity); }
 int config_live_touch_vibration(void) { return SDL_GetAtomicInt(&live_touch_vibration); }
 int config_live_phone_rumble(void) { return SDL_GetAtomicInt(&live_phone_rumble); }
 int config_live_show_stats(void) { return SDL_GetAtomicInt(&live_show_stats); }
-int config_live_hub_full_list(void) { return SDL_GetAtomicInt(&live_hub_full); }
 int config_live_pause_background(void) { return SDL_GetAtomicInt(&live_pause_bg); }
 int config_live_shadows(void) { return SDL_GetAtomicInt(&live_shadows); }
 int config_live_bloom(void) { return SDL_GetAtomicInt(&live_bloom); }
@@ -172,6 +177,20 @@ void config_live_ldn(char *server, size_t server_size, char *key, size_t key_siz
     SDL_LockSpinlock(&live_ldn_lock);
     if (server) SDL_strlcpy(server, live_ldn_server, server_size);
     if (key) SDL_strlcpy(key, live_ldn_key, key_size);
+    SDL_UnlockSpinlock(&live_ldn_lock);
+}
+void config_live_crossplay(Config *out) {
+    SDL_LockSpinlock(&live_ldn_lock);
+    out->crossplay = live_crossplay.crossplay;
+    memcpy(out->ryu_servers, live_crossplay.ryu_servers, sizeof out->ryu_servers);
+    out->ryu_host = live_crossplay.ryu_host;
+    out->ryu_port = live_crossplay.ryu_port;
+    memcpy(out->ryu_password, live_crossplay.ryu_password, sizeof out->ryu_password);
+    memcpy(out->room_server, live_crossplay.room_server, sizeof out->room_server);
+    out->room_host = live_crossplay.room_host;
+    out->room_port = live_crossplay.room_port;
+    memcpy(out->room_name, live_crossplay.room_name, sizeof out->room_name);
+    memcpy(out->room_password, live_crossplay.room_password, sizeof out->room_password);
     SDL_UnlockSpinlock(&live_ldn_lock);
 }
 int config_language(void) { return SDL_GetAtomicInt(&language); }

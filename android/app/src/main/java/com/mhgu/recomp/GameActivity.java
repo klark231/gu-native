@@ -212,6 +212,30 @@ public class GameActivity extends SDLActivity {
         activity.startActivity(intent);
     }
 
+    /** Room Browser (runtime/net/webapi.c): GET an http(s) URL (the Eden Web API), "" on any failure. */
+    public static String webGet(String url, String apiVersion) {
+        java.net.HttpURLConnection c = null;
+        try {
+            c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(8000);
+            c.setRequestProperty("api-version", apiVersion);
+            c.setRequestProperty("Accept", "application/json");
+            if (c.getResponseCode() >= 400) return "";
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            try (InputStream in = c.getInputStream()) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0 && out.size() < (4 << 20)) out.write(buf, 0, n);
+            }
+            return out.toString("UTF-8");
+        } catch (Exception e) {
+            return "";
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
     /** LAN (runtime/net/ldn.c): sin este permiso, muchos teléfonos descartan por Wi-Fi los paquetes de búsqueda de sala. */
     public static void lanSearch(boolean on) {
         SDLActivity activity = mSingleton;

@@ -34,13 +34,7 @@ typedef struct {
 // ldn.c
 bool ldn_net_up(void);           // a network exists (hosting with it created, or joined)
 bool ldn_hosting(void);          // we host it
-bool ldn_hub_browsing(void);     // the Join Hub screen is open: searching, not joined
-int ldn_hub_lists(void);         // how many lists of hubs the last search had
-bool ldn_hub_list_goto(int n);   // a tap on a list's number (0 based)
-void ldn_hub_list_range(int *first, int *last, int *total); // the hubs of the chosen list: #first to #last of total
-int ldn_hub_list_chosen(void);   // the list the next search gives (0 based)
-bool ldn_hub_list_pending(void); // one was chosen that is not on the screen yet
-bool ldn_hub_list_step(int dir); // the arrows there: the next search gives the previous / next list of hubs (false: one list only)
+bool ldn_crossplay(void);        // emulator peers (Ryujinx, a Yuzu-family room): port-specific monster / HP synchronization is off
 // The hub's players and their maximum, and an id for it (a hash of its session id: the same in every player's
 // game); false: no hub.
 bool ldn_party(int *n, int *max, char *id, size_t size);
@@ -54,6 +48,19 @@ enum { HUB_UNKNOWN, HUB_CHECKING, HUB_OFF, HUB_ONLINE, HUB_NOT_FOUND, HUB_UNREAC
        HUB_BUSY, HUB_VERSION, HUB_REFUSED };
 int ldn_hub_status(const char *server, const char *key, int *ms, int *hubs);  // HUB_*
 void ldn_hub_check(const char *server, const char *key);  // asks the server for its hubs, in a thread
+
+// The Room Browser (runtime/net/webapi.c): the Eden Web API's public room list (GET <url>/lobby), fetched in a thread
+typedef struct {
+    char name[64], owner[48], game[48], address[64];
+    uint16_t port;
+    int players, max_players;
+    bool locked;  // has a password
+} WebRoom;
+enum { WEBROOMS_IDLE, WEBROOMS_LOADING, WEBROOMS_OK, WEBROOMS_ERROR };
+#define WEBROOMS_MAX 128
+void webrooms_refresh(const char *url);             // starts a fetch (ignored while one runs)
+int webrooms_state(char *err, size_t err_size);     // WEBROOMS_*; err: why, after an error
+int webrooms_get(WebRoom *out, int max);            // the last list; its size
 
 // vsock.c
 void vsock_deliver(const VPacket *p, const void *data, uint32_t len);  // from the network to the local sockets

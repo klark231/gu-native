@@ -86,7 +86,8 @@ target_compile_definitions(main PRIVATE VK_NO_PROTOTYPES VK_USE_PLATFORM_ANDROID
                            VMA_DYNAMIC_VULKAN_FUNCTIONS=0)
 target_include_directories(main PRIVATE ${S}/third_party/volk)
 target_compile_options(main PRIVATE "$<$<COMPILE_LANGUAGE:C,CXX>:SHELL:-include ${S}/third_party/volk/volk.h>")
-target_link_libraries(main PRIVATE SDL3 mhguffmpeg adrenotools
+# MHGU_XP_LIB: crates/mhgu-crossplay (Rust, built by build_native.sh): Ryujinx and Yuzu-room crossplay
+target_link_libraries(main PRIVATE SDL3 mhguffmpeg adrenotools ${MHGU_XP_LIB}
   ${DEPS}/shaderc/lib/libshaderc_combined.a android log dl m z)
 # The game code library binds the runtime's functions (rt_dispatch, the NEON helpers...) by name: all exported.
 # The static libraries stay inside.

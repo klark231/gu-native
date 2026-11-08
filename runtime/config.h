@@ -11,7 +11,6 @@ extern "C" {
 enum { DISPLAY_WINDOWED, DISPLAY_FULLSCREEN, DISPLAY_BORDERLESS };
 enum { FACE_POSITION, FACE_LABEL };
 enum { COMBO_LENIENT, COMBO_STRICT };
-enum { TS_ADAPTIVE, TS_TRADITIONAL };  // [Touch] Layout: the controls change with the action (menus, bows) / the same ones always
 enum { TOUCH_AUTO, TOUCH_ON, TOUCH_OFF };  // [Touch] Controls (runtime/touch.cpp)  // [Controls] ComboInputWindow (runtime/hle/combowin.c)
 enum { MENU_CONFIRM_ORIGINAL, MENU_CONFIRM_SOUTH, MENU_CONFIRM_EAST };
 enum { FXAA_ORIGINAL, FXAA_311 };  // [Anti-aliasing] FXAAMode (runtime/nvn/vulkan/exec.c)
@@ -38,7 +37,6 @@ enum {
 enum { TB_ATTACKS, TB_DODGE, TB_GUARD, TB_SHEATHE, TB_PLUS, TB_MINUS, TB_DPAD, TB_L, TB_ZL, TB_ZR, TB_L3, TB_R3, TB_STICK,
        TB_RANGED, TB_FIRE, TB_SECOND, TB_AIM, TB_RSPECIAL, TB_AMMO, TB_ITEM_ARROWS, TB_MENU_ZL, TB_MENU_ZR, TB_COUNT };
 #define TOUCH_SHOW_DEFAULT {1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0}
-#define TOUCH_SHOW_TRAD_DEFAULT {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // (Traditional: every button on)
 #define TOUCH_COMBOS 6
 // a controller's buttons a combined button can be on (the less used ones)
 enum { PADB_NONE, PADB_L3, PADB_R3, PADB_MINUS, PADB_GUIDE, PADB_MISC, PADB_PADDLE1, PADB_PADDLE2, PADB_PADDLE3, PADB_PADDLE4,
@@ -61,7 +59,6 @@ typedef struct {
     int face_buttons;         // FACE_*: controller face buttons by position (the Switch layout) or by their labels
     int ldn_port;             // local play: the port a hosted hub listens on (TCP; UDP for LAN search)
     char ldn_join[256];       // local play: hosts to search besides the LAN (host[:port], comma separated)
-    int hub_full_list;        // [Multiplayer] FullHubList: each Join Hub search asks each hub server several times at once, to list all their hubs
     int sync_small_monsters;  // multiplayer: small monsters synced like large ones (runtime/net/emsync.c)
     int bonus_content;        // free downloads copied from a donor save into saves without any (runtime/services/bonus.c)
     int village_in_hub;       // L / R at the Hub's / Pub's quest counter switch to Village quests (runtime/hle/villagehub.c)
@@ -121,15 +118,29 @@ typedef struct {
     char touch_combo[TOUCH_COMBOS][32];  // [Touch] Combo1..: the game's buttons one screen button presses together
                                          // ("A+X"; config_combo_mask); "" none
     int touch_combo_pad[TOUCH_COMBOS];   // [Touch] Combo1Pad..: PADB_*, a controller's button that does the same
-    int touch_scheme;         // [Touch] Layout: TS_*, how the controls on the screen are laid out (0 by default, no value in CONFIG_DEFAULT_VALUES)
-    int touch_show_trad[TB_COUNT];  // [Touch] TradShow*: the same for the Traditional layout (TB_ATTACKS to TB_STICK; all on by default)
-    int touch_auto_run;       // [Touch] AutoRun: Traditional layout only: the thumb past the stick's rim runs (R held); off (default): only the R button runs (last field: its default is the last value of CONFIG_DEFAULT_VALUES)
+    // Crossplay (runtime/net/ldn.c, crates/mhgu-crossplay). Last in the struct on purpose: CONFIG_DEFAULT_VALUES (config.c)
+    // sets these by name after the positional ones, so no other field moves.
+    int crossplay;            // [Multiplayer] Crossplay: XP_OFF, XP_RYU (Ryujinx LDN server), XP_ROOM (Yuzu rooms) or XP_MIXED
+    char ryu_servers[256];    // [Multiplayer] RyuServers: RyuLdn servers (host[:port], comma separated)
+    int ryu_host;             // [Multiplayer] RyuHost: run a RyuLdn server in this process
+    int ryu_port;             // [Multiplayer] RyuPort: that server's TCP port
+    char ryu_password[64];    // [Multiplayer] RyuPassword: the lobby's passphrase (empty: public)
+    char room_server[256];    // [Multiplayer] RoomServer: Yuzu-family room server (host[:port]); empty: none
+    int room_host;            // [Multiplayer] RoomHost: run a room server in this process
+    int room_port;            // [Multiplayer] RoomPort: that room server's port
+    char room_name[64];       // [Multiplayer] RoomName: the nickname in a room, and the name of a room this device hosts
+    char room_password[64];   // [Multiplayer] RoomPassword: the room's password (empty: open)
+    char web_api_url[256];    // [Multiplayer] WebApiUrl: the Eden Web API that lists public rooms (the Room Browser)
+    char last_room[96];       // [Multiplayer] LastRoom: "address:port" of the room joined last (pinned first in the Room Browser)
+    char last_room_name[64];  // [Multiplayer] LastRoomName: and its name (empty: any name)
 } Config;
+enum { XP_OFF, XP_RYU, XP_ROOM, XP_MIXED };
+#define WEB_API_DEFAULT_URL "api.ynet-fun.xyz"  // the Eden build's default (its web_api_url setting)
 uint32_t config_combo_mask(const char *text);  // "A+X" -> the BTN_* bits, 0 if there is nothing or anything else in it
 void config_combo_text(uint32_t mask, char *out, size_t size);  // and back
-// The hub servers used when ini Server is empty (runtime/net/ldn.c, server/): the two public MHGURecomp ones, a list like
-// the ini's. Hubs are listed on both, and a search asks both. "" = no default: no internet hubs unless the player names a server.
-#define LDN_DEFAULT_SERVER "hunterhubid-gu-hub.duckdns.org morerokk-mhgurecomp-ldnserver.duckdns.org"
+// The hub server used when ini Server is empty (runtime/net/ldn.c, server/): the project's public one (an Oracle
+// none). "" = no default: no internet hubs unless the player names a server.
+#define LDN_DEFAULT_SERVER ""
 #define LOW_END_SCALE 40  // what the menu's Low-end mode sets: RenderScale, FPS
 #define LOW_END_FPS 30
 #define LOW_END_TOASTER 2   // LowEnd = Toaster: everything for speed and the battery (config.c, textures.c, the menu)
@@ -211,26 +222,23 @@ int config_live_fxaa_mode(void);
 int config_live_smooth_gradients(void);
 int config_live_discord(void);         // [Discord] RichPresence
 int config_live_discord_hunter(void);  // [Discord] ShowHunter
-int config_live_touch_scheme(void);    // [Touch] Layout: TS_*
 int config_live_touch_controls(void);  // [Touch] (runtime/touch.cpp)
 int config_live_touch_hud(void);
-int config_live_touch_auto_run(void);  // [Touch] AutoRun
 int config_live_lock_on(void);
 int config_live_touch_show(int button);        // TB_*
-int config_live_touch_show_trad(int button);   // TB_*, in the Traditional layout
 uint32_t config_live_touch_combo(int index);   // its buttons (config_combo_mask)
 int config_live_touch_combo_pad(int index);    // PADB_*
 float config_live_touch_camera(void);
 float config_live_touch_opacity(void);
 int config_live_touch_vibration(void);  // [Touch] Vibration
 int config_live_phone_rumble(void);     // [Controls] PhoneRumble
-int config_live_hub_full_list(void);   // [Multiplayer] FullHubList
 int config_live_show_stats(void);       // [Performance] ShowStats
 int config_live_pause_background(void); // [Application] PauseInBackground
 int config_live_shadows(void);          // [Performance] Shadows
 int config_live_bloom(void);            // [Performance] Bloom
 int config_live_reverb(void);           // [Audio] Reverb
 void config_live_test(const Config *c);  // (config.c: a test run's overrides of Shadows, Bloom, FPS; not saved)
+void config_live_crossplay(Config *out);  // coherent snapshot of the saved Crossplay / Ryu* / Room* settings
 void config_live_ldn(char *server, size_t server_size, char *key, size_t key_size);  // [Multiplayer] Server, Key
 bool config_restart_required(const Config *draft); // Raw cold fields vs this process's startup INI values.
 float config_audio_gain(void);  // atomic, safe on audio threads; 0 while muted in the background
