@@ -1443,6 +1443,8 @@ HLE_FUNC("_ZN2nn3ldn10InitializeEv", ldn_initialize) { NTRACE();
     RET(0);
 }
 
+static void browse_touch(void);  // (Join Hub screen open, see ldn_hub_browsing)
+static void browse_end(void);
 static void to_initialized(void) {
     int st = L.state;
     if (st == ST_AP_CREATED || st == ST_ACCESS_POINT) host_stop(DR_DESTROYED_BY_USER);
@@ -1453,6 +1455,7 @@ static void to_initialized(void) {
 
 HLE_FUNC("_ZN2nn3ldn8FinalizeEv", ldn_finalize) { NTRACE();
     lan_wifi(false);
+    browse_end();
     to_initialized();
     L.state = ST_NONE;
     (void)c;
@@ -1518,6 +1521,7 @@ HLE_FUNC("_ZN2nn3ldn16CloseAccessPointEv", ldn_close_ap) { NTRACE();
 }
 
 static uint32_t create_network(const uint8_t *cfg, const uint8_t *sec, const uint8_t *sec_param, const uint8_t *user) {
+    browse_end();  // (hosting: not browsing)
     if (L.state != ST_ACCESS_POINT) return R_INVALID_STATE;
     pthread_mutex_lock(&L.mu);
     memset(L.info, 0, NETINFO_SIZE);
@@ -1626,6 +1630,7 @@ HLE_FUNC("_ZN2nn3ldn6RejectENS0_11Ipv4AddressE", ldn_reject) { NTRACE();
 HLE_FUNC("_ZN2nn3ldn11OpenStationEv", ldn_open_station) { NTRACE();
     if (L.state != ST_INITIALIZED) { RET(R_INVALID_STATE); return; }
     L.state = ST_STATION;
+    browse_touch();
     signal_change();
     RET(0);
 }
@@ -1686,6 +1691,7 @@ HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan)
     int max = (int)ARG(2);
     const uint8_t *filter = ARGP(3);
     if (L.state != ST_STATION && L.state != ST_ACCESS_POINT) { RET(R_INVALID_STATE); return; }
+    browse_touch();
     static uint8_t infos[MAX_FOUND][NETINFO_SIZE];
     static LobbyList online[MAX_HUBS];
     struct sockaddr_in addrs[MAX_FOUND];
@@ -1781,7 +1787,17 @@ HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan)
 }
 
 // The Join Hub screen is open (a station that has not joined): the list buttons (runtime/touch.cpp) change the hub list.
-bool ldn_hub_browsing(void) { return L.state == ST_STATION; }
+// (the game may leave the station state once its table of hubs is up, so the screen counts as open for a while after
+// the last search or station call, until a hub is joined, hosted or the game shuts the LAN down)
+static uint64_t browse_ns;  // plat_now_ns() of the last Join Hub search / OpenStation; 0: not browsing
+#define BROWSE_HOLD_NS (90ull * 1000000000ull)
+static void browse_touch(void) { browse_ns = plat_now_ns(); }
+static void browse_end(void) { browse_ns = 0; }
+bool ldn_hub_browsing(void) {
+    if (L.state == ST_STATION) return true;
+    if (!browse_ns || (L.state != ST_INITIALIZED && L.state != ST_ACCESS_POINT)) return false;
+    return plat_now_ns() - browse_ns < BROWSE_HOLD_NS;
+}
 int ldn_hub_lists(void) { return list_pages; }  // how many lists the last search had
 // The next search gives the list before / after the one chosen last (dir -1 / +1); several steps in a row add up.
 // false: only one list, nothing to change.
@@ -1808,6 +1824,7 @@ int ldn_hub_list_chosen(void) { return list_next >= 0 ? list_next : list_given; 
 bool ldn_hub_list_pending(void) { return list_next >= 0 && list_next != list_given; }
 
 static uint32_t connect_network(const uint8_t *info, const uint8_t *user, uint16_t lcv) {
+    browse_end();  // (a hub is being joined: the list is left)
     if (L.state != ST_STATION) return R_INVALID_STATE;
     int i = 0;
     while (i < nfound && memcmp(found[i].bssid, info + NI_BSSID, 6)) i++;
