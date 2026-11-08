@@ -239,6 +239,12 @@ static const char DEFAULT_INI[] =
     "; Default: Auto\n"
     "Controls = Auto\n"
     "\n"
+    "; Adaptive: the buttons change with what you do (the menu's, a bow's or a bowgun's). Traditional: as an emulator's, the same\n"
+    "; buttons always (A B X Y, L R ZL ZR, + -, the d-pad), with a layout of their own in touch_layout_traditional.txt\n"
+    "; Adaptive, Traditional\n"
+    "; Default: Adaptive\n"
+    "Layout = Adaptive\n"
+    "\n"
     "; While they show, the HUD moves out of the thumbs' way: the status to the left edge, the item bar to the bottom\n"
     "; middle, the Hunter Arts and the target camera to the top right\n"
     "; Default: On\n"
@@ -343,7 +349,10 @@ static const char DEFAULT_INI[] =
     "\n"
     "; Hub server for playing over the internet without port forwarding: hubs you create are listed there, and\n"
     "; Search Hubs shows its hubs next to the LAN's. host or host:port (default port 39510).\n"
-    "; Empty or Off: no internet hubs.\n"
+    "; Several servers can be named, separated by commas or spaces (up to 8): your hubs are listed on all of them,\n"
+    "; and Search Hubs shows the hubs of all of them. A name starting with - is kept but switched off.\n"
+    "; Hubs are listed for both link versions (2: this port, 3: the MHGURecomp PC build), so both find them.\n"
+    "; Empty: the default (hunterhubid-gu-hub.duckdns.org and morerokk-mhgurecomp-ldnserver.duckdns.org). Off: no internet hubs.\n"
     "; Default:\n"
     "Server =\n"
     "\n"
@@ -586,6 +595,7 @@ const ConfigSetting g_settings[] = {
     ON_OFF("Controls", "PhoneRumble", phone_rumble, false),
     ON_OFF("Controls", "LockOn", lock_on, false),
     {"Touch", "Controls", SET_CHOICE, F(touch_controls), 0, 0, 0, "Auto,On,Off", NULL, false, ERR_MISC},
+    {"Touch", "Layout", SET_CHOICE, F(touch_scheme), 0, 0, 0, "Adaptive|adaptive|0,Traditional|tradicional|1", NULL, false, ERR_MISC},
     ON_OFF("Touch", "MoveHUD", touch_hud, false),
     ON_OFF("Touch", "ShowAttacks", touch_show[TB_ATTACKS], false),
     ON_OFF("Touch", "ShowDodge", touch_show[TB_DODGE], false),

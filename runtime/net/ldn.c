@@ -95,7 +95,15 @@ enum { DR_NONE, DR_BY_USER, DR_BY_SYSTEM, DR_DESTROYED_BY_USER, DR_DESTROYED_BY_
 
 // ---- link protocol
 #define PROTO_MAGIC "MHGL"
-#define PROTO_VERSION 2
+#define PROTO_VERSION 2  // the one used when nothing says otherwise (gu-native's own)
+// Link versions spoken: 2 (this port, gu-native) and 3 (the MHGURecomp PC build). The frames are laid out the same in both, but
+// a host only accepts a hello of its own version and a hub server only lists hubs of the asker's version. So we speak both: a
+// hub we host is listed under both versions, a search asks each version, and a found hub remembers the one it speaks.
+static const uint16_t LINK_VERSIONS[] = {2, 3};
+#define N_LINK_VERSIONS 2
+static bool link_version_ok(uint16_t v) { return v == LINK_VERSIONS[0] || v == LINK_VERSIONS[1]; }
+// The room of Android players without a key on the MHGURecomp servers (-separate-phones, on by default): searches add it.
+#define PHONE_PUBLIC_KEY "public-phone"
 enum { F_HELLO = 1, F_INFO, F_WELCOME, F_REFUSE, F_PACKET, F_DESTROY, F_AUX };  // F_AUX: the port's own messages (emsync.c, hle/hpscale.c)
 typedef struct {
     char magic[4];
@@ -119,7 +127,7 @@ typedef struct { char magic[4]; uint32_t token; uint8_t kind, pad[3]; } UHdr;
 #define UDP_SILENCE_NS 15000000000ull
 
 // The hub server (server/server.go has the protocol): control frames like the link's; requests start with a header
-// "MHGS", u16 LOBBY_PROTO, u16 PROTO_VERSION, room[16] (the matchmaking key's hash).
+// "MHGS", u16 LOBBY_PROTO, u16 link version (2 or 3), room[16] (the matchmaking key's hash).
 #define LOBBY_PROTO 1
 #define LOBBY_PORT 39510
 #define LOBBY_HEADER 24
@@ -167,13 +175,14 @@ static struct {
     volatile bool uth_run;
     // host: the hub's listing on the hub server
     pthread_t lobby_th;
-    volatile bool lobby_run, lobby_dirty;  // dirty: the NetworkInfo changed, send it
+    volatile bool lobby_run;
+    volatile uint32_t lobby_seq;  // counts the NetworkInfo's changes: each listing thread sends it when it moved on
     struct sockaddr_in lobby_addr;
 } L = {.mu = PTHREAD_MUTEX_INITIALIZER, .listen_s = BADSOCK, .disc_s = BADSOCK, .us = BADSOCK};
 
 // Scan results: where each found network's host is (hub: on the hub server at addr, 0: the host's own address).
-#define MAX_FOUND 32
-static struct { uint8_t bssid[6], session[16]; struct sockaddr_in addr; uint64_t hub; } found[MAX_FOUND];
+#define MAX_FOUND 128
+static struct { uint8_t bssid[6], session[16]; struct sockaddr_in addr; uint64_t hub; char server[256], key[64]; uint16_t ver; } found[MAX_FOUND];  // (ver, key: what the hub was listed under)
 static int nfound;
 
 static void signal_change(void) {
@@ -341,10 +350,10 @@ static bool udp_send(hsock s, const struct sockaddr_in *to, const Link *l, uint8
     return k == (int)n;
 }
 
-static Hello make_hello(bool scan_only, const uint8_t *user_name) {
+static Hello make_hello(bool scan_only, const uint8_t *user_name, uint16_t version) {
     Hello h = {0};
     memcpy(h.magic, PROTO_MAGIC, 4);
-    h.version = PROTO_VERSION;
+    h.version = version;
     h.scan_only = scan_only;
     h.lcv = L.lcv;
     memcpy(h.mac, L.mac, 6);
@@ -479,7 +488,7 @@ static void link_received(int from, const VPacket *p, const void *data, uint32_t
 static void push_info_locked(int except) {  // to every station (and the hub server's list): the network changed
     for (int i = 1; i < MAX_NODES; i++)
         if (i != except && L.nodes[i].alive) link_send(&L.nodes[i], F_INFO, L.info, NETINFO_SIZE, NULL, 0);
-    L.lobby_dirty = true;
+    L.lobby_seq++;
 }
 
 // A station's connection: accepted here, or opened to the hub server for a player it announced (relay_pair != 0).
@@ -495,7 +504,7 @@ static void *station_thread(void *arg) {
     Hello h;
     if (n < (int)sizeof h || type != F_HELLO) { hclose(acc.s); return NULL; }
     memcpy(&h, buf, sizeof h);
-    if (memcmp(h.magic, PROTO_MAGIC, 4) || h.version != PROTO_VERSION) {
+    if (memcmp(h.magic, PROTO_MAGIC, 4) || !link_version_ok(h.version)) {
         uint32_t r = R_CONNECT_REJECTED;
         frame_send(acc.s, F_REFUSE, &r, 4, NULL, 0);
         hclose(acc.s);
@@ -643,10 +652,10 @@ static void *host_thread(void *arg) {
                 }
                 continue;
             }
-            if (n >= 6 && !memcmp(probe, PROTO_MAGIC, 4) && rd16(probe + 4) == PROTO_VERSION) {
+            if (n >= 6 && !memcmp(probe, PROTO_MAGIC, 4) && link_version_ok(rd16(probe + 4))) {
                 uint8_t reply[8 + NETINFO_SIZE];
                 memcpy(reply, PROTO_MAGIC, 4);
-                wr16(reply + 4, PROTO_VERSION);
+                wr16(reply + 4, rd16(probe + 4));  // (the asker's version)
                 wr16(reply + 6, (uint16_t)g_config.ldn_port);
                 pthread_mutex_lock(&L.mu);
                 memcpy(reply + 8, L.info, NETINFO_SIZE);
@@ -659,31 +668,63 @@ static void *host_thread(void *arg) {
 }
 
 // ---- the hub server (internet hubs)
-// ini Server: empty = the default server (LDN_DEFAULT_SERVER, config.h), "Off" = none. Its name into out
-// (LOBBY_NAME bytes); false: no internet hubs. Server and Key are live settings (config_live_ldn): a change applies
-// from the next search, join or connection to the server on.
+// ini Server: empty = the default server (LDN_DEFAULT_SERVER, config.h), "Off" = none. It can also be a list of up to
+// MAX_HUBS servers, separated by commas or spaces: the hubs you create are listed on all of them, a search asks all of
+// them (and the LAN) and a hub is joined through the server that listed it. That is how two communities' servers are
+// "stitched" together for you. A name that starts with '-' is switched off but kept in the list. A web address is
+// accepted too: "http://name/" is the server "name". Server and Key are live settings (config_live_ldn): a change
+// applies from the next search, join or connection to a server on.
 #define LOBBY_NAME sizeof g_config.ldn_server
-static bool lobby_server_of(const char *s, char *out) {
-    if ((s[0] | 0x20) == 'o' && (s[1] | 0x20) == 'f' && (s[2] | 0x20) == 'f' && !s[3]) s = "";
-    else if (!*s) s = LDN_DEFAULT_SERVER;
-    snprintf(out, LOBBY_NAME, "%s", s);
-    return *out;
+#define MAX_HUBS 8
+// One name as typed -> the server's name (lower case: names are compared as they are); false: nothing in it
+static bool lobby_clean(const char *s, size_t n, char *out) {
+    char t[LOBBY_NAME];
+    if (n >= sizeof t) n = sizeof t - 1;
+    memcpy(t, s, n);
+    t[n] = 0;
+    char *p = t;
+    if (!strncmp(p, "http://", 7) || !strncmp(p, "HTTP://", 7)) p += 7;
+    else if (!strncmp(p, "https://", 8) || !strncmp(p, "HTTPS://", 8)) p += 8;
+    p[strcspn(p, "/?")] = 0;  // (a web address's path is not part of the server)
+    size_t k = 0;
+    for (; p[k]; k++) out[k] = (p[k] >= 'A' && p[k] <= 'Z') ? (char)(p[k] + 32) : p[k];
+    out[k] = 0;
+    return k > 0;
 }
-static bool lobby_server(char *out) {
+// The servers named in an ini Server text, into out; how many (0: no internet hubs)
+static int lobby_servers_of(const char *s, char out[MAX_HUBS][LOBBY_NAME]) {
+    if ((s[0] | 0x20) == 'o' && (s[1] | 0x20) == 'f' && (s[2] | 0x20) == 'f' && !s[3]) return 0;
+    if (!*s) s = LDN_DEFAULT_SERVER;
+    int n = 0;
+    while (*s && n < MAX_HUBS) {
+        while (*s == ' ' || *s == ',' || *s == '\t') s++;
+        const char *e = s;
+        while (*e && *e != ' ' && *e != ',' && *e != '\t') e++;
+        char name[LOBBY_NAME];
+        if (e > s && *s != '-' && lobby_clean(s, (size_t)(e - s), name)) {
+            bool dup = false;
+            for (int i = 0; i < n; i++) dup |= !strcmp(out[i], name);
+            if (!dup) memcpy(out[n++], name, sizeof name);
+        }
+        s = e;
+    }
+    return n;
+}
+static int lobby_servers(char out[MAX_HUBS][LOBBY_NAME]) {
     char s[LOBBY_NAME];
     config_live_ldn(s, sizeof s, NULL, 0);
-    return lobby_server_of(s, out);
+    return lobby_servers_of(s, out);
 }
 
 // A request's header. The room is a hash of the matchmaking key (key NULL: ini Key; spaces around it ignored): hubs
 // are listed only for players whose key matches, all of them without one. The server never sees the key itself.
-static bool lobby_header(uint8_t *h, const char *key) {
+static bool lobby_header(uint8_t *h, const char *key, uint16_t ver) {
     static const char salt[] = "MHGURecomp matchmaking key:";
     char live[sizeof g_config.ldn_key];
     if (!key) config_live_ldn(NULL, 0, live, sizeof live), key = live;
     memcpy(h, "MHGS", 4);
     wr16(h + 4, LOBBY_PROTO);
-    wr16(h + 6, PROTO_VERSION);
+    wr16(h + 6, ver);
     memset(h + 8, 0, 16);
     const char *k = key;
     while (*k == ' ') k++;
@@ -772,7 +813,16 @@ static void hub_report(int what, const char *srv, int state, int ms, int hubs) {
 // Host: one thread per created network keeps it listed and opens a connection for each player the server announces.
 // Threads of a network that is gone (lobby_gen moved on) end by themselves; nobody waits for them.
 static volatile uint32_t lobby_gen;
-typedef struct { uint32_t gen; struct sockaddr_in addr; uint64_t ticket; } LobbyTicket;
+static volatile int lobby_up[MAX_HUBS];  // how many link versions of a server's slot are listed now (a failure is told only when none is)
+typedef struct { uint32_t gen; struct sockaddr_in addr; uint64_t ticket; uint16_t ver; bool phone; } LobbyTicket;
+typedef struct { uint32_t gen; int slot; uint16_t ver; bool phone; } LobbyArg;  // (phone: listed in the phones' public room too)
+static bool live_key_empty(void) {
+    char k[sizeof g_config.ldn_key];
+    config_live_ldn(NULL, 0, k, sizeof k);
+    for (const char *c = k; *c; c++)
+        if (*c != ' ') return false;
+    return true;
+}  // (a thread per server of the list: the slot is its place in it)
 
 static bool lobby_wait(uint32_t gen, int ms) {  // false: the network is gone
     for (uint64_t end = plat_now_ns() + (uint64_t)ms * 1000000ull; plat_now_ns() < end && lobby_gen == gen;)
@@ -787,7 +837,7 @@ static void *lobby_attach_thread(void *arg) {
     hsock s = connect_to(&t.addr, 3000);
     if (s == BADSOCK) return NULL;
     uint8_t req[LOBBY_HEADER + 8], type;
-    lobby_header(req, NULL);
+    lobby_header(req, t.phone ? PHONE_PUBLIC_KEY : NULL, t.ver);
     memcpy(req + LOBBY_HEADER, &t.ticket, 8);
     hset_timeout(s, 5000);
     int n;
@@ -803,27 +853,35 @@ static void *lobby_attach_thread(void *arg) {
 }
 
 static void *lobby_thread(void *arg) {
-    uint32_t gen = (uint32_t)(uintptr_t)arg;
+    LobbyArg la = *(LobbyArg *)arg;
+    free(arg);
+    uint32_t gen = la.gen;
     static __thread uint8_t buf[MAX_FRAME];
     uint8_t req[LOBBY_HEADER + NETINFO_SIZE], type;
     while (lobby_gen == gen) {
         char srv[LOBBY_NAME];
         struct sockaddr_in addr;
         hsock s = BADSOCK;
-        if (!lobby_server(srv)) break;
+        char list[MAX_HUBS][LOBBY_NAME];
+        if (lobby_servers(list) <= la.slot) break;  // (taken out of the list: this thread is done)
+        if (la.phone && !live_key_empty()) {  // (the phones' public room is for a hub without a key of its own)
+            if (!lobby_wait(gen, 5000)) break;
+            continue;
+        }
+        snprintf(srv, sizeof srv, "%s", list[la.slot]);
         bool named = resolve_host(srv, LOBBY_PORT, &addr);
         if (named) s = connect_to(&addr, 3000);
         if (s == BADSOCK) {
-            LOG("[ldn] hub server %s %s: this hub is not listed online (trying again in 30 s)\n", srv,
-                named ? "unreachable" : "not found");
-            if (lobby_gen == gen) hub_report(NOTE_HOST, srv, named ? HUB_UNREACHABLE : HUB_NOT_FOUND, -1, -1);
+            LOG("[ldn] hub server %s %s: this hub is not listed online (v%u, trying again in 30 s)\n", srv,
+                named ? "unreachable" : "not found", (unsigned)la.ver);
+            if (lobby_gen == gen && !lobby_up[la.slot]) hub_report(NOTE_HOST, srv, named ? HUB_UNREACHABLE : HUB_NOT_FOUND, -1, -1);
             if (!lobby_wait(gen, 30000)) break;
             continue;
         }
-        bool keyed = lobby_header(req, NULL);
+        bool keyed = lobby_header(req, la.phone ? PHONE_PUBLIC_KEY : NULL, la.ver);
         pthread_mutex_lock(&L.mu);
         memcpy(req + LOBBY_HEADER, L.info, NETINFO_SIZE);
-        L.lobby_dirty = false;
+        uint32_t seen = L.lobby_seq;
         pthread_mutex_unlock(&L.mu);
         hset_timeout(s, 5000);
         int n = -1;
@@ -831,24 +889,25 @@ static void *lobby_thread(void *arg) {
         if (frame_send(s, S_HOST, req, sizeof req, NULL, 0)) n = frame_recv(s, &type, buf);
         if (n < 8 || type != S_HOSTED) {
             bool error = n >= 4 && type == S_ERROR;
-            LOG("[ldn] hub server %s: can't list this hub (%s); trying again in 30 s\n", srv,
+            LOG("[ldn] hub server %s: can't list this hub as v%u%s (%s); trying again in 30 s\n", srv, (unsigned)la.ver, la.phone ? " in the phones' room" : "",
                 error ? lobby_error(rd32(buf)) : "no answer");
             hclose(s);
-            if (lobby_gen == gen) hub_report(NOTE_HOST, srv, error ? lobby_state(rd32(buf)) : HUB_NO_ANSWER, -1, -1);
+            if (lobby_gen == gen && !lobby_up[la.slot]) hub_report(NOTE_HOST, srv, error ? lobby_state(rd32(buf)) : HUB_NO_ANSWER, -1, -1);
             if (!lobby_wait(gen, 30000)) break;
             continue;
         }
-        LOG("[ldn] hub listed on the hub server %s: %s\n", srv,
+        LOG("[ldn] hub listed on the hub server %s (link v%u%s): %s\n", srv, (unsigned)la.ver, la.phone ? ", phones' room" : "",
             keyed ? "players with the same matchmaking key see it" : "public, every player sees it");
+        if (lobby_gen == gen) __sync_fetch_and_add(&lobby_up[la.slot], 1);
         hub_report(NOTE_HOST, srv, HUB_ONLINE, (int)((plat_now_ns() - asked) / 1000000), -1);
         uint64_t now = plat_now_ns(), last_rx = now, next_ping = now + LOBBY_PING_NS;
         while (lobby_gen == gen) {
             now = plat_now_ns();
-            if (L.lobby_dirty) {
+            if (L.lobby_seq != seen) {
                 uint8_t info[NETINFO_SIZE];
                 pthread_mutex_lock(&L.mu);
                 memcpy(info, L.info, NETINFO_SIZE);
-                L.lobby_dirty = false;
+                seen = L.lobby_seq;
                 pthread_mutex_unlock(&L.mu);
                 if (!frame_send(s, S_UPDATE, info, NETINFO_SIZE, NULL, 0)) break;
             }
@@ -867,15 +926,16 @@ static void *lobby_thread(void *arg) {
             if (type == S_INCOMING && n >= 8) {
                 LobbyTicket *t = malloc(sizeof *t);
                 pthread_t th;
-                t->gen = gen, t->addr = addr, t->ticket = rd64(buf);
+                t->gen = gen, t->addr = addr, t->ticket = rd64(buf), t->ver = la.ver, t->phone = la.phone;
                 if (pthread_create(&th, NULL, lobby_attach_thread, t)) free(t);
                 else pthread_detach(th);
             }
         }
         hclose(s);
         if (lobby_gen != gen) break;
-        LOG("[ldn] lost the hub server: this hub is not listed online (trying again in 10 s)\n");
-        hub_report(NOTE_HOST, srv, HUB_LOST, -1, -1);
+        __sync_fetch_and_sub(&lobby_up[la.slot], 1);
+        LOG("[ldn] lost the hub server (v%u): this hub is not listed online (trying again in 10 s)\n", (unsigned)la.ver);
+        if (!lobby_up[la.slot]) hub_report(NOTE_HOST, srv, HUB_LOST, -1, -1);
         if (!lobby_wait(gen, 10000)) break;
     }
     return NULL;
@@ -883,33 +943,48 @@ static void *lobby_thread(void *arg) {
 
 static void lobby_host_start(void) {
     uint32_t gen = ++lobby_gen;
-    pthread_t th;
-    char srv[LOBBY_NAME];
+    char list[MAX_HUBS][LOBBY_NAME];
     pthread_mutex_lock(&hub_mu);
     note_last[NOTE_HOST] = HUB_ONLINE;  // (each hub tells of its own first failure)
     pthread_mutex_unlock(&hub_mu);
-    if (lobby_server(srv) && !pthread_create(&th, NULL, lobby_thread, (void *)(uintptr_t)gen)) pthread_detach(th);
+    int n = lobby_servers(list);
+    for (int i = 0; i < MAX_HUBS; i++) lobby_up[i] = 0;
+    for (int i = 0; i < n; i++) {  // (listed on every server of the list, under each link version)
+        // (without a key of our own: the public room under each version - gu-native 0.1.6 asks v2, the PC build v3 - and
+        // the phones' public room under v3, where the MHGURecomp Android build looks: PCs and phones of both builds see it)
+        for (int v = 0; v < N_LINK_VERSIONS + 1; v++) {
+            pthread_t th;
+            LobbyArg *a = malloc(sizeof *a);
+            if (!a) continue;
+            a->gen = gen, a->slot = i, a->ver = LINK_VERSIONS[v < N_LINK_VERSIONS ? v : 1], a->phone = v == N_LINK_VERSIONS;
+            if (pthread_create(&th, NULL, lobby_thread, a)) free(a);
+            else pthread_detach(th);
+        }
+    }
 }
 static void lobby_host_stop(void) { lobby_gen++; }
 
 // Station: the hubs the server lists for a key (NULL: ini Key). A HUB_* state; ms: the request's round trip.
-#define LOBBY_LIST_MAX 24
+#define LOBBY_LIST_MAX 72
 typedef struct {
     uint8_t infos[LOBBY_LIST_MAX][NETINFO_SIZE];
     uint64_t ids[LOBBY_LIST_MAX];
+    uint16_t vers[LOBBY_LIST_MAX];  // the link version each hub was listed under
+    uint8_t phone[LOBBY_LIST_MAX];  // 1: listed in the phones' public room (key PHONE_PUBLIC_KEY)
     int n, state, ms;
     struct sockaddr_in addr;
     char server[LOBBY_NAME];
 } LobbyList;
 
-static int lobby_list(const char *srv, const char *key, int connect_ms, LobbyList *r) {
+// One request: the hubs of one room and link version, appended to r (r->n is not reset: lobby_list_all does that)
+static int lobby_list(const char *srv, const char *key, uint16_t ver, int connect_ms, LobbyList *r) {
     static __thread uint8_t buf[MAX_FRAME];
-    r->n = 0, r->ms = -1;
+    r->ms = -1;
     if (!resolve_host(srv, LOBBY_PORT, &r->addr)) return HUB_NOT_FOUND;
     hsock s = connect_to(&r->addr, connect_ms);
     if (s == BADSOCK) return HUB_UNREACHABLE;
     uint8_t req[LOBBY_HEADER], type;
-    lobby_header(req, key);
+    lobby_header(req, key, ver);
     hset_timeout(s, 2000);
     uint64_t asked = plat_now_ns();
     int n = frame_send(s, S_LIST, req, sizeof req, NULL, 0) ? frame_recv(s, &type, buf) : -1;
@@ -921,15 +996,49 @@ static int lobby_list(const char *srv, const char *key, int connect_ms, LobbyLis
     for (uint32_t i = 0; i < count && r->n < LOBBY_LIST_MAX && 4 + (i + 1) * (8 + NETINFO_SIZE) <= (uint32_t)n; i++) {
         const uint8_t *e = buf + 4 + i * (8 + NETINFO_SIZE);
         r->ids[r->n] = rd64(e);
+        r->vers[r->n] = ver;
+        r->phone[r->n] = key && !strcmp(key, PHONE_PUBLIC_KEY);
         memcpy(r->infos[r->n++], e + 8, NETINFO_SIZE);
     }
     return HUB_ONLINE;
 }
 
+// Every link version we speak, and (no key of our own) the phones' public room too (v3 only). Online if any of them answered; the
+// state of a failure is the most telling one (a server that does not serve a version says so, but that is not "down").
+static int lobby_list_all(const char *srv, const char *key, int connect_ms, LobbyList *r) {
+    char live[sizeof g_config.ldn_key];
+    if (!key) config_live_ldn(NULL, 0, live, sizeof live), key = live;
+    const char *keys[2] = {key, PHONE_PUBLIC_KEY};
+    bool keyless = true;
+    for (const char *k = key; *k; k++) keyless &= *k == ' ';
+    int nk = keyless ? 2 : 1, best = HUB_UNKNOWN, ms = -1;
+    bool any = false;
+    r->n = 0;
+    for (int ki = 0; ki < nk; ki++) {
+        for (int v = 0; v < N_LINK_VERSIONS; v++) {
+            if (ki == 1 && LINK_VERSIONS[v] < 3) continue;  // (nobody lists in the phones' room under v2)
+            int st = lobby_list(srv, keys[ki], LINK_VERSIONS[v], connect_ms, r);
+            if (st == HUB_NOT_FOUND || st == HUB_UNREACHABLE) {
+                if (!any) best = st, ms = -1;
+                r->ms = any ? ms : -1;
+                return any ? HUB_ONLINE : st;  // (no point asking again)
+            }
+            if (st == HUB_ONLINE) {
+                if (!any || r->ms < ms) ms = r->ms;
+                any = true;
+            } else if (!any && (best == HUB_UNKNOWN || best == HUB_NO_ANSWER)) {
+                best = st;  // (a refusal says more than silence)
+            }
+        }
+    }
+    r->ms = ms;
+    return any ? HUB_ONLINE : best == HUB_UNKNOWN ? HUB_NO_ANSWER : best;
+}
+
 static void *lobby_list_thread(void *arg) {  // (while the LAN is searched; r->server set)
     LobbyList *r = arg;
     static int last = HUB_ONLINE;
-    r->state = lobby_list(r->server, NULL, 1500, r);
+    r->state = lobby_list_all(r->server, NULL, 1500, r);
     if (r->state != last && r->state != HUB_ONLINE)
         LOG("[ldn] hub server %s: %s: only LAN / Join hubs are searched\n", r->server,
             r->state == HUB_NOT_FOUND ? "not found" : r->state == HUB_UNREACHABLE ? "unreachable" : "no list");
@@ -943,13 +1052,27 @@ typedef struct { uint32_t check; char server[LOBBY_NAME], key[sizeof g_config.ld
 
 static void *hub_check_thread(void *arg) {
     HubCheck *c = arg;
+    char list[MAX_HUBS][LOBBY_NAME];
+    int ns = lobby_servers_of(c->server, list);
     LobbyList *r = malloc(sizeof *r);
-    int state = r ? lobby_list(c->server, c->key, 3000, r) : HUB_UNKNOWN;
-    int ms = r ? r->ms : -1, hubs = state == HUB_ONLINE ? r->n : -1;
+    // every server of the list is asked: online if any answers (the quickest one's time, all their hubs counted)
+    int state = HUB_UNKNOWN, bad = HUB_UNKNOWN, ms = -1, hubs = 0, up = 0;
+    const char *shown = ns ? list[0] : c->server;
+    for (int i = 0; i < ns && r; i++) {
+        int st = lobby_list_all(list[i], c->key, 3000, r);
+        LOG("[ldn] hub server check: %s: state %d, %d ms, %d hub(s) for this key\n", list[i], st, r->ms,
+            st == HUB_ONLINE ? r->n : -1);
+        if (st == HUB_ONLINE) {
+            if (!up || r->ms < ms) ms = r->ms, shown = list[i];
+            up++, hubs += r->n;
+        } else if (bad == HUB_UNKNOWN) {
+            bad = st;
+        }
+    }
+    state = up ? HUB_ONLINE : bad;
     pthread_mutex_lock(&hub_mu);
-    if (hub_now.check == c->check) hub_set_locked(c->server, c->key, state, ms, hubs);
+    if (hub_now.check == c->check) hub_set_locked(shown, c->key, state, up ? ms : -1, up ? hubs : -1);
     pthread_mutex_unlock(&hub_mu);
-    LOG("[ldn] hub server check: %s: state %d, %d ms, %d hub(s) for this key\n", c->server, state, ms, hubs);
     free(r);
     free(c);
     return NULL;
@@ -960,11 +1083,13 @@ void ldn_hub_check(const char *server, const char *key) {
     pthread_t th;
     if (!c) return;
     hnet_init();
-    bool on = lobby_server_of(server, c->server);
+    char list[MAX_HUBS][LOBBY_NAME];
+    bool on = lobby_servers_of(server, list) > 0;
+    snprintf(c->server, sizeof c->server, "%s", server);  // (the whole text: the thread asks each server in it)
     snprintf(c->key, sizeof c->key, "%s", key);
     pthread_mutex_lock(&hub_mu);
     c->check = ++hub_now.check;
-    hub_set_locked(c->server, c->key, on ? HUB_CHECKING : HUB_OFF, -1, -1);
+    hub_set_locked(on ? list[0] : c->server, c->key, on ? HUB_CHECKING : HUB_OFF, -1, -1);
     pthread_mutex_unlock(&hub_mu);
     if (on && !pthread_create(&th, NULL, hub_check_thread, c)) {
         pthread_detach(th);
@@ -972,18 +1097,21 @@ void ldn_hub_check(const char *server, const char *key) {
     }
     if (on) {
         pthread_mutex_lock(&hub_mu);
-        hub_set_locked(c->server, c->key, HUB_UNKNOWN, -1, -1);
+        hub_set_locked(list[0], c->key, HUB_UNKNOWN, -1, -1);
         pthread_mutex_unlock(&hub_mu);
     }
     free(c);
 }
 
 int ldn_hub_status(const char *server, const char *key, int *ms, int *hubs) {
-    char name[LOBBY_NAME];
-    if (!lobby_server_of(server, name)) return HUB_OFF;
+    char list[MAX_HUBS][LOBBY_NAME];
+    int n = lobby_servers_of(server, list);
+    if (!n) return HUB_OFF;
     pthread_mutex_lock(&hub_mu);
+    bool known = false;  // (the last state belongs to one of the servers in the list)
+    for (int i = 0; i < n; i++) known |= !strcmp(hub_now.server, list[i]);
     // (the server's state holds whatever the key; the hub count only for the key it was for)
-    int state = strcmp(hub_now.server, name) ? HUB_UNKNOWN : hub_now.state;
+    int state = known ? hub_now.state : HUB_UNKNOWN;
     if (ms) *ms = hub_now.ms;
     if (hubs) *hubs = strcmp(hub_now.key, key) ? -1 : hub_now.hubs;
     pthread_mutex_unlock(&hub_mu);
@@ -991,10 +1119,10 @@ int ldn_hub_status(const char *server, const char *key, int *ms, int *hubs) {
 }
 
 // Joining a listed hub: the server asks its host to connect and splices the two. 0, else an nn::ldn result.
-static uint32_t lobby_join(const struct sockaddr_in *addr, uint64_t hub, hsock *out, uint32_t *pair, uint64_t *secret) {
+static uint32_t lobby_join(const struct sockaddr_in *addr, const char *server, const char *key, uint16_t ver, uint64_t hub, hsock *out, uint32_t *pair, uint64_t *secret) {
     static uint8_t buf[MAX_FRAME];
-    char srv[LOBBY_NAME];
-    if (!lobby_server(srv)) snprintf(srv, sizeof srv, "%s", inet_ntoa(addr->sin_addr));
+    char srv[LOBBY_NAME];  // (the server that listed the hub: the one of the list it was found on)
+    snprintf(srv, sizeof srv, "%s", *server ? server : inet_ntoa(addr->sin_addr));
     hsock s = connect_to(addr, 3000);
     if (s == BADSOCK) {
         LOG("[ldn] can't reach the hub server\n");
@@ -1002,7 +1130,7 @@ static uint32_t lobby_join(const struct sockaddr_in *addr, uint64_t hub, hsock *
         return R_CONNECT_TIMEOUT;
     }
     uint8_t req[LOBBY_HEADER + 8], type;
-    lobby_header(req, NULL);
+    lobby_header(req, *key ? key : NULL, ver);  // (the room the hub was listed in: not always our own key)
     memcpy(req + LOBBY_HEADER, &hub, 8);
     hset_timeout(s, 12000);  // (the server waits up to 10 s for the host)
     int n = frame_send(s, S_JOIN, req, sizeof req, NULL, 0) ? frame_recv(s, &type, buf) : -1;
@@ -1032,8 +1160,8 @@ static bool host_start(void) {
     hsock ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     bool bound = ls != BADSOCK && !bind(ls, (struct sockaddr *)&a, sizeof a);
     bool any_port = false;  // the port is taken: still hosting through the hub server, on a port of the system's choice
-    char srv[LOBBY_NAME];
-    bool online = lobby_server(srv);
+    char srv[MAX_HUBS][LOBBY_NAME];
+    bool online = lobby_servers(srv) > 0;
     if (ls != BADSOCK && !bound && online) {
         a.sin_port = 0;
         any_port = bound = !bind(ls, (struct sockaddr *)&a, sizeof a);
@@ -1219,33 +1347,41 @@ static int scan_addresses(struct sockaddr_in *out, int max) {
 #define SEARCH_NS 1500000000ull      // how long a LAN search listens
 #define SEARCH_ASK_NS 500000000ull   // and how often it asks
 // Collects the networks of hosts that answer: by address (TCP) and by LAN broadcast (UDP).
-static int discover(uint8_t (*infos)[NETINFO_SIZE], struct sockaddr_in *addrs, int max) {
+static int discover(uint8_t (*infos)[NETINFO_SIZE], struct sockaddr_in *addrs, uint16_t *vers, int max) {
     hnet_init();
     int n = 0;
     static __thread uint8_t buf[MAX_FRAME];
     struct sockaddr_in targets[8];
     int nt = scan_addresses(targets, 8);
-    Hello h = make_hello(true, NULL);
     for (int i = 0; i < nt && n < max; i++) {
-        hsock s = connect_to(&targets[i], 1500);
-        if (s == BADSOCK) continue;
-        hset_timeout(s, 1500);
-        uint8_t type;
-        int k;
-        if (frame_send(s, F_HELLO, &h, sizeof h, NULL, 0) && (k = frame_recv(s, &type, buf)) >= NETINFO_SIZE && type == F_INFO) {
-            memcpy(infos[n], buf, NETINFO_SIZE);
-            addrs[n++] = targets[i];
+        for (int v = 0; v < N_LINK_VERSIONS; v++) {  // (a host answers only a hello of its own version: ask each)
+            hsock s = connect_to(&targets[i], 1500);
+            if (s == BADSOCK) break;
+            Hello h = make_hello(true, NULL, LINK_VERSIONS[v]);
+            hset_timeout(s, 1500);
+            uint8_t type;
+            int k;
+            bool got = frame_send(s, F_HELLO, &h, sizeof h, NULL, 0) && (k = frame_recv(s, &type, buf)) >= NETINFO_SIZE &&
+                       type == F_INFO;
+            if (got) {
+                memcpy(infos[n], buf, NETINFO_SIZE);
+                vers[n] = LINK_VERSIONS[v];
+                addrs[n++] = targets[i];
+            }
+            hclose(s);
+            if (got) break;
         }
-        hclose(s);
     }
     hsock u = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (u == BADSOCK) return n;
     int one = 1;
     setsockopt(u, SOL_SOCKET, SO_BROADCAST, (const char *)&one, sizeof one);
-    uint8_t probe[8];
-    memcpy(probe, PROTO_MAGIC, 4);
-    wr16(probe + 4, PROTO_VERSION);
-    wr16(probe + 6, 0);
+    uint8_t probe[N_LINK_VERSIONS][8];  // (one probe per link version)
+    for (int v = 0; v < N_LINK_VERSIONS; v++) {
+        memcpy(probe[v], PROTO_MAGIC, 4);
+        wr16(probe[v] + 4, LINK_VERSIONS[v]);
+        wr16(probe[v] + 6, 0);
+    }
     struct sockaddr_in to = {0};
     to.sin_family = AF_INET;
     to.sin_port = htons((uint16_t)g_config.ldn_port);
@@ -1255,13 +1391,15 @@ static int discover(uint8_t (*infos)[NETINFO_SIZE], struct sockaddr_in *addrs, i
     for (uint64_t now; (now = plat_now_ns()) < end && n < max;) {
         if (now >= next_ask) {
             next_ask = now + SEARCH_ASK_NS;
-            to.sin_addr.s_addr = htonl(INADDR_BROADCAST);
-            sendto(u, (const char *)probe, sizeof probe, 0, (struct sockaddr *)&to, sizeof to);
+            for (int v = 0; v < N_LINK_VERSIONS; v++) {
+                to.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+                sendto(u, (const char *)probe[v], sizeof probe[v], 0, (struct sockaddr *)&to, sizeof to);
 #ifdef __ANDROID__
-            probe_networks(u, probe, sizeof probe, to);
+                probe_networks(u, probe[v], sizeof probe[v], to);
 #endif
-            to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-            sendto(u, (const char *)probe, sizeof probe, 0, (struct sockaddr *)&to, sizeof to);
+                to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                sendto(u, (const char *)probe[v], sizeof probe[v], 0, (struct sockaddr *)&to, sizeof to);
+            }
         }
         fd_set r;
         FD_ZERO(&r);
@@ -1272,12 +1410,13 @@ static int discover(uint8_t (*infos)[NETINFO_SIZE], struct sockaddr_in *addrs, i
         struct sockaddr_in from;
         socklen_t fl = sizeof from;
         int k = recvfrom(u, (char *)buf, MAX_FRAME, 0, (struct sockaddr *)&from, &fl);
-        if (k < 8 + NETINFO_SIZE || memcmp(buf, PROTO_MAGIC, 4) || rd16(buf + 4) != PROTO_VERSION) continue;
+        if (k < 8 + NETINFO_SIZE || memcmp(buf, PROTO_MAGIC, 4) || !link_version_ok(rd16(buf + 4))) continue;
         bool dup = false;
         for (int i = 0; i < n; i++) dup |= !memcmp(infos[i] + NI_BSSID, buf + 8 + NI_BSSID, 6);
         if (dup) continue;
         memcpy(infos[n], buf + 8, NETINFO_SIZE);
         from.sin_port = htons(rd16(buf + 6));
+        vers[n] = rd16(buf + 4);
         addrs[n++] = from;
     }
     hclose(u);
@@ -1504,6 +1643,36 @@ static bool filter_ok(const uint8_t *info, const uint8_t *f) {
     return true;
 }
 
+// A hub server answers one search with only some of its hubs (a few picked at random when it has many), so the hubs of
+// the last searches are kept and listed together: the list of a Retry grows until it holds them all.
+#define SEEN_MAX MAX_FOUND
+#define SEEN_KEEP_NS (25ull * 1000000000ull)
+static struct {
+    uint8_t info[NETINFO_SIZE];
+    uint64_t id, at;
+    struct sockaddr_in addr;
+    char server[LOBBY_NAME];
+    uint16_t ver;
+    uint8_t phone;
+} seen[SEEN_MAX];
+static bool seen_live(int i, uint64_t now) { return seen[i].at && now - seen[i].at <= SEEN_KEEP_NS; }
+static void seen_add(const uint8_t *info, uint64_t id, uint16_t ver, uint8_t phone, const struct sockaddr_in *addr,
+                     const char *server, uint64_t now) {
+    int idx = -1, empty = -1, oldest = 0;
+    for (int i = 0; i < SEEN_MAX; i++) {
+        if (!seen_live(i, now)) {
+            if (empty < 0) empty = i;
+            continue;
+        }
+        if (!memcmp(seen[i].info + NI_BSSID, info + NI_BSSID, 6)) { idx = i; break; }
+        if (seen[i].at < seen[oldest].at) oldest = i;
+    }
+    if (idx < 0) idx = empty >= 0 ? empty : oldest;
+    memcpy(seen[idx].info, info, NETINFO_SIZE);
+    seen[idx].id = id, seen[idx].ver = ver, seen[idx].phone = phone, seen[idx].addr = *addr, seen[idx].at = now;
+    snprintf(seen[idx].server, sizeof seen[idx].server, "%s", server);
+}
+
 // Scan(NetworkInfo *out, int *count, int max, const ScanFilter &, int channel)
 HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan) { NTRACE();
     uint32_t out = ARG(0), pcount = ARG(1);
@@ -1511,23 +1680,44 @@ HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan)
     const uint8_t *filter = ARGP(3);
     if (L.state != ST_STATION && L.state != ST_ACCESS_POINT) { RET(R_INVALID_STATE); return; }
     static uint8_t infos[MAX_FOUND][NETINFO_SIZE];
-    static LobbyList online;
+    static LobbyList online[MAX_HUBS];
     struct sockaddr_in addrs[MAX_FOUND];
     uint64_t hubs[MAX_FOUND] = {0};
-    pthread_t lt;
+    uint16_t vers[MAX_FOUND];  // the link version each found network speaks
+    uint8_t phone[MAX_FOUND] = {0};  // found in the phones' public room
+    const char *names[MAX_FOUND] = {0};  // (the hub server a found hub is on; LAN hubs: none)
+    int order[MAX_FOUND];  // found[i] is infos[order[i]]
+    char list[MAX_HUBS][LOBBY_NAME];
+    pthread_t lt[MAX_HUBS];
+    bool started[MAX_HUBS] = {false};
     hnet_init();  // (before the thread's first socket call)
-    bool asked = lobby_server(online.server) && !pthread_create(&lt, NULL, lobby_list_thread, &online);
-    int n = discover(infos, addrs, 16), k = 0;
-    if (asked) {  // the server's hubs after the LAN's (a hub found both ways is joined directly)
-        pthread_join(lt, NULL);
-        for (int j = 0; j < online.n && n < MAX_FOUND; j++) {
-            bool dup = false;
-            for (int i = 0; i < n; i++) dup |= !memcmp(infos[i] + NI_BSSID, online.infos[j] + NI_BSSID, 6);
-            if (dup) continue;
-            memcpy(infos[n], online.infos[j], NETINFO_SIZE);
-            addrs[n] = online.addr;
-            hubs[n++] = online.ids[j];
-        }
+    int ns = lobby_servers(list);
+    for (int s = 0; s < ns; s++) {  // every server of the list is asked at once, while the LAN is searched
+        snprintf(online[s].server, sizeof online[s].server, "%s", list[s]);
+        started[s] = !pthread_create(&lt[s], NULL, lobby_list_thread, &online[s]);
+    }
+    int n = discover(infos, addrs, vers, 16), k = 0, listed = 0;
+    uint64_t now = plat_now_ns();
+    for (int s = 0; s < ns; s++) {  // the servers' hubs after the LAN's (a hub found twice is joined by the first way)
+        if (!started[s]) continue;
+        pthread_join(lt[s], NULL);
+        if (online[s].state != HUB_ONLINE) continue;
+        listed += online[s].n;
+        for (int j = 0; j < online[s].n; j++)
+            seen_add(online[s].infos[j], online[s].ids[j], online[s].vers[j], online[s].phone[j], &online[s].addr,
+                     online[s].server, now);
+    }
+    for (int c = 0; c < SEEN_MAX && n < MAX_FOUND; c++) {  // the hubs of this search and of the last ones, after the LAN's
+        if (!seen_live(c, now)) continue;
+        bool dup = false;
+        for (int i = 0; i < n; i++) dup |= !memcmp(infos[i] + NI_BSSID, seen[c].info + NI_BSSID, 6);
+        if (dup) continue;
+        memcpy(infos[n], seen[c].info, NETINFO_SIZE);
+        addrs[n] = seen[c].addr;
+        names[n] = seen[c].server;
+        vers[n] = seen[c].ver;
+        phone[n] = seen[c].phone;
+        hubs[n++] = seen[c].id;
     }
     nfound = 0;
     for (int i = 0; i < n; i++) {
@@ -1535,14 +1725,24 @@ HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan)
         memcpy(found[nfound].bssid, infos[i] + NI_BSSID, 6);
         memcpy(found[nfound].session, infos[i] + NI_SESSION_ID, 16);
         found[nfound].hub = hubs[i];
-        found[nfound++].addr = addrs[i];
-        if (k < max) memcpy((uint8_t *)G2H(out) + (size_t)k++ * NETINFO_SIZE, infos[i], NETINFO_SIZE);
+        snprintf(found[nfound].server, sizeof found[nfound].server, "%s", names[i] ? names[i] : "");
+        snprintf(found[nfound].key, sizeof found[nfound].key, "%s", phone[i] ? PHONE_PUBLIC_KEY : "");
+        found[nfound].ver = vers[i];
+        found[nfound].addr = addrs[i];
+        order[nfound++] = i;
     }
+    // The game gives room for `max` networks. Every network goes when they fit; when more were found, each search starts
+    // further along the list, so a Retry shows the others.
+    static int rot;
+    int first = 0;
+    if (max > 0 && nfound > max) first = rot % nfound, rot += max;
+    else rot = 0;
+    for (int t = 0; t < nfound && k < max; t++)
+        memcpy((uint8_t *)G2H(out) + (size_t)k++ * NETINFO_SIZE, infos[order[(first + t) % nfound]], NETINFO_SIZE);
     if (pcount) ST32(pcount, k);
     static int last = -1, last_online = -1, last_max = -1;
-    int listed = asked && online.state == HUB_ONLINE ? online.n : 0;
     if (nfound != last || listed != last_online || max != last_max) {
-        LOG("[ldn] scan: %d network(s) found (%d listed on the hub server), %d given to the game (room for %d)\n",
+        LOG("[ldn] scan: %d network(s) found (%d listed on the hub servers), %d given to the game (room for %d)\n",
             nfound, listed, k, max);
         last = nfound, last_online = listed, last_max = max;
     }
@@ -1558,14 +1758,14 @@ static uint32_t connect_network(const uint8_t *info, const uint8_t *user, uint16
     uint32_t pair = 0;
     uint64_t secret = 0;
     if (found[i].hub) {
-        uint32_t r = lobby_join(&found[i].addr, found[i].hub, &s, &pair, &secret);
+        uint32_t r = lobby_join(&found[i].addr, found[i].server, found[i].key, found[i].ver, found[i].hub, &s, &pair, &secret);
         if (r) return r;
     } else if ((s = connect_to(&found[i].addr, 3000)) == BADSOCK) {
         LOG("[ldn] can't reach the host at %s\n", inet_ntoa(found[i].addr.sin_addr));
         return R_CONNECT_TIMEOUT;
     }
     L.lcv = lcv;
-    Hello h = make_hello(false, user);
+    Hello h = make_hello(false, user, found[i].ver);
     static uint8_t buf[MAX_FRAME];
     uint8_t type;
     int n;

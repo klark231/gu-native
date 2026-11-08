@@ -18,10 +18,10 @@ import java.io.FileNotFoundException;
  * cerrado por un error.
  */
 public class LogProvider extends ContentProvider {
-    private static final String AUTHORITY = "com.mhgu.recomp.logs", NAME = "mhgu-log.txt";
+    private static final String NAME = "mhgu-log.txt";  // (the authority: the package's own + ".logs", as the manifest says)
 
     static File report(Context c) { return new File(c.getCacheDir(), NAME); }
-    static Uri uri() { return Uri.parse("content://" + AUTHORITY + "/" + NAME); }
+    static Uri uri(Context c) { return Uri.parse("content://" + c.getPackageName() + ".logs/" + NAME); }
 
     @Override
     public boolean onCreate() { return true; }

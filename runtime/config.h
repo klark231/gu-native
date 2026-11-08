@@ -11,6 +11,7 @@ extern "C" {
 enum { DISPLAY_WINDOWED, DISPLAY_FULLSCREEN, DISPLAY_BORDERLESS };
 enum { FACE_POSITION, FACE_LABEL };
 enum { COMBO_LENIENT, COMBO_STRICT };
+enum { TS_ADAPTIVE, TS_TRADITIONAL };  // [Touch] Layout: the controls change with the action (menus, bows) / the same ones always
 enum { TOUCH_AUTO, TOUCH_ON, TOUCH_OFF };  // [Touch] Controls (runtime/touch.cpp)  // [Controls] ComboInputWindow (runtime/hle/combowin.c)
 enum { MENU_CONFIRM_ORIGINAL, MENU_CONFIRM_SOUTH, MENU_CONFIRM_EAST };
 enum { FXAA_ORIGINAL, FXAA_311 };  // [Anti-aliasing] FXAAMode (runtime/nvn/vulkan/exec.c)
@@ -118,12 +119,13 @@ typedef struct {
     char touch_combo[TOUCH_COMBOS][32];  // [Touch] Combo1..: the game's buttons one screen button presses together
                                          // ("A+X"; config_combo_mask); "" none
     int touch_combo_pad[TOUCH_COMBOS];   // [Touch] Combo1Pad..: PADB_*, a controller's button that does the same
+    int touch_scheme;         // [Touch] Layout: TS_*, how the controls on the screen are laid out (last: 0 by default, no value in CONFIG_DEFAULT_VALUES)
 } Config;
 uint32_t config_combo_mask(const char *text);  // "A+X" -> the BTN_* bits, 0 if there is nothing or anything else in it
 void config_combo_text(uint32_t mask, char *out, size_t size);  // and back
-// The hub server used when ini Server is empty (runtime/net/ldn.c, server/): the project's public one (an Oracle
-// none). "" = no default: no internet hubs unless the player names a server.
-#define LDN_DEFAULT_SERVER ""
+// The hub servers used when ini Server is empty (runtime/net/ldn.c, server/): the two public MHGURecomp ones, a list like
+// the ini's. Hubs are listed on both, and a search asks both. "" = no default: no internet hubs unless the player names a server.
+#define LDN_DEFAULT_SERVER "hunterhubid-gu-hub.duckdns.org morerokk-mhgurecomp-ldnserver.duckdns.org"
 #define LOW_END_SCALE 40  // what the menu's Low-end mode sets: RenderScale, FPS
 #define LOW_END_FPS 30
 #define LOW_END_TOASTER 2   // LowEnd = Toaster: everything for speed and the battery (config.c, textures.c, the menu)
@@ -205,6 +207,7 @@ int config_live_fxaa_mode(void);
 int config_live_smooth_gradients(void);
 int config_live_discord(void);         // [Discord] RichPresence
 int config_live_discord_hunter(void);  // [Discord] ShowHunter
+int config_live_touch_scheme(void);    // [Touch] Layout: TS_*
 int config_live_touch_controls(void);  // [Touch] (runtime/touch.cpp)
 int config_live_touch_hud(void);
 int config_live_lock_on(void);

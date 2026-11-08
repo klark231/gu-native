@@ -23,6 +23,7 @@ Hecho con Claude Code (Opus 5.5). Muchas de las decisiones fueron propias, porqu
 - **Hunter Arts:** toca el panel de cada una para usarla
 - **Ataques:** tres disposiciones a elegir: píldora dividida en diagonal, botones separados o una banda en U en la esquina de la pantalla
 - **Otros botones:** esquivar, cubrirse y enfundar el arma, cada uno con su ícono
+- **Disposición tradicional:** en el engranaje, **Controles**, **Disposición táctil**. En vez de que los controles cambien según lo que haces (los de los menús, los de arcos y ballestas), tienes los de un emulador: A B X Y en rombo, L R ZL ZR, + y -, la cruceta y el stick, siempre iguales, con botones de letras. Tiene su propia disposición en el editor (`touch_layout_traditional.txt`), aparte de la Adaptable. En los menús, muévete con la cruceta y confirma con A
 
 ### Menús y comodidad
 
@@ -73,7 +74,7 @@ Dos dispositivos en el mismo Wi-Fi pueden jugar en la misma sala. En el pueblo, 
 
 ### Por internet
 
-Cualquiera puede alojar un servidor de salas: el programa chico de la carpeta `server` (Go, un puerto para TCP y UDP, el 39510 por defecto; ver `server/README.md`). Todos los que quieran jugar juntos escriben el mismo servidor en el engranaje, **Red**, **Servidor de salas** (un nombre o una IP, y `:puerto` si no es el 39510); sus salas aparecen al buscar salas en el juego. Con una **Clave de emparejamiento**, solo los que tengan la misma clave ven sus salas. **Comprobar servidor de salas** dice si responde. Este proyecto no tiene un servidor propio, y el juego por internet todavía no se probó en Android.
+Cualquiera puede alojar un servidor de salas: el programa chico de la carpeta `server` (Go, un puerto para TCP y UDP, el 39510 por defecto; ver `server/README.md`). Por defecto el juego usa dos servidores, `hunterhubid-gu-hub.duckdns.org` y `morerokk-mhgurecomp-ldnserver.duckdns.org`: tus salas se listan en los dos y la búsqueda muestra las salas de ambos. En el engranaje, **Red**, **Servidor de salas** puedes poner hasta 8 servidores en su lugar, separados por espacios o comas (un nombre o una IP, y `:puerto` si no es el 39510); un nombre que empieza con `-` se conserva pero queda apagado. El juego habla las versiones de enlace 2 (este port) y 3 (la versión de PC de MHGURecomp) y lista tu sala con las dos, así que los jugadores de cualquiera la encuentran. Sin clave de emparejamiento tu sala se lista en la sala pública (enlaces 2 y 3) y en la sala pública de teléfonos (`public-phone`, enlace 3), y la búsqueda mira en las dos, así que PC y teléfonos de ambas versiones se ven entre sí. Con una **Clave de emparejamiento**, solo los que tengan la misma clave ven sus salas. **Comprobar servidor de salas** dice si responde. El juego por internet todavía no se probó en Android.
 
 Sin servidor: pon todos los dispositivos en la misma VPN (por ejemplo Tailscale o ZeroTier) y escribe la IP del anfitrión en esa VPN en **Buscar servidores**.
 

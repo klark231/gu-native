@@ -400,6 +400,7 @@ bool equal(const Config &a, const Config &b) {
     SAME(village_in_hub);
     SAME(mouse_sensitivity);
     SAME(touch_controls);
+    SAME(touch_scheme);
     SAME(touch_hud);
     SAME(touch_camera);
     SAME(touch_opacity);
@@ -875,6 +876,7 @@ void reset_section() {
         c.combo_window = f.combo_window;
         c.mouse_sensitivity = f.mouse_sensitivity;
         c.touch_controls = f.touch_controls;
+        c.touch_scheme = f.touch_scheme;
         c.touch_hud = f.touch_hud;
         c.touch_camera = f.touch_camera;
         c.touch_opacity = f.touch_opacity;
@@ -1359,6 +1361,9 @@ std::vector<Row> main_rows() {
 #endif
         add_choice(r, "touch", "Touch controls", c.touch_controls, {tr("Auto"), tr("On"), tr("Off")},
                    [](int v) { c.touch_controls = v; }, ini("Controls"));
+        add_choice(r, "touch.scheme", "Touch layout", c.touch_scheme, {tr("Adaptive"), tr("Traditional")},
+                   [](int v) { c.touch_scheme = v; }, ini("Layout"));
+        r.back().help = tr("Adaptive: the buttons change with what you do: the menus' and the bows' and bowguns' own. Traditional: as an emulator's, the same buttons always: A B X Y, L R ZL ZR, + -, the d-pad and the stick. Each has a layout of its own in the editor.");
         add_bool(r, "touch.hud", "Move the HUD for touch", &c.touch_hud, ini("MoveHUD"));
         add_bool(r, "lock.on", "Lock-on", &c.lock_on, ini("LockOn"));
         r.back().help = tr("The target icon, or a controller's right stick click, keeps the camera on the monster as in the newer games, and bows and bowguns fire at it. Off: the icon turns the camera to it once, as in the original game.");
@@ -1395,8 +1400,8 @@ std::vector<Row> main_rows() {
         text(r, "hosts", "Search hosts", c.ldn_join, sizeof c.ldn_join, *c.ldn_join ? c.ldn_join : tr("LAN"), ini("Join"));
         // (internet hubs through a hub server of the player's choice, server/: none is built in, LDN_DEFAULT_SERVER)
         text(r, "server", "Hub server", c.ldn_server, sizeof c.ldn_server,
-             *c.ldn_server ? std::string(c.ldn_server)
-             : *LDN_DEFAULT_SERVER ? std::string(tr("Default")) + " (" LDN_DEFAULT_SERVER ")" : std::string(tr("None")),
+             !*c.ldn_server ? std::string(tr("Default")) + (*LDN_DEFAULT_SERVER ? " (" LDN_DEFAULT_SERVER ")" : "")
+                           : c.ldn_server,
              ini("Server"));
         text(r, "key", "Matchmaking key", c.ldn_key, sizeof c.ldn_key, *c.ldn_key ? c.ldn_key : tr("Public"), ini("Key"));
         hub_check(r);

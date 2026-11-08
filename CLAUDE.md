@@ -44,7 +44,7 @@ Windows, in Git Bash, with the Android SDK, NDK 27.0.12077973, CMake 3.22.1 and 
 1. Put the sources in `deps/src/`: `SDL3-3.4.18`, `ffmpeg` (9.0.2) and `shaderc` (2026.4, with glslang 16.6.0 and SPIRV-Tools and
    SPIRV-Headers 1.4.363.0 in its `third_party`). Then run `bash deps/build_deps.sh arm64-v8a` and `bash deps/build_ffmpeg.sh arm64-v8a`.
 2. `bash native/build_native.sh arm64-v8a` builds the runtime. With `MHGU_DEV=1` in front, a test build.
-3. `cd android && ./gradlew assembleRelease`. It signs only if `android/keystore.properties` and `mhgu.keystore` exist.
+3. `cd android && ./gradlew assembleRelease` makes three APKs (`app-standard-release.apk`, `app-antutu-release.apk`, `app-ludashi-release.apk`; one with `assembleStandardRelease` etc.). The last two have the package names `com.antutu.ABenchMark` and `com.ludashi.benchmark` and the labels "MHGU Antutu" and "MHGU Ludashi": the code is the same (namespace `com.mhgu.recomp`), but each package has its own `Android/data/<package>/files` (settings, log, saves) and none installs over the real benchmark. It signs only if `android/keystore.properties` and `mhgu.keystore` exist.
 
 The public APK leaves `libmhgugame.so` out. `-Pwithgame` keeps it for your own tests: never publish that APK.
 
@@ -181,7 +181,8 @@ Android killing the game shows in `adb logcat` as `lowmemorykiller: Kill 'com.mh
   `MHGU_FPS_LIMIT`, `MHGU_NO_REVERB=1`. A phone on its charger reads charging current: unplug it to measure watts. At 30 FPS the GPU runs at
   lower clocks, so `gpuprof` times are longer: compare frame rates or watts, not milliseconds, across FPS limits.
 - Internet hubs (`net/ldn.c`, the `server/` hub server): the Network page shows Hub server, Matchmaking key and Check hub server on
-  Android too; empty Server is None (`LDN_DEFAULT_SERVER` is empty: the project runs no server). Players type any server they want.
+  Android too; empty Server is `LDN_DEFAULT_SERVER`, two public servers (a list of up to `MAX_HUBS` = 8, separated by spaces or commas). Hosting lists the hub on every server under link versions 2 and 3 (`LINK_VERSIONS`, one thread each); searching asks every server for each version (and the `public-phone` room without a key), and a found hub remembers its server, version and room for joining. With no Key a hub is listed in the public room under v2 and v3 and in the `public-phone` room under v3 (3 listings a server: the server limits hubs per IP to 4 by default), so PCs and phones of both builds see each other. A host accepts hellos and LAN probes of either version; `discover` tries each version on `Search hosts` addresses.
+- `[Touch] Layout` = Traditional (`touch.cpp`, `trad()`): the hunt's separate-attack controls (`C_HEAVY` A, `C_LIGHT` X, `C_DODGE` B, `C_SHEATHE` Y, R, L, ZR, ZL, +, -, d-pad, stick) as plain lettered discs, always: no menu layout, no ranged one (`game` and `ranged` are forced off in `touch_input`). Its own file, `touch_layout_traditional.txt`, and its own defaults; `from_right` puts L and ZL at the left and + at the right there. Switching in the settings applies at once (`switch_scheme`).
 - The touch menu layout can show ZL and ZR tabs beside L and R (`C_MZL`, `C_MZR`), each with `[Touch] ShowMenuZL` / `ShowMenuZR`, off by
   default (Buttons on the screen).
 - Bugs that only show on some devices are common here. Test on a real phone, and on a device without Snapdragon.

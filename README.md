@@ -23,6 +23,7 @@ Made with Claude Code (Opus 5.5). Many of the decisions were my own, because AI 
 - **Hunter Arts:** tap each one's panel to use it
 - **Attacks:** three layouts to choose from: a diagonally split pill, separate buttons, or a U-shaped band in the corner of the screen
 - **Other buttons:** dodge, guard and sheathe, each with its own icon
+- **Traditional layout:** under the gear, **Controls**, **Touch layout**. Instead of the controls changing with what you do (the menus', the bows' and bowguns'), you get an emulator's: A B X Y in a diamond, L R ZL ZR, + and -, the d-pad and the stick, always the same, with plain lettered buttons. It has its own layout in the editor (`touch_layout_traditional.txt`), apart from the Adaptive one. In menus, move with the d-pad and confirm with A
 
 ### Menus and comfort
 
@@ -73,7 +74,7 @@ Two devices on the same Wi-Fi can play in the same hub. In town, tap ZL and choo
 
 ### Over the internet
 
-Anyone can run a hub server: the small program in the `server` folder (Go, one port for TCP and UDP, 39510 by default; see `server/README.md`). Everyone who wants to play together enters the same server under the gear, **Network**, **Hub server** (a name or IP, and `:port` if it isn't 39510); their hubs then show when they search for hubs in the game. With a **Matchmaking key**, only players with the same key see each other's hubs. **Check hub server** tells whether it answers. This project runs no server of its own, and play over the internet hasn't been tested on Android yet.
+Anyone can run a hub server: the small program in the `server` folder (Go, one port for TCP and UDP, 39510 by default; see `server/README.md`). By default the game uses two servers, `hunterhubid-gu-hub.duckdns.org` and `morerokk-mhgurecomp-ldnserver.duckdns.org`: your hubs are listed on both and a search shows the hubs of both. Under the gear, **Network**, **Hub server** you can name up to 8 servers instead, separated by spaces or commas (a name or IP, and `:port` if it isn't 39510); a name starting with `-` is kept but switched off. The game speaks link versions 2 (this port) and 3 (the MHGURecomp PC build) and lists your hub under both, so players of either find it. Without a matchmaking key your hub is listed in the public room (links 2 and 3) and in the phones' public room (`public-phone`, link 3), and a search looks in both, so PCs and phones of both builds see each other. With a **Matchmaking key**, only players with the same key see each other's hubs. **Check hub server** tells whether it answers. Play over the internet hasn't been tested on Android yet.
 
 Without a server: put every device on the same VPN (for example Tailscale or ZeroTier) and enter the host's VPN IP under **Search hosts**.
 

@@ -136,7 +136,7 @@ public class LogShareActivity extends Activity {
         } catch (IOException e) {
             Log.e(TAG, "share log: " + e);
         }
-        Uri uri = LogProvider.uri();
+        Uri uri = LogProvider.uri(this);
         Intent send = new Intent(Intent.ACTION_SEND);
         send.setType("text/plain");
         send.putExtra(Intent.EXTRA_SUBJECT, "MHGU log");
