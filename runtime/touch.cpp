@@ -46,6 +46,13 @@ extern "C" {
 uint64_t plat_now_ns(void);
 extern volatile uint64_t g_town_ns;  // (hle/quickhunt.c: a town's walking-around update)
 int weapon_drawn(void);  // (hle/weapon.c: 1 the weapon out, 0 sheathed, -1 not known)
+// (net/ldn.c: the Join Hub screen's lists of hubs, chosen by a tap on a number as by ZL / ZR)
+bool ldn_hub_browsing(void);
+int ldn_hub_lists(void);
+bool ldn_hub_list_goto(int n);
+bool ldn_hub_list_step(int dir);
+int ldn_hub_list_chosen(void);
+void ldn_hub_list_range(int *first, int *last, int *total);
 #include "hle/input.h"
 #include "hle/itembar.h"
 #include "hle/mousecam.h"
@@ -893,6 +900,80 @@ void edit_event(State &s, const SDL_Event *e, float x, float y) {
 
 }  // namespace
 
+// ------------------------------------------------------------------ the Join Hub screen's list buttons
+// A panel under the game's table of hubs: "List  <  1  2  3  >  #25 to 48 of 55". A tap on a number chooses that list,
+// the arrows the one before / after; the search follows by itself (runtime/host_input.c presses Retry a moment later).
+// (Placed as the game's table is: it spans .46 to .885 of the width, and its lower edge is at .52 of the height.)
+bool hub_strip_on() { return ldn_hub_browsing() && ldn_hub_lists() > 1; }
+int hub_strip_count() { return std::min(ldn_hub_lists(), 8) + 2; }  // (the arrows and the numbers)
+struct HubGeo { float px, py, pw, ph, bh, bw, pitch, bx, by; };
+HubGeo hub_geo(float w, float h) {
+    HubGeo g;
+    g.px = .459f * w, g.py = .529f * h, g.pw = .425f * w, g.ph = .098f * h;
+    g.bh = .062f * h, g.bw = .066f * h, g.pitch = .081f * h;
+    g.bx = g.px + .097f * h, g.by = g.py + (g.ph - g.bh) * .5f;
+    return g;
+}
+void hub_strip_rect(int i, float w, float h, ImVec2 *a, ImVec2 *b) {
+    HubGeo g = hub_geo(w, h);
+    a->x = g.bx + i * g.pitch, a->y = g.by;
+    b->x = a->x + g.bw, b->y = a->y + g.bh;
+}
+int hub_strip_hit(float x, float y, float w, float h) {  // the button under a finger, or -1
+    if (!hub_strip_on()) return -1;
+    for (int i = 0; i < hub_strip_count(); i++) {
+        ImVec2 a, b;
+        hub_strip_rect(i, w, h, &a, &b);
+        float m = (b.y - a.y) * .3f;  // (slop round each: a thumb on a phone)
+        if (x >= a.x - m && x <= b.x + m && y >= a.y - m && y <= b.y + m) return i;
+    }
+    return -1;
+}
+void hub_strip_press(int i) {
+    int n = hub_strip_count() - 2;
+    if (i == 0) ldn_hub_list_step(-1);
+    else if (i == n + 1) ldn_hub_list_step(1);
+    else ldn_hub_list_goto(i - 1);
+}
+void hub_strip_draw(ImDrawList *dl, ImFont *font, float w, float h, float a) {
+    if (!hub_strip_on()) return;
+    const ImU32 PANEL = IM_COL32(74, 24, 22, 255), BTN = IM_COL32(40, 14, 14, 255), EDGE = IM_COL32(150, 104, 52, 255);
+    HubGeo g = hub_geo(w, h);
+    int cnt = hub_strip_count(), chosen = ldn_hub_list_chosen();
+    float fs = g.bh * .52f, r = g.bh * .12f;
+    dl->AddRectFilled(ImVec2(g.px, g.py), ImVec2(g.px + g.pw, g.py + g.ph), fade(PANEL, a), r);
+    dl->AddRect(ImVec2(g.px, g.py), ImVec2(g.px + g.pw, g.py + g.ph), fade(EDGE, a * .8f), r, 0, g.bh * .04f);
+    ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, "List");
+    dl->AddText(font, fs, ImVec2(g.px + .019f * h, g.by + (g.bh - ts.y) * .5f), fade(GOLD, a), "List");
+    for (int i = 0; i < cnt; i++) {
+        ImVec2 p, q;
+        hub_strip_rect(i, w, h, &p, &q);
+        bool arrow = i == 0 || i == cnt - 1, lit = !arrow && i - 1 == chosen;
+        dl->AddRectFilled(p, q, fade(lit ? GOLD : BTN, a), r);
+        dl->AddRect(p, q, fade(lit ? GLOW : EDGE, a), r, 0, g.bh * .045f);
+        ImVec2 c((p.x + q.x) * .5f, (p.y + q.y) * .5f);
+        ImU32 ink = fade(lit ? DEEP : INK, a);
+        if (arrow) {
+            float d = i == 0 ? -1.0f : 1.0f, ch = g.bh * .16f;
+            ImVec2 tip(c.x + d * ch * .6f, c.y), t1(c.x - d * ch * .6f, c.y - ch), t2(c.x - d * ch * .6f, c.y + ch);
+            dl->AddLine(t1, tip, ink, g.bh * .07f), dl->AddLine(t2, tip, ink, g.bh * .07f);
+        } else {
+            char t[8];
+            snprintf(t, sizeof t, "%d", i);
+            ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0, t);
+            dl->AddText(font, fs, ImVec2(c.x - sz.x * .5f, c.y - sz.y * .5f), ink, t);
+        }
+    }
+    int first = 0, last = 0, total = 0;  // how many hubs this list shows
+    ldn_hub_list_range(&first, &last, &total);
+    char t[48];
+    snprintf(t, sizeof t, "hubs #%d to %d of %d", first, last, total);
+    ImVec2 e1, e2;
+    hub_strip_rect(cnt - 1, w, h, &e1, &e2);
+    ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0, t);
+    dl->AddText(font, fs, ImVec2(e2.x + .03f * h, g.by + (g.bh - sz.y) * .5f), fade(INK, a), t);
+}
+
 extern "C" bool touch_event(const SDL_Event *e) {
     if (e->type != SDL_EVENT_FINGER_DOWN && e->type != SDL_EVENT_FINGER_MOTION && e->type != SDL_EVENT_FINGER_UP &&
         e->type != SDL_EVENT_FINGER_CANCELED)
@@ -925,6 +1006,15 @@ extern "C" bool touch_event(const SDL_Event *e) {
             f->part = !other;  // (the menu's mouse: the first finger only)
             if (f->part) to_menu(e);
             return true;
+        }
+        if (g_visible) {  // (the Join Hub screen's list buttons)
+            int hb = hub_strip_hit(x, y, s.w, s.h);
+            if (hb >= 0) {
+                hub_strip_press(hb);
+                f->kind = F_MENU;  // (nothing more of it until it lifts)
+                tap_due();
+                return true;
+            }
         }
         if (!g_visible && !s.auto_wait) {
             int part = 0;
@@ -2163,6 +2253,7 @@ extern "C" void touch_draw(float w, float h) {
     }
     for (int i = 0; i < C_COUNT; i++)
         if (in_mode(i, s.menu)) control(dl, font, s.layout, i, w, h, s, a);
+    hub_strip_draw(dl, font, w, h, std::max(a, .9f));
     // the HUD parts that answer a finger: the item bar's turn, the art performed, the lock-on
     Zones z = zones();
     Rect item = zone_rect(z, TZ_ITEM, w, h), target = zone_rect(z, TZ_TARGET, w, h), arts = zone_rect(z, TZ_ARTS, w, h);

@@ -942,15 +942,26 @@ void host_input_update(void) {
         const uint64_t face_mask = B(BTN_A) | B(BTN_B) | B(BTN_X) | B(BTN_Y);
         b = menu_release_buttons(b, face_mask, &menu_face_release);
     }
-    // On the Join Hub screen ZL / ZR change the list of hubs (the game shows 18 at a time) and search again by themselves.
-    static bool hub_zl, hub_zr;
+    // On the Join Hub screen a tap on a list's number (runtime/touch.cpp) chooses the list of hubs (the game shows 18 at
+    // a time); a moment after the last tap the game's Retry (X) is pressed for the player, so the chosen list is on the
+    // screen without a Retry of their own.
+    static int hub_seen = -1;
+    static uint64_t hub_retry_at, hub_x_until;
     if (ldn_hub_browsing()) {
-        bool zl = b & B(BTN_ZL), zr = b & B(BTN_ZR);
-        if ((zl && !hub_zl) || (zr && !hub_zr)) ldn_hub_list_step(zl && !hub_zl ? -1 : 1);
-        hub_zl = zl, hub_zr = zr;
-        if (ldn_hub_lists() > 1) b &= ~(B(BTN_ZL) | B(BTN_ZR));
+        uint64_t now_ns = SDL_GetTicksNS();
+        int chosen = ldn_hub_list_pending() ? ldn_hub_list_chosen() : -1;
+        if (chosen != hub_seen) {  // (a new choice: wait a moment for another tap)
+            hub_seen = chosen;
+            if (chosen >= 0) hub_retry_at = now_ns + 300ull * 1000000ull;
+        }
+        if (chosen >= 0 && now_ns >= hub_retry_at) {  // (Retry for them; again after a while if the search did not come)
+            hub_x_until = now_ns + 120ull * 1000000ull;
+            hub_retry_at = now_ns + 2500ull * 1000000ull;
+        }
+        if (now_ns < hub_x_until) b |= B(BTN_X);
     } else {
-        hub_zl = hub_zr = false;
+        hub_seen = -1;
+        hub_x_until = 0;
     }
     static uint64_t was;
     uint64_t down = b & ~was;

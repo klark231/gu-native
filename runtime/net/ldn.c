@@ -1651,7 +1651,8 @@ static bool filter_ok(const uint8_t *info, const uint8_t *f) {
 #define SEEN_MAX MAX_FOUND
 #define HUB_LIST_MAX 100  // the most hubs one list (all its pages) holds
 #define HUB_PAGE 18       // hubs the game's Join Hub screen lists at once (it takes more, but shows 3 pages of 6)
-static int list_next, list_given, list_pages = 1, list_selected = 0;  // the list the next search gives; the last one given; how many lists
+static int list_per = HUB_PAGE, list_total = 0;  // hubs in a list; hubs found
+static int list_next = -1, list_given, list_pages = 1, list_selected = 0;  // the list the next search gives (-1: the one after the last); the last one given; how many lists
 #define SEEN_KEEP_NS (25ull * 1000000000ull)
 static struct {
     uint8_t info[NETINFO_SIZE];
@@ -1757,8 +1758,10 @@ HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan)
     int pages = per > 0 ? (nfound + per - 1) / per : 1;
     if (pages < 1) pages = 1;
     if (list_selected >= pages) list_selected = 0;
+    if (list_next >= 0) list_selected = list_next, list_next = -1;  // (a tap on a list's number: that one)
+    if (list_selected >= pages) list_selected = 0;
     int cur_list = list_selected, first = cur_list * per;
-    list_given = cur_list, list_pages = pages;
+    list_given = cur_list, list_pages = pages, list_per = per > 0 ? per : HUB_PAGE, list_total = nfound;
     list_selected = (cur_list + 1) % pages;  // (a plain Retry gives the next list)
     for (int t = first; t < nfound && k < per; t++)
         memcpy((uint8_t *)G2H(out) + (size_t)k++ * NETINFO_SIZE, infos[order[t]], NETINFO_SIZE);
@@ -1770,11 +1773,6 @@ HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan)
             infos[i][NI_NODE_MAX], (unsigned)rd16(infos[i] + NI_ADV_SIZE), (const char *)(nd + NODE_NAME),
             hubs[i] ? (names[i] ? names[i] : "hub") : "LAN", (unsigned)vers[i]);
     }
-    if (pages > 1) {  // (told on the screen: which list this is)
-        char t[96];
-        snprintf(t, sizeof t, "List %d / %d (hubs #%d to %d of %d). ZL / ZR change it.", cur_list + 1, pages, first + 1, first + k, nfound);
-        overlay_notice("Hub list", t);
-    }
     {  // (every search: the page it gave is part of the line)
         LOG("[ldn] scan: %d network(s) found (%d listed on the hub servers), page from #%d: %d given to the game (room for %d)\n",
             nfound, listed, first, k, max);
@@ -1782,15 +1780,32 @@ HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan)
     RET(0);
 }
 
-// The Join Hub screen is open (a station that has not joined): ZL / ZR there change the hub list (runtime/host_input.c).
+// The Join Hub screen is open (a station that has not joined): the list buttons (runtime/touch.cpp) change the hub list.
 bool ldn_hub_browsing(void) { return L.state == ST_STATION; }
 int ldn_hub_lists(void) { return list_pages; }  // how many lists the last search had
-// The next search gives the list before / after the last one given (dir -1 / +1). false: only one list, nothing to change.
+// The next search gives the list before / after the one chosen last (dir -1 / +1); several steps in a row add up.
+// false: only one list, nothing to change.
 bool ldn_hub_list_step(int dir) {
     if (list_pages <= 1) return false;
-    list_next = ((list_given + (dir < 0 ? -1 : 1)) % list_pages + list_pages) % list_pages;
+    int base = list_next >= 0 ? list_next : list_given;
+    list_next = ((base + (dir < 0 ? -1 : 1)) % list_pages + list_pages) % list_pages;
     return true;
 }
+// The next search gives list `n` (0 based), as a tap on its number does. false: no such list.
+bool ldn_hub_list_goto(int n) {
+    if (n < 0 || n >= list_pages) return false;
+    list_next = n;
+    return true;
+}
+// Which hubs the chosen list holds: #first to #last (1 based) of total.
+void ldn_hub_list_range(int *first, int *last, int *total) {
+    int c = list_next >= 0 ? list_next : list_given, f = c * list_per + 1, l = (c + 1) * list_per;
+    *first = f, *last = l < list_total ? l : list_total, *total = list_total;
+}
+// The list chosen now (the one the next search gives): what the buttons show lit.
+int ldn_hub_list_chosen(void) { return list_next >= 0 ? list_next : list_given; }
+// Whether a list was chosen that the Join Hub screen does not show yet (a search by itself puts it there).
+bool ldn_hub_list_pending(void) { return list_next >= 0 && list_next != list_given; }
 
 static uint32_t connect_network(const uint8_t *info, const uint8_t *user, uint16_t lcv) {
     if (L.state != ST_STATION) return R_INVALID_STATE;
