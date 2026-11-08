@@ -130,12 +130,21 @@ typedef struct {
     int room_port;            // [Multiplayer] RoomPort: that room server's port
     char room_name[64];       // [Multiplayer] RoomName: the nickname in a room, and the name of a room this device hosts
     char room_password[64];   // [Multiplayer] RoomPassword: the room's password (empty: open)
-    char web_api_url[256];    // [Multiplayer] WebApiUrl: the Eden Web API that lists public rooms (the Room Browser)
+    char web_api_url[256];    // [Multiplayer] WebApiUrl: the Yuzu (Eden) Web API that lists public rooms (the Yuzu Room Browser)
     char last_room[96];       // [Multiplayer] LastRoom: "address:port" of the room joined last (pinned first in the Room Browser)
     char last_room_name[64];  // [Multiplayer] LastRoomName: and its name (empty: any name)
+    char citra_room_server[256];    // [Multiplayer] CitraRoomServer: Citra-family (Azahar) room, host[:port]; empty: none
+    char citra_room_password[64];   // [Multiplayer] CitraRoomPassword: that room's password (empty: open)
+    char citra_web_api_url[256];    // [Multiplayer] CitraWebApiUrl: the Citra Web API that lists public rooms (Citra Room Browser)
+    char citra_web_api_url_2[256];  // [Multiplayer] CitraWebApiUrl2: a second one, its rooms are added to the list (empty: off)
+    char citra_token[256];          // [Multiplayer] CitraToken: the token sent with a join request to a Citra room (empty: anonymous)
+    char last_citra_room[96];       // [Multiplayer] LastCitraRoom: "address:port" of the Citra room joined last
+    char last_citra_room_name[64];  // [Multiplayer] LastCitraRoomName: and its name (empty: any name)
 } Config;
-enum { XP_OFF, XP_RYU, XP_ROOM, XP_MIXED };
+enum { XP_OFF, XP_RYU, XP_ROOM, XP_MIXED, XP_CITRA };  // (XP_ROOM: Yuzu-family rooms; XP_CITRA: Citra-family / Azahar rooms, MH XX)
 #define WEB_API_DEFAULT_URL "api.ynet-fun.xyz"  // the Eden build's default (its web_api_url setting)
+#define CITRA_WEB_API_DEFAULT_URL "http://88.198.47.46:5000"    // AzaharPlus's defaults (its web_api_url and web_api_url_2)
+#define CITRA_WEB_API_DEFAULT_URL_2 "http://3ds.mgn.pub:3000"
 uint32_t config_combo_mask(const char *text);  // "A+X" -> the BTN_* bits, 0 if there is nothing or anything else in it
 void config_combo_text(uint32_t mask, char *out, size_t size);  // and back
 // The hub server used when ini Server is empty (runtime/net/ldn.c, server/): the project's public one (an Oracle

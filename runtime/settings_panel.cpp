@@ -30,7 +30,7 @@
 
 namespace {
 enum class View { Main, Keyboard, CloseChanges, Exit, Restart, Reset, Move, Conflicts, KeyCapture, Keybinds, TouchButtons, ComboEdit,
-                  PadList, PadMap, RoomBrowser };
+                  PadList, PadMap, RoomBrowser, CitraBrowser };
 enum class Command { None, Save };
 struct Row {
     std::string id, title, value;
@@ -443,7 +443,11 @@ bool equal(const Config &a, const Config &b) {
         strcmp(a.chat_key, b.chat_key) || strcmp(a.ryu_servers, b.ryu_servers) || strcmp(a.ryu_password, b.ryu_password) ||
         strcmp(a.room_server, b.room_server) || strcmp(a.room_name, b.room_name) ||
         strcmp(a.room_password, b.room_password) || strcmp(a.web_api_url, b.web_api_url) ||
-        strcmp(a.last_room, b.last_room) || strcmp(a.last_room_name, b.last_room_name))
+        strcmp(a.last_room, b.last_room) || strcmp(a.last_room_name, b.last_room_name) ||
+        strcmp(a.citra_room_server, b.citra_room_server) || strcmp(a.citra_room_password, b.citra_room_password) ||
+        strcmp(a.citra_web_api_url, b.citra_web_api_url) || strcmp(a.citra_web_api_url_2, b.citra_web_api_url_2) ||
+        strcmp(a.citra_token, b.citra_token) || strcmp(a.last_citra_room, b.last_citra_room) ||
+        strcmp(a.last_citra_room_name, b.last_citra_room_name))
         return false;
     for (int n = 0; n < 4; ++n)
         if (a.hp.scale[n] != b.hp.scale[n])
@@ -911,6 +915,11 @@ void reset_section() {
         SDL_strlcpy(c.room_name, f.room_name, sizeof c.room_name);
         SDL_strlcpy(c.room_password, f.room_password, sizeof c.room_password);
         SDL_strlcpy(c.web_api_url, f.web_api_url, sizeof c.web_api_url);
+        SDL_strlcpy(c.citra_room_server, f.citra_room_server, sizeof c.citra_room_server);
+        SDL_strlcpy(c.citra_room_password, f.citra_room_password, sizeof c.citra_room_password);
+        SDL_strlcpy(c.citra_web_api_url, f.citra_web_api_url, sizeof c.citra_web_api_url);
+        SDL_strlcpy(c.citra_web_api_url_2, f.citra_web_api_url_2, sizeof c.citra_web_api_url_2);
+        SDL_strlcpy(c.citra_token, f.citra_token, sizeof c.citra_token);
         c.sync_small_monsters = f.sync_small_monsters;
         c.village_in_hub = f.village_in_hub;
         break;
@@ -1420,9 +1429,9 @@ std::vector<Row> main_rows() {
         text(r, "key", "Matchmaking key", c.ldn_key, sizeof c.ldn_key, *c.ldn_key ? c.ldn_key : tr("Public"), ini("Key"));
         hub_check(r);
         header(r, "xp.header", tr("Crossplay"));
-        add_choice(r, "crossplay", "Crossplay", c.crossplay, {tr("Off"), tr("Ryujinx"), tr("Yuzu Room"), tr("Mixed")},
+        add_choice(r, "crossplay", "Crossplay", c.crossplay, {tr("Off"), tr("Ryujinx"), tr("Yuzu Room"), tr("Mixed"), tr("Citra Room")},
                    [](int v) { s.draft.crossplay = v; }, ini("Crossplay"));
-        r.back().help = tr("Play with console emulators: Ryujinx (RyuLdn servers), Yuzu-family rooms (Eden, Suyu, Yuzu, Citron), or both at once (Mixed). Small monster sync and HP scaling are off in those hubs.");
+        r.back().help = tr("Play with console emulators: Ryujinx (RyuLdn servers), Yuzu-family rooms (Eden, Suyu, Yuzu, Citron), or both at once (Mixed); or Citra Room: Azahar / Citra rooms, to play with Monster Hunter XX on the 3DS. Small monster sync and HP scaling are off in those hubs.");
         text(r, "ryu.servers", "RyuLdn servers", c.ryu_servers, sizeof c.ryu_servers,
              *c.ryu_servers ? std::string(c.ryu_servers) : std::string(tr("None")), ini("RyuServers"));
         add_bool(r, "ryu.host", "Run a RyuLdn server", &c.ryu_host, ini("RyuHost"));
@@ -1436,13 +1445,28 @@ std::vector<Row> main_rows() {
         text(r, "room.name", "Yuzu Room name", c.room_name, sizeof c.room_name, std::string(c.room_name), ini("RoomName"));
         text(r, "room.password", "Yuzu Room password", c.room_password, sizeof c.room_password,
              *c.room_password ? std::string("********") : std::string(tr("None")), ini("RoomPassword"));
-        text(r, "webapi", "Eden Web API URL", c.web_api_url, sizeof c.web_api_url,
+        text(r, "webapi", "Yuzu Web API URL", c.web_api_url, sizeof c.web_api_url,
              *c.web_api_url ? std::string(c.web_api_url) : std::string(tr("None")), ini("WebApiUrl"));
-        action(r, "rooms", tr("Room Browser"), []() {
+        action(r, "rooms", tr("Yuzu Room Browser"), []() {
             webrooms_refresh(s.draft.web_api_url);
             push(View::RoomBrowser, "rb.refresh");
         });
-        r.back().help = tr("Lists the public Yuzu-family rooms (Eden, Suyu) from the Eden Web API above. Pick one to join it.");
+        r.back().help = tr("Lists the public Yuzu-family rooms (Eden, Suyu) from the Yuzu Web API above. Pick one to join it.");
+        text(r, "citra.server", "Citra Room server", c.citra_room_server, sizeof c.citra_room_server,
+             *c.citra_room_server ? std::string(c.citra_room_server) : std::string(tr("None")), ini("CitraRoomServer"));
+        text(r, "citra.password", "Citra Room password", c.citra_room_password, sizeof c.citra_room_password,
+             *c.citra_room_password ? std::string("********") : std::string(tr("None")), ini("CitraRoomPassword"));
+        text(r, "citra.webapi", "Citra Web API URL", c.citra_web_api_url, sizeof c.citra_web_api_url,
+             *c.citra_web_api_url ? std::string(c.citra_web_api_url) : std::string(tr("None")), ini("CitraWebApiUrl"));
+        text(r, "citra.webapi2", "Citra Web API URL 2", c.citra_web_api_url_2, sizeof c.citra_web_api_url_2,
+             *c.citra_web_api_url_2 ? std::string(c.citra_web_api_url_2) : std::string(tr("None")), ini("CitraWebApiUrl2"));
+        text(r, "citra.token", "Citra Token", c.citra_token, sizeof c.citra_token,
+             *c.citra_token ? std::string("********") : std::string(tr("None")), ini("CitraToken"));
+        action(r, "citra.rooms", tr("Citra Room Browser"), []() {
+            webrooms_refresh_kind(WEBROOMS_CITRA, s.draft.citra_web_api_url, s.draft.citra_web_api_url_2);
+            push(View::CitraBrowser, "rb.refresh");
+        });
+        r.back().help = tr("Lists the public Azahar / Citra rooms from the Citra Web APIs above, where Monster Hunter XX players are. Pick one to join it.");
         add_bool(r, "sync", "Sync small monsters", &c.sync_small_monsters, ini("SyncSmallMonsters"));
         add_bool(r, "village", "Village quests in Hub", &c.village_in_hub, ini("VillageQuestsInHub"));
 #ifndef __ANDROID__  // (Discord's Rich Presence is its desktop app's)
@@ -1722,31 +1746,46 @@ void pad_map_rows(std::vector<Row> &r) {
     });
 }
 
-// The Room Browser (runtime/net/webapi.c): the public Yuzu-family rooms the Eden Web API lists. Joining one points the
-// Yuzu Room server at it, turns Crossplay on for rooms and saves, so the game's next search or hub joins it.
+// The Room Browsers (runtime/net/webapi.c): the public rooms a Web API lists. Yuzu: the Eden Web API's Yuzu-family rooms.
+// Citra: the Citra Web APIs' Azahar / Citra rooms (Monster Hunter XX). Joining one points that family's room server at it,
+// turns the matching Crossplay mode on and saves, so the game's next search or hub joins it.
 struct RoomFilters { int hide_locked = 0, hide_full = 0, hide_empty = 0; } room_filters;
-std::string room_search;  // the Room Browser's search text (name, host or game)
+std::string room_search;  // the Room Browsers' search text (name, host or game)
+constexpr uint32_t CITRA_NET_VERSION = 4;  // the room protocol version this build speaks (Azahar / Citra: 4)
 std::string lower_text(std::string t) {
     for (char &c : t) c = (char)SDL_tolower((unsigned char)c);
     return t;
 }
 // The room joined last, as the settings keep it ("address:port", and its name unless that is empty)
-bool is_last_room(const WebRoom &w) {
+bool is_last_room(const WebRoom &w, int kind) {
+    const char *last = kind == WEBROOMS_CITRA ? s.draft.last_citra_room : s.draft.last_room;
+    const char *last_name = kind == WEBROOMS_CITRA ? s.draft.last_citra_room_name : s.draft.last_room_name;
     char at[96];
     snprintf(at, sizeof at, "%s:%u", w.address, (unsigned)w.port);
-    return s.draft.last_room[0] && !strcmp(s.draft.last_room, at) &&
-           (!s.draft.last_room_name[0] || !strcmp(s.draft.last_room_name, w.name));
+    return last[0] && !strcmp(last, at) && (!last_name[0] || !strcmp(last_name, w.name));
 }
-bool join_web_room(const WebRoom &w, const std::string &password) {
+bool join_web_room(const WebRoom &w, const std::string &password, int kind) {
     Config temp = s.draft;
-    snprintf(temp.room_server, sizeof temp.room_server, "%s:%u", w.address, (unsigned)w.port);
-    snprintf(temp.last_room, sizeof temp.last_room, "%s", temp.room_server);
-    SDL_strlcpy(temp.last_room_name, w.name, sizeof temp.last_room_name);
-    for (char *c = temp.last_room_name; *c; c++)  // (the settings file can't hold these: a name with them matches any)
-        if (*c == ';' || *c == '#' || *c == '\n' || *c == '\r') { temp.last_room_name[0] = 0; break; }
-    SDL_strlcpy(temp.room_password, password.c_str(), sizeof temp.room_password);
-    if (temp.crossplay == XP_OFF) temp.crossplay = XP_ROOM;
-    else if (temp.crossplay == XP_RYU) temp.crossplay = XP_MIXED;  // (the RyuLdn servers stay in use)
+    char server[256];
+    snprintf(server, sizeof server, "%s:%u", w.address, (unsigned)w.port);
+    char *last = kind == WEBROOMS_CITRA ? temp.last_citra_room : temp.last_room;
+    size_t last_size = kind == WEBROOMS_CITRA ? sizeof temp.last_citra_room : sizeof temp.last_room;
+    char *last_name = kind == WEBROOMS_CITRA ? temp.last_citra_room_name : temp.last_room_name;
+    size_t last_name_size = kind == WEBROOMS_CITRA ? sizeof temp.last_citra_room_name : sizeof temp.last_room_name;
+    snprintf(last, last_size, "%s", server);
+    SDL_strlcpy(last_name, w.name, last_name_size);
+    for (char *c = last_name; *c; c++)  // (the settings file can't hold these: a name with them matches any)
+        if (*c == ';' || *c == '#' || *c == '\n' || *c == '\r') { last_name[0] = 0; break; }
+    if (kind == WEBROOMS_CITRA) {
+        SDL_strlcpy(temp.citra_room_server, server, sizeof temp.citra_room_server);
+        SDL_strlcpy(temp.citra_room_password, password.c_str(), sizeof temp.citra_room_password);
+        temp.crossplay = XP_CITRA;  // (one family of rooms at a time: the Yuzu room and the RyuLdn servers stay as set, unused)
+    } else {
+        SDL_strlcpy(temp.room_server, server, sizeof temp.room_server);
+        SDL_strlcpy(temp.room_password, password.c_str(), sizeof temp.room_password);
+        if (temp.crossplay == XP_OFF || temp.crossplay == XP_CITRA) temp.crossplay = XP_ROOM;
+        else if (temp.crossplay == XP_RYU) temp.crossplay = XP_MIXED;  // (the RyuLdn servers stay in use)
+    }
     char why[512];
     if (!config_validate(&temp, why, sizeof why)) {
         s.error = settings_text(s.draft.language, why);
@@ -1756,12 +1795,17 @@ bool join_web_room(const WebRoom &w, const std::string &password) {
     s.command = Command::Save;
     return true;
 }
-void room_browser_rows(std::vector<Row> &r) {
+void refresh_rooms(int kind) {
+    if (kind == WEBROOMS_CITRA) webrooms_refresh_kind(WEBROOMS_CITRA, s.draft.citra_web_api_url, s.draft.citra_web_api_url_2);
+    else webrooms_refresh(s.draft.web_api_url);
+}
+void room_browser_rows(std::vector<Row> &r, int kind) {
+    const bool citra = kind == WEBROOMS_CITRA;
     char err[96];
-    int state = webrooms_state(err, sizeof err);
-    action(r, "rb.refresh", tr("Refresh"), []() { webrooms_refresh(s.draft.web_api_url); }, state != WEBROOMS_LOADING);
+    int state = webrooms_state_kind(kind, err, sizeof err);
+    action(r, "rb.refresh", tr("Refresh"), [kind]() { refresh_rooms(kind); }, state != WEBROOMS_LOADING);
     r.back().value = state == WEBROOMS_LOADING ? tr("Loading...") : "";
-    r.back().help = tr("Asks the Eden Web API for the public rooms again.");
+    r.back().help = tr(citra ? "Asks the Citra Web APIs for the public rooms again." : "Asks the Yuzu Web API for the public rooms again.");
     add_bool(r, "rb.locked", "Hide locked", &room_filters.hide_locked);
     r.back().help = tr("Hides the rooms that need a password.");
     add_bool(r, "rb.full", "Hide full", &room_filters.hide_full);
@@ -1778,7 +1822,7 @@ void room_browser_rows(std::vector<Row> &r) {
     r.back().help = tr("Shows only the rooms whose name, host or game has this text.");
     if (state == WEBROOMS_ERROR) header(r, "rb.error", fmt("Can't get the room list: %s", err));
     WebRoom rooms[WEBROOMS_MAX];
-    int n = webrooms_get(rooms, WEBROOMS_MAX), shown = 0;
+    int n = webrooms_get_kind(kind, rooms, WEBROOMS_MAX), shown = 0;
     // The rooms that pass the filters: the one joined last pinned first, then the fullest first, the empty ones at the end
     std::vector<int> order;
     const std::string query = lower_text(room_search);
@@ -1793,7 +1837,7 @@ void room_browser_rows(std::vector<Row> &r) {
         order.push_back(i);
     }
     std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
-        bool la = is_last_room(rooms[a]), lb = is_last_room(rooms[b]);
+        bool la = is_last_room(rooms[a], kind), lb = is_last_room(rooms[b], kind);
         if (la != lb) return la;
         return rooms[a].players > rooms[b].players;
     });
@@ -1802,23 +1846,31 @@ void room_browser_rows(std::vector<Row> &r) {
         shown++;
         std::string title = w.name[0] ? w.name : w.address;
         std::string value = std::to_string(w.players) + "/" + std::to_string(w.max_players);
-        bool last = is_last_room(w);
+        bool last = is_last_room(w, kind);
+        const bool wrong_version = citra && w.net_version && w.net_version != CITRA_NET_VERSION;  // (another room protocol: can't join)
         if (w.locked) value += std::string("  ") + tr("Locked");
+        if (wrong_version) value += std::string("  ") + tr("Incompatible");
         if (last) value += std::string("  ") + tr("Last joined");
         WebRoom room = w;
-        action(r, "rb.room." + std::to_string(i), title, [room]() {
+        action(r, "rb.room." + std::to_string(i), title, [room, kind, wrong_version]() {
+            if (wrong_version) {
+                s.error = tr("This room speaks another room protocol version than this app (Citra rooms: 4).");
+                return;
+            }
             if (!room.locked) {
-                if (join_web_room(room, "")) pop();
+                if (join_web_room(room, "", kind)) pop();
                 return;
             }
             // (the password typed for this room last time is already in the box)
-            keyboard(tr("Room password"), is_last_room(room) ? std::string(s.draft.room_password) : std::string(),
-                     sizeof s.draft.room_password - 1, [room](const std::string &typed, std::string &error) {
+            const char *saved = kind == WEBROOMS_CITRA ? s.draft.citra_room_password : s.draft.room_password;
+            size_t cap = (kind == WEBROOMS_CITRA ? sizeof s.draft.citra_room_password : sizeof s.draft.room_password) - 1;
+            keyboard(tr("Room password"), is_last_room(room, kind) ? std::string(saved) : std::string(), cap,
+                     [room, kind](const std::string &typed, std::string &error) {
                 if (typed.empty()) {
                     error = tr("Type the room's password.");
                     return false;
                 }
-                return join_web_room(room, typed);  // (the keyboard closes itself: back in the list)
+                return join_web_room(room, typed, kind);  // (the keyboard closes itself: back in the list)
             });
         });
         r.back().value = value;
@@ -1840,7 +1892,8 @@ std::vector<Row> rows_for_view(bool *open) {
     if (s.view == View::ComboEdit) { combo_rows(r); return r; }
     if (s.view == View::PadList) { pad_list_rows(r); return r; }
     if (s.view == View::PadMap) { pad_map_rows(r); return r; }
-    if (s.view == View::RoomBrowser) { room_browser_rows(r); return r; }
+    if (s.view == View::RoomBrowser) { room_browser_rows(r, WEBROOMS_YUZU); return r; }
+    if (s.view == View::CitraBrowser) { room_browser_rows(r, WEBROOMS_CITRA); return r; }
     if (s.view == View::Keyboard) {
         std::string chars = "1234567890abcdefghijklmnopqrstuvwxyz.:,-_/@!$%&*+=?~()";
         if (s.keyboard.upper)
@@ -2585,7 +2638,8 @@ std::string view_title() {
                     : s.view == View::ComboEdit  ? "Combined button"
                     : s.view == View::PadList    ? "Map a controller"
                     : s.view == View::PadMap     ? "Map a controller"
-                    : s.view == View::RoomBrowser ? "Room Browser"
+                    : s.view == View::RoomBrowser ? "Yuzu Room Browser"
+                    : s.view == View::CitraBrowser ? "Citra Room Browser"
                     : s.view == View::KeyCapture ? "Press the key for chat (Esc: cancel)"
                                                  : "Unsaved changes");
 }

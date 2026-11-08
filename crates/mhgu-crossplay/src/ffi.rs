@@ -353,3 +353,60 @@ pub extern "C" fn mhgu_ryusrv_status(out: *mut RyuServerStatusC) -> bool {
     }
     true
 }
+
+// ---- Citra-family rooms: Azahar, Citra (runtime/net/citra_room.h)
+use crate::citra;
+
+pub type CitraFrameCb = Option<extern "C" fn(u8, u8, *const u8, *const u8, *const u8, u32)>;
+pub type CitraLostCb = Option<extern "C" fn()>;
+pub type CitraMembersCb = Option<extern "C" fn(*const [u8; 6], i32)>;
+
+#[no_mangle]
+pub extern "C" fn mhgu_citra_set_hooks(frame: CitraFrameCb, lost: CitraLostCb, members: CitraMembersCb) {
+    citra::set_hooks(citra::CitraHooks { frame, lost, members });
+}
+
+#[no_mangle]
+pub extern "C" fn mhgu_citra_join(
+    server: *const c_char, nick: *const c_char, password: *const c_char, token: *const c_char, mac: *mut u8,
+    err: *mut c_char, err_size: i32,
+) -> bool {
+    match citra::join(&cstr(server), &cstr(nick), &cstr(password), &cstr(token)) {
+        Ok(a) => {
+            if !mac.is_null() { unsafe { std::ptr::copy_nonoverlapping(a.as_ptr(), mac, 6); } }
+            true
+        }
+        Err(e) => {
+            if !err.is_null() && err_size > 0 {
+                let b = e.as_bytes();
+                let n = b.len().min(err_size as usize - 1);
+                unsafe {
+                    std::ptr::copy_nonoverlapping(b.as_ptr(), err as *mut u8, n);
+                    *err.add(n) = 0;
+                }
+            }
+            false
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn mhgu_citra_leave() { citra::leave() }
+
+#[no_mangle]
+pub extern "C" fn mhgu_citra_connected() -> bool { citra::connected() }
+
+#[no_mangle]
+pub extern "C" fn mhgu_citra_own_mac(mac: *mut u8) {
+    if mac.is_null() { return; }
+    unsafe { std::ptr::copy_nonoverlapping(citra::own_mac().as_ptr(), mac, 6); }
+}
+
+#[no_mangle]
+pub extern "C" fn mhgu_citra_send_frame(ty: u8, channel: u8, tx: *const u8, dst: *const u8, data: *const u8, len: u32) {
+    if tx.is_null() || dst.is_null() { return; }
+    let t = unsafe { [*tx, *tx.add(1), *tx.add(2), *tx.add(3), *tx.add(4), *tx.add(5)] };
+    let d = unsafe { [*dst, *dst.add(1), *dst.add(2), *dst.add(3), *dst.add(4), *dst.add(5)] };
+    let b = if data.is_null() { &[][..] } else { unsafe { std::slice::from_raw_parts(data, len as usize) } };
+    citra::send_frame(ty, channel, t, d, b);
+}

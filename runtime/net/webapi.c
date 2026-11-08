@@ -1,4 +1,4 @@
-// The Room Browser's data: the Eden Web API's public room list. Eden and Suyu (both Yuzu-based) rooms are announced
+// The Room Browsers' data (Yuzu: the Eden Web API; Citra: the Citra Web APIs): a Web API's public room list. Eden and Suyu (both Yuzu-based) rooms are announced
 // there; GET <WebApiUrl>/lobby answers {"rooms":[{name, address, port, hasPassword, maxPlayers, owner,
 // preferredGameName, players:[...]}]}. http:// goes over a plain socket (what Eden's own client does for a bare
 // host); https:// needs TLS, which only Android has (GameActivity.webGet).
@@ -34,7 +34,7 @@ static struct {
     char err[96];
     WebRoom rooms[WEBROOMS_MAX];
     int n;
-} W = {.mu = PTHREAD_MUTEX_INITIALIZER};
+} Wk[WEBROOMS_KINDS] = {{.mu = PTHREAD_MUTEX_INITIALIZER}, {.mu = PTHREAD_MUTEX_INITIALIZER}};
 
 // ---- a small JSON reader: walks the document once, handing every key of the objects in "rooms" to a callback
 typedef struct { const char *p, *end; bool bad; } Jr;
@@ -121,6 +121,7 @@ static void parse_room(Jr *j, WebRoom *r) {
         else if (!strcmp(key, "address")) jstr(j, r->address, sizeof r->address);
         else if (!strcmp(key, "port")) r->port = (uint16_t)atoi(j->p), jskip(j);
         else if (!strcmp(key, "maxPlayers")) r->max_players = atoi(j->p), jskip(j);
+        else if (!strcmp(key, "netVersion")) r->net_version = (uint32_t)atoi(j->p), jskip(j);
         else if (!strcmp(key, "hasPassword")) r->locked = !strncmp(j->p, "true", 4), jskip(j);
         else if (!strcmp(key, "players") && j->p < j->end && *j->p == '[') r->players = jcount_array(*j), jskip(j);
         else jskip(j);
@@ -277,65 +278,106 @@ static char *https_get(const char *url, size_t *len, char *err, size_t es) {
 }
 #endif
 
-static void *fetch_thread(void *arg) {
-    char *url = arg, host[128], base[128], path[160], err[96] = "", *body = NULL;
+// one Web API's /lobby: the rooms read (>= 0) into out, or -1 with err
+static int fetch_one(const char *url, WebRoom *out, int max, char *err, size_t es) {
+    char host[128], base[128], path[160], *body = NULL;
     size_t len = 0;
     bool tls;
     int port;
     if (!split_url(url, &tls, host, sizeof host, &port, base, sizeof base)) {
-        snprintf(err, sizeof err, "the Web API URL is not valid");
-    } else if (tls) {
+        snprintf(err, es, "the Web API URL is not valid");
+        return -1;
+    }
+    if (tls) {
 #ifdef __ANDROID__
         char full[400];
         if (port) snprintf(full, sizeof full, "https://%s:%d%s/lobby", host, port, base);
         else snprintf(full, sizeof full, "https://%s%s/lobby", host, base);
-        body = https_get(full, &len, err, sizeof err);
+        body = https_get(full, &len, err, es);
 #else
-        snprintf(err, sizeof err, "https needs Android here: use an http:// URL");
+        snprintf(err, es, "https needs Android here: use an http:// URL");
 #endif
     } else {
         snprintf(path, sizeof path, "%s/lobby", base);
-        body = http_get(host, port, path, &len, err, sizeof err);
+        body = http_get(host, port, path, &len, err, es);
     }
-    static WebRoom tmp[WEBROOMS_MAX];
-    int n = body ? parse_rooms(body, len, tmp, WEBROOMS_MAX) : -1;
-    if (body && n < 0) snprintf(err, sizeof err, "the answer is not a room list");
+    if (!body) return -1;
+    int n = parse_rooms(body, len, out, max);
     free(body);
-    pthread_mutex_lock(&W.mu);
-    if (n >= 0) memcpy(W.rooms, tmp, sizeof(WebRoom) * (size_t)n), W.n = n, W.state = WEBROOMS_OK, W.err[0] = 0;
-    else W.state = WEBROOMS_ERROR, snprintf(W.err, sizeof W.err, "%s", err);
-    pthread_mutex_unlock(&W.mu);
-    free(url);
+    if (n < 0) snprintf(err, es, "the answer is not a room list");
+    return n;
+}
+
+typedef struct { int kind; char url[256], url2[256]; } Fetch;
+
+static void *fetch_thread(void *arg) {
+    Fetch *f = arg;
+    char err[96] = "", err2[96] = "";
+    static WebRoom tmp[WEBROOMS_KINDS][WEBROOMS_MAX], part[WEBROOMS_KINDS][WEBROOMS_MAX];
+    WebRoom *t = tmp[f->kind], *p = part[f->kind];
+    int n = -1, got = 0;
+    if (f->url[0]) {
+        int k = fetch_one(f->url, t, WEBROOMS_MAX, err, sizeof err);
+        if (k >= 0) n = k;
+    } else snprintf(err, sizeof err, "no Web API URL is set");
+    if (f->url2[0]) {  // a second API: its rooms are added (the ones the first already lists are skipped)
+        int k = fetch_one(f->url2, p, WEBROOMS_MAX, err2, sizeof err2);
+        if (k >= 0) {
+            if (n < 0) n = 0;
+            for (int i = 0; i < k && n < WEBROOMS_MAX; i++) {
+                bool dup = false;
+                for (int j = 0; j < n && !dup; j++) dup = t[j].port == p[i].port && !strcmp(t[j].address, p[i].address);
+                if (!dup) t[n++] = p[i];
+            }
+        } else if (n < 0) snprintf(err, sizeof err, "%s", err2);
+    }
+    (void)got;
+    pthread_mutex_lock(&Wk[f->kind].mu);
+    if (n >= 0) memcpy(Wk[f->kind].rooms, t, sizeof(WebRoom) * (size_t)n), Wk[f->kind].n = n, Wk[f->kind].state = WEBROOMS_OK, Wk[f->kind].err[0] = 0;
+    else Wk[f->kind].state = WEBROOMS_ERROR, snprintf(Wk[f->kind].err, sizeof Wk[f->kind].err, "%s", err);
+    pthread_mutex_unlock(&Wk[f->kind].mu);
+    free(f);
     return NULL;
 }
 
-void webrooms_refresh(const char *url) {
-    pthread_mutex_lock(&W.mu);
-    if (W.state == WEBROOMS_LOADING) { pthread_mutex_unlock(&W.mu); return; }
-    W.state = WEBROOMS_LOADING;
-    pthread_mutex_unlock(&W.mu);
+void webrooms_refresh_kind(int kind, const char *url, const char *url2) {
+    if (kind < 0 || kind >= WEBROOMS_KINDS) return;
+    pthread_mutex_lock(&Wk[kind].mu);
+    if (Wk[kind].state == WEBROOMS_LOADING) { pthread_mutex_unlock(&Wk[kind].mu); return; }
+    Wk[kind].state = WEBROOMS_LOADING;
+    pthread_mutex_unlock(&Wk[kind].mu);
+    Fetch *f = calloc(1, sizeof *f);
+    f->kind = kind;
+    snprintf(f->url, sizeof f->url, "%s", url ? url : "");
+    snprintf(f->url2, sizeof f->url2, "%s", url2 ? url2 : "");
     pthread_t t;
-    char *copy = strdup(url && *url ? url : "");
-    if (pthread_create(&t, NULL, fetch_thread, copy)) {
-        free(copy);
-        pthread_mutex_lock(&W.mu);
-        W.state = WEBROOMS_ERROR, snprintf(W.err, sizeof W.err, "can't start the request");
-        pthread_mutex_unlock(&W.mu);
+    if (pthread_create(&t, NULL, fetch_thread, f)) {
+        free(f);
+        pthread_mutex_lock(&Wk[kind].mu);
+        Wk[kind].state = WEBROOMS_ERROR, snprintf(Wk[kind].err, sizeof Wk[kind].err, "can't start the request");
+        pthread_mutex_unlock(&Wk[kind].mu);
         return;
     }
     pthread_detach(t);
 }
-int webrooms_state(char *err, size_t err_size) {
-    pthread_mutex_lock(&W.mu);
-    int s = W.state;
-    if (err && err_size) snprintf(err, err_size, "%s", W.err);
-    pthread_mutex_unlock(&W.mu);
+int webrooms_state_kind(int kind, char *err, size_t err_size) {
+    if (kind < 0 || kind >= WEBROOMS_KINDS) return WEBROOMS_IDLE;
+    pthread_mutex_lock(&Wk[kind].mu);
+    int s = Wk[kind].state;
+    if (err && err_size) snprintf(err, err_size, "%s", Wk[kind].err);
+    pthread_mutex_unlock(&Wk[kind].mu);
     return s;
 }
-int webrooms_get(WebRoom *out, int max) {
-    pthread_mutex_lock(&W.mu);
-    int n = W.n < max ? W.n : max;
-    memcpy(out, W.rooms, sizeof(WebRoom) * (size_t)n);
-    pthread_mutex_unlock(&W.mu);
+int webrooms_get_kind(int kind, WebRoom *out, int max) {
+    if (kind < 0 || kind >= WEBROOMS_KINDS) return 0;
+    pthread_mutex_lock(&Wk[kind].mu);
+    int n = Wk[kind].n < max ? Wk[kind].n : max;
+    memcpy(out, Wk[kind].rooms, sizeof(WebRoom) * (size_t)n);
+    pthread_mutex_unlock(&Wk[kind].mu);
     return n;
 }
+
+// the Yuzu (Eden) list: one URL
+void webrooms_refresh(const char *url) { webrooms_refresh_kind(WEBROOMS_YUZU, url, NULL); }
+int webrooms_state(char *err, size_t err_size) { return webrooms_state_kind(WEBROOMS_YUZU, err, err_size); }
+int webrooms_get(WebRoom *out, int max) { return webrooms_get_kind(WEBROOMS_YUZU, out, max); }

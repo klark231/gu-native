@@ -92,6 +92,9 @@ static void publish_live(const Config *c, bool all) {
     if (all || c->room_port != saved.room_port) live_crossplay.room_port = c->room_port;
     if (all || strcmp(c->room_name, saved.room_name)) memcpy(live_crossplay.room_name, c->room_name, sizeof live_crossplay.room_name);
     if (all || strcmp(c->room_password, saved.room_password)) memcpy(live_crossplay.room_password, c->room_password, sizeof live_crossplay.room_password);
+    if (all || strcmp(c->citra_room_server, saved.citra_room_server)) memcpy(live_crossplay.citra_room_server, c->citra_room_server, sizeof live_crossplay.citra_room_server);
+    if (all || strcmp(c->citra_room_password, saved.citra_room_password)) memcpy(live_crossplay.citra_room_password, c->citra_room_password, sizeof live_crossplay.citra_room_password);
+    if (all || strcmp(c->citra_token, saved.citra_token)) memcpy(live_crossplay.citra_token, c->citra_token, sizeof live_crossplay.citra_token);
     SDL_UnlockSpinlock(&live_ldn_lock);
 }
 void config_store_loaded(const Config *c) {
@@ -191,6 +194,9 @@ void config_live_crossplay(Config *out) {
     out->room_port = live_crossplay.room_port;
     memcpy(out->room_name, live_crossplay.room_name, sizeof out->room_name);
     memcpy(out->room_password, live_crossplay.room_password, sizeof out->room_password);
+    memcpy(out->citra_room_server, live_crossplay.citra_room_server, sizeof out->citra_room_server);
+    memcpy(out->citra_room_password, live_crossplay.citra_room_password, sizeof out->citra_room_password);
+    memcpy(out->citra_token, live_crossplay.citra_token, sizeof out->citra_token);
     SDL_UnlockSpinlock(&live_ldn_lock);
 }
 int config_language(void) { return SDL_GetAtomicInt(&language); }

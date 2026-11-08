@@ -49,18 +49,25 @@ enum { HUB_UNKNOWN, HUB_CHECKING, HUB_OFF, HUB_ONLINE, HUB_NOT_FOUND, HUB_UNREAC
 int ldn_hub_status(const char *server, const char *key, int *ms, int *hubs);  // HUB_*
 void ldn_hub_check(const char *server, const char *key);  // asks the server for its hubs, in a thread
 
-// The Room Browser (runtime/net/webapi.c): the Eden Web API's public room list (GET <url>/lobby), fetched in a thread
+// The Room Browsers (runtime/net/webapi.c): a Web API's public room list (GET <url>/lobby), fetched in a thread.
+// WEBROOMS_YUZU: the Eden Web API (Yuzu-family rooms). WEBROOMS_CITRA: the Citra Web APIs (Azahar / Citra rooms, MH XX);
+// two URLs, the rooms of both in one list.
 typedef struct {
     char name[64], owner[48], game[48], address[64];
     uint16_t port;
     int players, max_players;
     bool locked;  // has a password
+    uint32_t net_version;  // the room's netVersion (Citra: 4 for Azahar), 0 if the API says nothing
 } WebRoom;
+enum { WEBROOMS_YUZU, WEBROOMS_CITRA, WEBROOMS_KINDS };
 enum { WEBROOMS_IDLE, WEBROOMS_LOADING, WEBROOMS_OK, WEBROOMS_ERROR };
 #define WEBROOMS_MAX 128
-void webrooms_refresh(const char *url);             // starts a fetch (ignored while one runs)
+void webrooms_refresh(const char *url);             // starts a fetch of the Yuzu list (ignored while one runs)
 int webrooms_state(char *err, size_t err_size);     // WEBROOMS_*; err: why, after an error
 int webrooms_get(WebRoom *out, int max);            // the last list; its size
+void webrooms_refresh_kind(int kind, const char *url, const char *url2);  // url2 may be NULL / empty
+int webrooms_state_kind(int kind, char *err, size_t err_size);
+int webrooms_get_kind(int kind, WebRoom *out, int max);
 
 // vsock.c
 void vsock_deliver(const VPacket *p, const void *data, uint32_t len);  // from the network to the local sockets

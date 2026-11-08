@@ -36,7 +36,8 @@
     1, 0, 1, 1, TOUCH_SHOW_DEFAULT, \
     .crossplay = XP_OFF, .ryu_servers = "", .ryu_host = 0, .ryu_port = 30456, .ryu_password = "", \
     .room_server = "", .room_host = 0, .room_port = 24872, .room_name = "MHGU", .room_password = "", \
-    .web_api_url = WEB_API_DEFAULT_URL
+    .web_api_url = WEB_API_DEFAULT_URL, \
+    .citra_web_api_url = CITRA_WEB_API_DEFAULT_URL, .citra_web_api_url_2 = CITRA_WEB_API_DEFAULT_URL_2
 // (in Config's order, config.h: a new field there needs its value here, in its place - shadows, adreno_fix, bloom, reverb before
 // touch_show: without them the touch buttons' defaults moved two places and most buttons were off)
 Config g_config = {CONFIG_DEFAULT_VALUES};
@@ -379,7 +380,7 @@ static const char DEFAULT_INI[] =
     "RyuPassword =\n"
     "\n"
     "; Yuzu-family room server, host[:port] (Eden, Suyu, Yuzu, Citron). Default port: 24872. Empty: no remote room.\n"
-    "; The Room Browser in the Network tab fills this in from the rooms the Eden Web API lists.\n"
+    "; The Yuzu Room Browser in the Network tab fills this in from the rooms the Yuzu (Eden) Web API lists.\n"
     "; Default:\n"
     "RoomServer =\n"
     "\n"
@@ -400,7 +401,7 @@ static const char DEFAULT_INI[] =
     "; Default:\n"
     "RoomPassword =\n"
     "\n"
-    "; The Eden Web API the Room Browser asks for the list of public rooms (a host, or http:// / https:// and a host).\n"
+    "; The Yuzu (Eden) Web API the Yuzu Room Browser asks for the list of public rooms (a host, or http:// / https:// and a host).\n"
     "; Eden and Suyu both come from Yuzu and share this room list.\n"
     "; Default: api.ynet-fun.xyz\n"
     "WebApiUrl = api.ynet-fun.xyz\n"
@@ -409,6 +410,31 @@ static const char DEFAULT_INI[] =
     "; Default:\n"
     "LastRoom =\n"
     "LastRoomName =\n"
+    "\n"
+    "; Citra-family room server (Azahar, Citra), host[:port]. Default port: 24872. Empty: none. Crossplay = Citra Room plays\n"
+    "; Monster Hunter XX (3DS) players in it. The Citra Room Browser in the Network tab fills this in.\n"
+    "; Default:\n"
+    "CitraRoomServer =\n"
+    "\n"
+    "; The Citra room's password. Empty: open.\n"
+    "; Default:\n"
+    "CitraRoomPassword =\n"
+    "\n"
+    "; The Citra Web API the Citra Room Browser asks for the public rooms (a host, or http:// / https:// and a host), and a\n"
+    "; second one whose rooms are added to the list. Empty: off. The defaults are AzaharPlus's.\n"
+    "; Default: http://88.198.47.46:5000 and http://3ds.mgn.pub:3000\n"
+    "CitraWebApiUrl = http://88.198.47.46:5000\n"
+    "CitraWebApiUrl2 = http://3ds.mgn.pub:3000\n"
+    "\n"
+    "; The token sent with a join request to a Citra room (an Azahar network token, or a room JWT). Empty: join anonymously,\n"
+    "; which public rooms accept.\n"
+    "; Default:\n"
+    "CitraToken =\n"
+    "\n"
+    "; The Citra room the Citra Room Browser joined last, pinned at the top of the list. The browser writes these two.\n"
+    "; Default:\n"
+    "LastCitraRoom =\n"
+    "LastCitraRoomName =\n"
     "\n"
     "; Sync small monsters between players in multiplayer.\n"
     "; (Currently off by default, pending a bug investigation where small monsters may refuse to attack players)\n"
@@ -685,7 +711,7 @@ const ConfigSetting g_settings[] = {
     {"Multiplayer", "Join", SET_TEXT, F(ldn_join), sizeof g_config.ldn_join, 0, 0, NULL, NULL, true, ERR_NET},
     {"Multiplayer", "Server", SET_TEXT, F(ldn_server), sizeof g_config.ldn_server, 0, 0, NULL, NULL, false, ERR_SERVER},
     {"Multiplayer", "Key", SET_TEXT, F(ldn_key), sizeof g_config.ldn_key, 0, 0, NULL, NULL, false, ERR_SERVER},
-    {"Multiplayer", "Crossplay", SET_CHOICE, F(crossplay), 0, 0, 0, "Off,Ryujinx,Yuzu Room|Room|Yuzu|Eden|Suyu,Mixed", NULL, false, ERR_XP},
+    {"Multiplayer", "Crossplay", SET_CHOICE, F(crossplay), 0, 0, 0, "Off,Ryujinx,Yuzu Room|Room|Yuzu|Eden|Suyu,Mixed,Citra Room|Citra|Azahar", NULL, false, ERR_XP},
     {"Multiplayer", "RyuServers", SET_TEXT, F(ryu_servers), sizeof g_config.ryu_servers, 0, 0, NULL, NULL, false, ERR_XP},
     ON_OFF("Multiplayer", "RyuHost", ryu_host, false),
     {"Multiplayer", "RyuPort", SET_INT, F(ryu_port), 0, 1, 65535, NULL, NULL, false, ERR_XP},
@@ -698,6 +724,13 @@ const ConfigSetting g_settings[] = {
     {"Multiplayer", "WebApiUrl", SET_TEXT, F(web_api_url), sizeof g_config.web_api_url, 0, 0, NULL, NULL, false, ERR_XP},
     {"Multiplayer", "LastRoom", SET_TEXT, F(last_room), sizeof g_config.last_room, 0, 0, NULL, NULL, false, ERR_XP},
     {"Multiplayer", "LastRoomName", SET_TEXT, F(last_room_name), sizeof g_config.last_room_name, 0, 0, NULL, NULL, false, ERR_XP},
+    {"Multiplayer", "CitraRoomServer", SET_TEXT, F(citra_room_server), sizeof g_config.citra_room_server, 0, 0, NULL, NULL, false, ERR_XP},
+    {"Multiplayer", "CitraRoomPassword", SET_TEXT, F(citra_room_password), sizeof g_config.citra_room_password, 0, 0, NULL, NULL, false, ERR_XP},
+    {"Multiplayer", "CitraWebApiUrl", SET_TEXT, F(citra_web_api_url), sizeof g_config.citra_web_api_url, 0, 0, NULL, NULL, false, ERR_XP},
+    {"Multiplayer", "CitraWebApiUrl2", SET_TEXT, F(citra_web_api_url_2), sizeof g_config.citra_web_api_url_2, 0, 0, NULL, NULL, false, ERR_XP},
+    {"Multiplayer", "CitraToken", SET_TEXT, F(citra_token), sizeof g_config.citra_token, 0, 0, NULL, NULL, false, ERR_XP},
+    {"Multiplayer", "LastCitraRoom", SET_TEXT, F(last_citra_room), sizeof g_config.last_citra_room, 0, 0, NULL, NULL, false, ERR_XP},
+    {"Multiplayer", "LastCitraRoomName", SET_TEXT, F(last_citra_room_name), sizeof g_config.last_citra_room_name, 0, 0, NULL, NULL, false, ERR_XP},
     ON_OFF("Multiplayer", "SyncSmallMonsters", sync_small_monsters, true),
     {"Monster HP", "1Player|1Players", SET_FACTOR, F(hp.scale[0]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, true, ERR_HP},
     {"Monster HP", "2Players|2Player", SET_FACTOR, F(hp.scale[1]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, true, ERR_HP},
@@ -1182,7 +1215,9 @@ void config_load(void) {
         {"MHGU_CROSSPLAY", "Crossplay"}, {"MHGU_RYU_SERVERS", "RyuServers"}, {"MHGU_RYU_HOST", "RyuHost"},
         {"MHGU_RYU_PORT", "RyuPort"}, {"MHGU_RYU_PASSWORD", "RyuPassword"}, {"MHGU_ROOM_SERVER", "RoomServer"},
         {"MHGU_ROOM_HOST", "RoomHost"}, {"MHGU_ROOM_PORT", "RoomPort"}, {"MHGU_ROOM_NAME", "RoomName"},
-        {"MHGU_ROOM_PASSWORD", "RoomPassword"}, {"MHGU_WEB_API", "WebApiUrl"}
+        {"MHGU_ROOM_PASSWORD", "RoomPassword"}, {"MHGU_WEB_API", "WebApiUrl"},
+        {"MHGU_CITRA_ROOM", "CitraRoomServer"}, {"MHGU_CITRA_PASSWORD", "CitraRoomPassword"}, {"MHGU_CITRA_WEB_API", "CitraWebApiUrl"},
+        {"MHGU_CITRA_WEB_API_2", "CitraWebApiUrl2"}, {"MHGU_CITRA_TOKEN", "CitraToken"}
     };
     for (unsigned i = 0; i < sizeof crossplay_env / sizeof *crossplay_env; ++i) {
         const ConfigSetting *setting = config_setting(crossplay_env[i].key);
