@@ -115,9 +115,9 @@ func TestKeysAndVersions(t *testing.T) {
 	}
 }
 
-// More hubs than ListMax: each answer is a random choice of hubs with a free place (full ones only when those run
-// out), sorted (the fullest first), and repeated searches see more than ListMax of them.
-func TestListRandomChoice(t *testing.T) {
+// More hubs than ListMax: every answer is the same (nothing random): hubs with a free place first, sorted (the fullest
+// first), and the full ones only when those run out.
+func TestListDeterministic(t *testing.T) {
 	s := start(t, func(c *Config) {
 		c.ListMax, c.MaxHubsPerIP, c.MaxConnsPerIP, c.ReqRate, c.ReqBurst = 4, 20, 100, 1000, 1000
 	})
@@ -129,8 +129,8 @@ func TestListRandomChoice(t *testing.T) {
 		_, id := host(t, s, 0, 4)
 		full[id] = true
 	}
-	seen := map[uint64]bool{}
-	for n := 0; n < 30; n++ {
+	var first []byte
+	for n := 0; n < 10; n++ {
 		c := dial(t, s)
 		send(t, c, tList, header(2, 0))
 		p := expect(t, c, tHubs)
@@ -149,11 +149,12 @@ func TestListRandomChoice(t *testing.T) {
 				t.Fatalf("answer not sorted: %d players after %d", players, last)
 			}
 			last = players
-			seen[id] = true
 		}
-	}
-	if len(seen) <= 4 {
-		t.Fatalf("30 searches saw only %d hubs", len(seen))
+		if first == nil {
+			first = p
+		} else if !bytes.Equal(first, p) {
+			t.Fatal("two searches got different answers")
+		}
 	}
 }
 

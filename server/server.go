@@ -26,7 +26,6 @@ import (
 	"errors"
 	"io"
 	"log"
-	mrand "math/rand/v2"
 	"net"
 	"sort"
 	"sync"
@@ -80,7 +79,7 @@ type Config struct {
 	MaxConnsPerIP int     // connections from one IP address
 	MaxHubs       int     // hubs listed at once
 	MaxHubsPerIP  int     // hubs one IP address hosts
-	ListMax       int     // hubs in one LIST answer (the game's Join Hub list shows 18: 3 pages of 6)
+	ListMax       int     // hubs in one LIST answer (a hub is 1160 bytes: the client's frame limit, 65600, holds 56)
 	ReqRate       float64 // LIST / JOIN requests a second per IP address (burst: ReqBurst)
 	ReqBurst      float64
 	Bandwidth     float64       // bytes a second per pair and direction (TCP), and per pair (UDP)
@@ -91,7 +90,7 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		Addr: ":39510", MaxConns: 4000, MaxConnsPerIP: 24, MaxHubs: 2000, MaxHubsPerIP: 4, ListMax: 18,
+		Addr: ":39510", MaxConns: 4000, MaxConnsPerIP: 24, MaxHubs: 2000, MaxHubsPerIP: 4, ListMax: 56,
 		ReqRate: 2, ReqBurst: 15, Bandwidth: 1 << 20, HandshakeTime: 10 * time.Second, PingEvery: 15 * time.Second,
 	}
 }
@@ -370,13 +369,8 @@ func (s *Server) list(c *net.TCPConn, proto uint16, room [16]byte) {
 	}
 	s.mu.Unlock()
 	free := func(e *entry) bool { return e.info[niNodeCount] < e.info[niNodeMax] }
-	// more hubs than one answer holds: a random ListMax of them, those with a free place before full ones, so each
-	// search (the game's Retry) can show others
-	if len(es) > s.cfg.ListMax {
-		mrand.Shuffle(len(es), func(i, j int) { es[i], es[j] = es[j], es[i] })
-		sort.SliceStable(es, func(i, j int) bool { return free(&es[i]) && !free(&es[j]) })
-		es = es[:s.cfg.ListMax]
-	}
+	// A fixed order, the same for every search: hubs with a free place first, then the fullest, then the newest (the id
+	// settles a tie). With more hubs than ListMax the last ones (full hubs first of all) are left out: nothing is random.
 	sort.Slice(es, func(i, j int) bool {
 		a, b := &es[i], &es[j]
 		if free(a) != free(b) {
@@ -385,8 +379,14 @@ func (s *Server) list(c *net.TCPConn, proto uint16, room [16]byte) {
 		if a.info[niNodeCount] != b.info[niNodeCount] {
 			return a.info[niNodeCount] > b.info[niNodeCount]
 		}
-		return a.created.After(b.created)
+		if !a.created.Equal(b.created) {
+			return a.created.After(b.created)
+		}
+		return a.id < b.id
 	})
+	if len(es) > s.cfg.ListMax {
+		es = es[:s.cfg.ListMax]
+	}
 	out := u32(uint32(len(es)))
 	for i := range es {
 		out = append(out, u64(es[i].id)...)

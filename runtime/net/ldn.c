@@ -965,7 +965,7 @@ static void lobby_host_start(void) {
 static void lobby_host_stop(void) { lobby_gen++; }
 
 // Station: the hubs the server lists for a key (NULL: ini Key). A HUB_* state; ms: the request's round trip.
-#define LOBBY_LIST_MAX 72
+#define LOBBY_LIST_MAX 128
 typedef struct {
     uint8_t infos[LOBBY_LIST_MAX][NETINFO_SIZE];
     uint64_t ids[LOBBY_LIST_MAX];
@@ -995,6 +995,9 @@ static int lobby_list(const char *srv, const char *key, uint16_t ver, int connec
     uint32_t count = rd32(buf);
     for (uint32_t i = 0; i < count && r->n < LOBBY_LIST_MAX && 4 + (i + 1) * (8 + NETINFO_SIZE) <= (uint32_t)n; i++) {
         const uint8_t *e = buf + 4 + i * (8 + NETINFO_SIZE);
+        bool dup = false;  // (a hub listed under several link versions / rooms arrives once per listing: keep the first)
+        for (int j = 0; j < r->n && !dup; j++) dup = !memcmp(r->infos[j] + NI_BSSID, e + 8 + NI_BSSID, 6);
+        if (dup) continue;
         r->ids[r->n] = rd64(e);
         r->vers[r->n] = ver;
         r->phone[r->n] = key && !strcmp(key, PHONE_PUBLIC_KEY);
@@ -1646,6 +1649,9 @@ static bool filter_ok(const uint8_t *info, const uint8_t *f) {
 // A hub server answers one search with only some of its hubs (a few picked at random when it has many), so the hubs of
 // the last searches are kept and listed together: the list of a Retry grows until it holds them all.
 #define SEEN_MAX MAX_FOUND
+#define HUB_LIST_MAX 100  // the most hubs one list (all its pages) holds
+#define HUB_PAGE 18       // hubs the game's Join Hub screen lists at once (it takes more, but shows 3 pages of 6)
+static int list_next, list_given, list_pages = 1;  // the list the next search gives; the last one given; how many lists
 #define SEEN_KEEP_NS (25ull * 1000000000ull)
 static struct {
     uint8_t info[NETINFO_SIZE];
@@ -1720,7 +1726,7 @@ HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan)
         hubs[n++] = seen[c].id;
     }
     nfound = 0;
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < n && nfound < HUB_LIST_MAX; i++) {
         if (!info_sane(infos[i]) || !filter_ok(infos[i], filter)) continue;
         memcpy(found[nfound].bssid, infos[i] + NI_BSSID, 6);
         memcpy(found[nfound].session, infos[i] + NI_SESSION_ID, 16);
@@ -1731,22 +1737,59 @@ HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan)
         found[nfound].addr = addrs[i];
         order[nfound++] = i;
     }
-    // The game gives room for `max` networks. Every network goes when they fit; when more were found, each search starts
-    // further along the list, so a Retry shows the others.
-    static int rot;
-    int first = 0;
-    if (max > 0 && nfound > max) first = rot % nfound, rot += max;
-    else rot = 0;
-    for (int t = 0; t < nfound && k < max; t++)
-        memcpy((uint8_t *)G2H(out) + (size_t)k++ * NETINFO_SIZE, infos[order[(first + t) % nfound]], NETINFO_SIZE);
+    // One fixed order: the LAN's hubs first, then the hubs of the servers by their BSSID (stable for as long as a hub
+    // lives, whatever order a server or a search answered in). A stable insertion sort of order[].
+    for (int i = 1; i < nfound; i++) {
+        int v = order[i], j = i - 1;
+        while (j >= 0) {
+            int a = order[j];
+            int c = (hubs[a] != 0) - (hubs[v] != 0);
+            if (!c) c = memcmp(infos[a] + NI_BSSID, infos[v] + NI_BSSID, 6);
+            if (c <= 0) break;
+            order[j + 1] = order[j], j--;
+        }
+        order[j + 1] = v;
+    }
+    // Pages: the game takes only `max` networks per search, so the first search gives the first `max` of the list, the
+    // next one (Retry) the next `max`, and so on up to HUB_LIST_MAX hubs; after the last page it starts over. The order
+    // is the same from one search to the next (the fixed order above), so no hub is skipped or shown twice.
+    int per = max < HUB_PAGE ? max : HUB_PAGE;  // (what the game's Join Hub screen shows: 3 pages of 6)
+    int pages = per > 0 ? (nfound + per - 1) / per : 1;
+    if (pages < 1) pages = 1;
+    if (list_next >= pages) list_next = 0;
+    int list = list_next, first = list * per;
+    list_given = list, list_pages = pages;
+    list_next = (list + 1) % pages;  // (a plain Retry gives the next list)
+    for (int t = first; t < nfound && k < per; t++)
+        memcpy((uint8_t *)G2H(out) + (size_t)k++ * NETINFO_SIZE, infos[order[t]], NETINFO_SIZE);
     if (pcount) ST32(pcount, k);
-    static int last = -1, last_online = -1, last_max = -1;
-    if (nfound != last || listed != last_online || max != last_max) {
-        LOG("[ldn] scan: %d network(s) found (%d listed on the hub servers), %d given to the game (room for %d)\n",
-            nfound, listed, k, max);
-        last = nfound, last_online = listed, last_max = max;
+    for (int t = 0; t < k; t++) {  // what the game was given, to compare with its Join Hub list (which hubs it drops, and why)
+        int i = order[first + t];
+        uint8_t *nd = node_at(infos[i], 0);
+        LOG("[ldn] scan give %d: %d/%d players, adv %u bytes, host '%.32s', %s v%u\n", t, infos[i][NI_NODE_COUNT],
+            infos[i][NI_NODE_MAX], (unsigned)rd16(infos[i] + NI_ADV_SIZE), (const char *)(nd + NODE_NAME),
+            hubs[i] ? (names[i] ? names[i] : "hub") : "LAN", (unsigned)vers[i]);
+    }
+    if (pages > 1) {  // (told on the screen: which list this is)
+        char t[96];
+        snprintf(t, sizeof t, "List %d / %d (hubs #%d to %d of %d). ZL / ZR change it.", list + 1, pages, first + 1, first + k, nfound);
+        overlay_notice("Hub list", t);
+    }
+    {  // (every search: the page it gave is part of the line)
+        LOG("[ldn] scan: %d network(s) found (%d listed on the hub servers), page from #%d: %d given to the game (room for %d)\n",
+            nfound, listed, first, k, max);
     }
     RET(0);
+}
+
+// The Join Hub screen is open (a station that has not joined): ZL / ZR there change the hub list (runtime/host_input.c).
+bool ldn_hub_browsing(void) { return L.state == ST_STATION; }
+int ldn_hub_lists(void) { return list_pages; }  // how many lists the last search had
+// The next search gives the list before / after the last one given (dir -1 / +1). false: only one list, nothing to change.
+bool ldn_hub_list_step(int dir) {
+    if (list_pages <= 1) return false;
+    list_next = ((list_given + (dir < 0 ? -1 : 1)) % list_pages + list_pages) % list_pages;
+    return true;
 }
 
 static uint32_t connect_network(const uint8_t *info, const uint8_t *user, uint16_t lcv) {

@@ -35,6 +35,7 @@
 #include "hle/itembar.h"
 #include "hle/mousecam.h"
 #include "overlay.h"
+#include "net/net.h"
 #include "padmap.h"
 #include "rt.h"
 #include "textinput.h"
@@ -940,6 +941,16 @@ void host_input_update(void) {
     if (!menu && menu_face_release) {
         const uint64_t face_mask = B(BTN_A) | B(BTN_B) | B(BTN_X) | B(BTN_Y);
         b = menu_release_buttons(b, face_mask, &menu_face_release);
+    }
+    // On the Join Hub screen ZL / ZR change the list of hubs (the game shows 18 at a time) and search again by themselves.
+    static bool hub_zl, hub_zr;
+    if (ldn_hub_browsing()) {
+        bool zl = b & B(BTN_ZL), zr = b & B(BTN_ZR);
+        if (((zl && !hub_zl) || (zr && !hub_zr)) && ldn_hub_list_step(zl && !hub_zl ? -1 : 1)) host_input_press("X", 6);
+        hub_zl = zl, hub_zr = zr;
+        if (ldn_hub_lists() > 1) b &= ~(B(BTN_ZL) | B(BTN_ZR));
+    } else {
+        hub_zl = hub_zr = false;
     }
     static uint64_t was;
     uint64_t down = b & ~was;

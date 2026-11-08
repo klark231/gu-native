@@ -34,6 +34,9 @@ typedef struct {
 // ldn.c
 bool ldn_net_up(void);           // a network exists (hosting with it created, or joined)
 bool ldn_hosting(void);          // we host it
+bool ldn_hub_browsing(void);     // the Join Hub screen is open: searching, not joined
+int ldn_hub_lists(void);         // how many lists of hubs the last search had
+bool ldn_hub_list_step(int dir); // ZL / ZR there: the next search gives the previous / next list of hubs (false: one list only)
 // The hub's players and their maximum, and an id for it (a hash of its session id: the same in every player's
 // game); false: no hub.
 bool ldn_party(int *n, int *max, char *id, size_t size);
