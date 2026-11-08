@@ -946,7 +946,7 @@ void host_input_update(void) {
     static bool hub_zl, hub_zr;
     if (ldn_hub_browsing()) {
         bool zl = b & B(BTN_ZL), zr = b & B(BTN_ZR);
-        if (((zl && !hub_zl) || (zr && !hub_zr)) && ldn_hub_list_step(zl && !hub_zl ? -1 : 1)) host_input_press("X", 6);
+        if ((zl && !hub_zl) || (zr && !hub_zr)) ldn_hub_list_step(zl && !hub_zl ? -1 : 1);
         hub_zl = zl, hub_zr = zr;
         if (ldn_hub_lists() > 1) b &= ~(B(BTN_ZL) | B(BTN_ZR));
     } else {

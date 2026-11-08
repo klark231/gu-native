@@ -1651,7 +1651,7 @@ static bool filter_ok(const uint8_t *info, const uint8_t *f) {
 #define SEEN_MAX MAX_FOUND
 #define HUB_LIST_MAX 100  // the most hubs one list (all its pages) holds
 #define HUB_PAGE 18       // hubs the game's Join Hub screen lists at once (it takes more, but shows 3 pages of 6)
-static int list_next, list_given, list_pages = 1;  // the list the next search gives; the last one given; how many lists
+static int list_next, list_given, list_pages = 1, list_selected = 0;  // the list the next search gives; the last one given; how many lists
 #define SEEN_KEEP_NS (25ull * 1000000000ull)
 static struct {
     uint8_t info[NETINFO_SIZE];
@@ -1756,10 +1756,10 @@ HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan)
     int per = max < HUB_PAGE ? max : HUB_PAGE;  // (what the game's Join Hub screen shows: 3 pages of 6)
     int pages = per > 0 ? (nfound + per - 1) / per : 1;
     if (pages < 1) pages = 1;
-    if (list_next >= pages) list_next = 0;
-    int cur_list = list_next, first = cur_list * per;
+    if (list_selected >= pages) list_selected = 0;
+    int cur_list = list_selected, first = cur_list * per;
     list_given = cur_list, list_pages = pages;
-    list_next = (cur_list + 1) % pages;  // (a plain Retry gives the next list)
+    list_selected = (cur_list + 1) % pages;  // (a plain Retry gives the next list)
     for (int t = first; t < nfound && k < per; t++)
         memcpy((uint8_t *)G2H(out) + (size_t)k++ * NETINFO_SIZE, infos[order[t]], NETINFO_SIZE);
     if (pcount) ST32(pcount, k);
