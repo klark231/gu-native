@@ -1008,6 +1008,7 @@ static int lobby_list(const char *srv, const char *key, uint16_t ver, int connec
 
 // Every link version we speak, and (no key of our own) the phones' public room too (v3 only). Online if any of them answered; the
 // state of a failure is the most telling one (a server that does not serve a version says so, but that is not "down").
+#define FULL_ROUNDS 6  // the most times FullHubList asks one server for its hubs
 static int lobby_list_all(const char *srv, const char *key, int connect_ms, LobbyList *r) {
     char live[sizeof g_config.ldn_key];
     if (!key) config_live_ldn(NULL, 0, live, sizeof live), key = live;
@@ -1017,22 +1018,30 @@ static int lobby_list_all(const char *srv, const char *key, int connect_ms, Lobb
     int nk = keyless ? 2 : 1, best = HUB_UNKNOWN, ms = -1;
     bool any = false;
     r->n = 0;
-    for (int ki = 0; ki < nk; ki++) {
-        for (int v = 0; v < N_LINK_VERSIONS; v++) {
-            if (ki == 1 && LINK_VERSIONS[v] < 3) continue;  // (nobody lists in the phones' room under v2)
-            int st = lobby_list(srv, keys[ki], LINK_VERSIONS[v], connect_ms, r);
-            if (st == HUB_NOT_FOUND || st == HUB_UNREACHABLE) {
-                if (!any) best = st, ms = -1;
-                r->ms = any ? ms : -1;
-                return any ? HUB_ONLINE : st;  // (no point asking again)
-            }
-            if (st == HUB_ONLINE) {
-                if (!any || r->ms < ms) ms = r->ms;
-                any = true;
-            } else if (!any && (best == HUB_UNKNOWN || best == HUB_NO_ANSWER)) {
-                best = st;  // (a refusal says more than silence)
+    // ini FullHubList: a server may answer each request with only a sample of its hubs, so every room / version is asked
+    // again (lobby_list keeps each hub once) until a whole round brings nothing new, at most FULL_ROUNDS times. A server
+    // that answers with all its hubs ends after the second round, so the cost is one extra round of quick requests.
+    int rounds = config_live_hub_full_list() ? FULL_ROUNDS : 1;
+    for (int round = 0; round < rounds; round++) {
+        int before = r->n;
+        for (int ki = 0; ki < nk; ki++) {
+            for (int v = 0; v < N_LINK_VERSIONS; v++) {
+                if (ki == 1 && LINK_VERSIONS[v] < 3) continue;  // (nobody lists in the phones' room under v2)
+                int st = lobby_list(srv, keys[ki], LINK_VERSIONS[v], connect_ms, r);
+                if (st == HUB_NOT_FOUND || st == HUB_UNREACHABLE) {
+                    if (!any) best = st, ms = -1;
+                    r->ms = any ? ms : -1;
+                    return any ? HUB_ONLINE : st;  // (no point asking again)
+                }
+                if (st == HUB_ONLINE) {
+                    if (!any || r->ms < ms) ms = r->ms;
+                    any = true;
+                } else if (!any && (best == HUB_UNKNOWN || best == HUB_NO_ANSWER)) {
+                    best = st;  // (a refusal says more than silence)
+                }
             }
         }
+        if (!any || (round > 0 && r->n == before) || r->n >= LOBBY_LIST_MAX) break;  // (nothing new: that is all of them)
     }
     r->ms = ms;
     return any ? HUB_ONLINE : best == HUB_UNKNOWN ? HUB_NO_ANSWER : best;

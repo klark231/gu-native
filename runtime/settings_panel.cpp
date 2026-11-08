@@ -398,6 +398,7 @@ bool equal(const Config &a, const Config &b) {
     SAME(sync_small_monsters);
     SAME(bonus_content);
     SAME(village_in_hub);
+    SAME(hub_full_list);
     SAME(mouse_sensitivity);
     SAME(touch_controls);
     SAME(touch_scheme);
@@ -999,6 +1000,7 @@ void reset_section() {
         SDL_strlcpy(c.ldn_key, f.ldn_key, sizeof c.ldn_key);
         c.sync_small_monsters = f.sync_small_monsters;
         c.village_in_hub = f.village_in_hub;
+        c.hub_full_list = f.hub_full_list;
         break;
     case 4:
         c.hp = f.hp;
@@ -1508,6 +1510,8 @@ std::vector<Row> main_rows() {
         keyed(r.back(), ini("Server"));
         text(r, "key", "Matchmaking key", c.ldn_key, sizeof c.ldn_key, *c.ldn_key ? c.ldn_key : tr("Public"), ini("Key"));
         hub_check(r);
+        add_bool(r, "fullhubs", "Show all hubs", &c.hub_full_list, ini("FullHubList"));
+        r.back().help = tr("Join Hub: each search asks every hub server several times and merges the answers, so all the hubs are in the lists (the numbered buttons) from the first search, without pressing Retry. A little more network use.");
         add_bool(r, "sync", "Sync small monsters", &c.sync_small_monsters, ini("SyncSmallMonsters"));
         add_bool(r, "village", "Village quests in Hub", &c.village_in_hub, ini("VillageQuestsInHub"));
 #ifndef __ANDROID__  // (Discord's Rich Presence is its desktop app's)
