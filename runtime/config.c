@@ -382,6 +382,12 @@ static const char DEFAULT_INI[] =
     "; Default: Off\n"
     "SyncSmallMonsters = Off\n"
     "\n"
+    "; Join Hub search: a hub server answers each search with only part of its hubs, so the list grows as you press Retry.\n"
+    "; On: each search asks every hub server several times at once and shows nearly all the hubs straight away.\n"
+    "; Off: one answer per search; press Retry to see more. (A little more network use when On.)\n"
+    "; Default: On\n"
+    "FullHubList = On\n"
+    "\n"
     "[Monster HP]\n"
     "; Playercount-specific HP multipliers for monsters in Hub quests.\n"
     "; Only affects large monster health.\n"
@@ -666,6 +672,7 @@ const ConfigSetting g_settings[] = {
     {"Multiplayer", "Server", SET_TEXT, F(ldn_server), sizeof g_config.ldn_server, 0, 0, NULL, NULL, false, ERR_SERVER},
     {"Multiplayer", "Key", SET_TEXT, F(ldn_key), sizeof g_config.ldn_key, 0, 0, NULL, NULL, false, ERR_SERVER},
     ON_OFF("Multiplayer", "SyncSmallMonsters", sync_small_monsters, true),
+    ON_OFF("Multiplayer", "FullHubList", hub_full_list, false),
     {"Monster HP", "1Player|1Players", SET_FACTOR, F(hp.scale[0]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, true, ERR_HP},
     {"Monster HP", "2Players|2Player", SET_FACTOR, F(hp.scale[1]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, true, ERR_HP},
     {"Monster HP", "3Players|3Player", SET_FACTOR, F(hp.scale[2]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, true, ERR_HP},

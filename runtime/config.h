@@ -61,6 +61,7 @@ typedef struct {
     int face_buttons;         // FACE_*: controller face buttons by position (the Switch layout) or by their labels
     int ldn_port;             // local play: the port a hosted hub listens on (TCP; UDP for LAN search)
     char ldn_join[256];       // local play: hosts to search besides the LAN (host[:port], comma separated)
+    int hub_full_list;        // [Multiplayer] FullHubList: each Join Hub search asks each hub server several times at once, to list all their hubs
     int sync_small_monsters;  // multiplayer: small monsters synced like large ones (runtime/net/emsync.c)
     int bonus_content;        // free downloads copied from a donor save into saves without any (runtime/services/bonus.c)
     int village_in_hub;       // L / R at the Hub's / Pub's quest counter switch to Village quests (runtime/hle/villagehub.c)
@@ -221,6 +222,7 @@ float config_live_touch_camera(void);
 float config_live_touch_opacity(void);
 int config_live_touch_vibration(void);  // [Touch] Vibration
 int config_live_phone_rumble(void);     // [Controls] PhoneRumble
+int config_live_hub_full_list(void);   // [Multiplayer] FullHubList
 int config_live_show_stats(void);       // [Performance] ShowStats
 int config_live_pause_background(void); // [Application] PauseInBackground
 int config_live_shadows(void);          // [Performance] Shadows
