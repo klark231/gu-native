@@ -1757,9 +1757,9 @@ HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan)
     int pages = per > 0 ? (nfound + per - 1) / per : 1;
     if (pages < 1) pages = 1;
     if (list_next >= pages) list_next = 0;
-    int list = list_next, first = list * per;
-    list_given = list, list_pages = pages;
-    list_next = (list + 1) % pages;  // (a plain Retry gives the next list)
+    int cur_list = list_next, first = cur_list * per;
+    list_given = cur_list, list_pages = pages;
+    list_next = (cur_list + 1) % pages;  // (a plain Retry gives the next list)
     for (int t = first; t < nfound && k < per; t++)
         memcpy((uint8_t *)G2H(out) + (size_t)k++ * NETINFO_SIZE, infos[order[t]], NETINFO_SIZE);
     if (pcount) ST32(pcount, k);
@@ -1772,7 +1772,7 @@ HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan)
     }
     if (pages > 1) {  // (told on the screen: which list this is)
         char t[96];
-        snprintf(t, sizeof t, "List %d / %d (hubs #%d to %d of %d). ZL / ZR change it.", list + 1, pages, first + 1, first + k, nfound);
+        snprintf(t, sizeof t, "List %d / %d (hubs #%d to %d of %d). ZL / ZR change it.", cur_list + 1, pages, first + 1, first + k, nfound);
         overlay_notice("Hub list", t);
     }
     {  // (every search: the page it gave is part of the line)
