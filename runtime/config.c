@@ -33,7 +33,7 @@
 #define CONFIG_DEFAULT_FXAA 1
 #endif
 #define CONFIG_DEFAULT_VALUES DISPLAY_BORDERLESS, CONFIG_DEFAULT_SIZE, 0, 0, 60, 1, 1, CONFIG_DEFAULT_FXAA, FACE_POSITION, 39500, "", 0, 1, 1, {{1, 1, 1, 1}, 2}, 1.0f, 0.0f, 1.0f, UI_CENTER, 1, 100, 0, 0, 100, MENU_CONFIRM_ORIGINAL, 1, 0, FSR_NATIVE, 0.8f, 1, 0.9f, 1, FSR_UP_3, UPDATES_ASK, 1, 1.0f, 0, COMBO_LENIENT, "", "", "/", FXAA_ORIGINAL, 0, DEFAULT_BINDS, THEME_HUNTER, 1, 1, 1, TOUCH_AUTO, 1, 1.0f, 0.8f, 100, 1, 1, 0, 1, 0, 1, \
-    1, 0, 1, 1, TOUCH_SHOW_DEFAULT
+    1, 0, 1, 1, TOUCH_SHOW_DEFAULT, {{""}}, {0}, 0, TOUCH_SHOW_TRAD_DEFAULT
 // (in Config's order, config.h: a new field there needs its value here, in its place - shadows, adreno_fix, bloom, reverb before
 // touch_show: without them the touch buttons' defaults moved two places and most buttons were off)
 Config g_config = {CONFIG_DEFAULT_VALUES};
@@ -264,6 +264,22 @@ static const char DEFAULT_INI[] =
     "ShowL3 = Off\n"
     "ShowR3 = Off\n"
     "ShowStick = On\n"
+    "\n"
+    "; The same for the Traditional layout: every one of its buttons is on by default\n"
+    "; Default: On\n"
+    "TradShowAttacks = On\n"
+    "TradShowDodge = On\n"
+    "TradShowGuard = On\n"
+    "TradShowSheathe = On\n"
+    "TradShowPlus = On\n"
+    "TradShowMinus = On\n"
+    "TradShowDpad = On\n"
+    "TradShowL = On\n"
+    "TradShowZL = On\n"
+    "TradShowZR = On\n"
+    "TradShowL3 = On\n"
+    "TradShowR3 = On\n"
+    "TradShowStick = On\n"
     "\n"
     "; With a bow or a bowgun in hand, a layout of their own in a hunt, and which of its buttons show\n"
     "ShowRanged = On\n"
@@ -612,6 +628,19 @@ const ConfigSetting g_settings[] = {
     ON_OFF("Touch", "ShowL3", touch_show[TB_L3], false),
     ON_OFF("Touch", "ShowR3", touch_show[TB_R3], false),
     ON_OFF("Touch", "ShowStick", touch_show[TB_STICK], false),
+    ON_OFF("Touch", "TradShowAttacks", touch_show_trad[TB_ATTACKS], false),
+    ON_OFF("Touch", "TradShowDodge", touch_show_trad[TB_DODGE], false),
+    ON_OFF("Touch", "TradShowGuard", touch_show_trad[TB_GUARD], false),
+    ON_OFF("Touch", "TradShowSheathe", touch_show_trad[TB_SHEATHE], false),
+    ON_OFF("Touch", "TradShowPlus", touch_show_trad[TB_PLUS], false),
+    ON_OFF("Touch", "TradShowMinus", touch_show_trad[TB_MINUS], false),
+    ON_OFF("Touch", "TradShowDpad", touch_show_trad[TB_DPAD], false),
+    ON_OFF("Touch", "TradShowL", touch_show_trad[TB_L], false),
+    ON_OFF("Touch", "TradShowZL", touch_show_trad[TB_ZL], false),
+    ON_OFF("Touch", "TradShowZR", touch_show_trad[TB_ZR], false),
+    ON_OFF("Touch", "TradShowL3", touch_show_trad[TB_L3], false),
+    ON_OFF("Touch", "TradShowR3", touch_show_trad[TB_R3], false),
+    ON_OFF("Touch", "TradShowStick", touch_show_trad[TB_STICK], false),
     ON_OFF("Touch", "ShowRanged", touch_show[TB_RANGED], false),
     ON_OFF("Touch", "ShowFire", touch_show[TB_FIRE], false),
     ON_OFF("Touch", "ShowSecond", touch_show[TB_SECOND], false),

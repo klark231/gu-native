@@ -225,6 +225,24 @@ int show_setting(int i) {  // the [Touch] Show* a control follows (the settings 
     default: return -1;
     }
 }
+// the [Touch] TradShow* a Traditional control follows (each on by default: the layout is an emulator's, all of it)
+int trad_setting(int i) {
+    switch (i) {
+    case C_HEAVY: case C_LIGHT: return TB_ATTACKS;
+    case C_DODGE: return TB_DODGE;
+    case C_SHEATHE: return TB_SHEATHE;
+    case C_R: return TB_GUARD;
+    case C_MENU: return TB_PLUS;
+    case C_HMINUS: return TB_MINUS;
+    case C_HDPAD: return TB_DPAD;
+    case C_L: return TB_L;
+    case C_ZL: return TB_ZL;
+    case C_ZR: return TB_ZR;
+    case C_MAP: return TB_L3;
+    case C_R3: return TB_R3;
+    default: return TB_STICK;
+    }
+}
 bool is_combo(int i) { return i >= C_COMBO && i <= C_COMBO_END; }
 bool is_tab(int i) { return i == C_ML || i == C_MR || i == C_MZL || i == C_MZR; }  // (the menu's shoulders, drawn as tabs)
 bool is_dpad(int i) { return i == C_DPAD || i == C_HDPAD; }
@@ -232,10 +250,9 @@ bool in_mode(int i, bool menu) {  // (the menus: the d-pad, the diamond, the sho
     if (trad()) {  // (the same ones in a menu and out of it; L3 and R3 only when [Touch] ShowL3 / ShowR3 say so)
         if (is_combo(i)) return config_live_touch_combo(i - C_COMBO) != 0;
         switch (i) {
+        case C_SETTINGS: return true;
         case C_HEAVY: case C_LIGHT: case C_DODGE: case C_SHEATHE: case C_R: case C_ZR: case C_ZL: case C_L: case C_MENU:
-        case C_HMINUS: case C_HDPAD: case C_SETTINGS: return true;
-        case C_MAP: case C_R3: return config_live_touch_show(show_setting(i)) != 0;
-        case C_STICK: return config_live_touch_show(TB_STICK) != 0;
+        case C_HMINUS: case C_HDPAD: case C_MAP: case C_R3: case C_STICK: return config_live_touch_show_trad(trad_setting(i)) != 0;
         default: return false;
         }
     }

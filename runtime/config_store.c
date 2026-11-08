@@ -22,7 +22,7 @@ static SDL_AtomicInt volume = {100}, confirm_exit = {1}, language = {0}, mute_in
 static SDL_AtomicInt live_fps, live_fov, live_mouse, live_draw = {0x3f800000}, live_fxaa = {1}, live_msaa = {1},
                      live_vsync = {1}, live_face, live_menu_confirm, live_background = {1}, live_combo, live_chat_key,
                      live_fxaa_mode, live_smooth, live_discord, live_discord_hunter, live_binds[BINDS][BIND_KEYS],
-                     live_touch, live_touch_scheme, live_touch_hud, live_touch_show[TB_COUNT], live_touch_combo[TOUCH_COMBOS], live_touch_combo_pad[TOUCH_COMBOS], live_touch_cam, live_touch_opacity, live_lock_on = {1},
+                     live_touch, live_touch_scheme, live_touch_hud, live_touch_show[TB_COUNT], live_touch_show_trad[TB_COUNT], live_touch_combo[TOUCH_COMBOS], live_touch_combo_pad[TOUCH_COMBOS], live_touch_cam, live_touch_opacity, live_lock_on = {1},
                      live_touch_vibration = {1}, live_phone_rumble = {1}, live_show_stats, live_pause_bg = {1},
                      live_shadows = {1}, live_bloom = {1}, live_reverb = {1};
 static void set_float(SDL_AtomicInt *slot, float value) {
@@ -58,6 +58,7 @@ static void publish_live(const Config *c, bool all) {
     if (all || c->touch_scheme != saved.touch_scheme) SDL_SetAtomicInt(&live_touch_scheme, c->touch_scheme);
     if (all || c->touch_hud != saved.touch_hud) SDL_SetAtomicInt(&live_touch_hud, c->touch_hud);
     for (int i = 0; i < TB_COUNT; i++) SDL_SetAtomicInt(&live_touch_show[i], c->touch_show[i]);
+    for (int i = 0; i < TB_COUNT; i++) SDL_SetAtomicInt(&live_touch_show_trad[i], c->touch_show_trad[i]);
     for (int i = 0; i < TOUCH_COMBOS; i++) {
         SDL_SetAtomicInt(&live_touch_combo[i], (int)config_combo_mask(c->touch_combo[i]));
         SDL_SetAtomicInt(&live_touch_combo_pad[i], c->touch_combo_pad[i]);
@@ -122,6 +123,7 @@ int config_live_touch_scheme(void) { return SDL_GetAtomicInt(&live_touch_scheme)
 int config_live_touch_hud(void) { return SDL_GetAtomicInt(&live_touch_hud); }
 int config_live_lock_on(void) { return SDL_GetAtomicInt(&live_lock_on); }
 int config_live_touch_show(int button) { return SDL_GetAtomicInt(&live_touch_show[button]); }
+int config_live_touch_show_trad(int button) { return SDL_GetAtomicInt(&live_touch_show_trad[button]); }
 uint32_t config_live_touch_combo(int index) { return (uint32_t)SDL_GetAtomicInt(&live_touch_combo[index]); }
 int config_live_touch_combo_pad(int index) { return SDL_GetAtomicInt(&live_touch_combo_pad[index]); }
 

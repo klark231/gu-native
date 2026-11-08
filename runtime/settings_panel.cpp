@@ -430,7 +430,7 @@ bool equal(const Config &a, const Config &b) {
 #undef SAME
     if (a.lock_on != b.lock_on)
         return false;
-    if (memcmp(a.touch_show, b.touch_show, sizeof a.touch_show) || memcmp(a.touch_combo, b.touch_combo, sizeof a.touch_combo) ||
+    if (memcmp(a.touch_show, b.touch_show, sizeof a.touch_show) || memcmp(a.touch_show_trad, b.touch_show_trad, sizeof a.touch_show_trad) || memcmp(a.touch_combo, b.touch_combo, sizeof a.touch_combo) ||
         memcmp(a.touch_combo_pad, b.touch_combo_pad, sizeof a.touch_combo_pad))
         return false;
     if (memcmp(a.binds, b.binds, sizeof a.binds))
@@ -884,6 +884,7 @@ void reset_section() {
         c.phone_rumble = f.phone_rumble;
         c.lock_on = f.lock_on;
         memcpy(c.touch_show, f.touch_show, sizeof c.touch_show);
+        memcpy(c.touch_show_trad, f.touch_show_trad, sizeof c.touch_show_trad);
         memcpy(c.touch_combo, f.touch_combo, sizeof c.touch_combo);
         memcpy(c.touch_combo_pad, f.touch_combo_pad, sizeof c.touch_combo_pad);
         SDL_strlcpy(c.chat_key, f.chat_key, sizeof c.chat_key);
@@ -1592,10 +1593,16 @@ int s_combo;  // the combined button being edited
 void touch_button_rows(std::vector<Row> &r) {
     Config &c = s.draft;
     header(r, "tb.head", tr("Buttons on the screen"));
-    for (int i = 0; i < TB_COUNT; i++) {
-        add_bool(r, ("tb." + std::to_string(i)).c_str(), TB_TITLES[i], &c.touch_show[i], nullptr);
-        r.back().key = TB_KEYS[i];
-    }
+    if (c.touch_scheme == TS_TRADITIONAL) {  // (the layout chosen in Controls; each keeps its own set, every Traditional button on by default)
+        for (int i = 0; i <= TB_STICK; i++) {
+            add_bool(r, ("tbt." + std::to_string(i)).c_str(), TB_TITLES[i], &c.touch_show_trad[i], nullptr);
+            r.back().key = std::string("Trad") + TB_KEYS[i];
+        }
+    } else
+        for (int i = 0; i < TB_COUNT; i++) {
+            add_bool(r, ("tb." + std::to_string(i)).c_str(), TB_TITLES[i], &c.touch_show[i], nullptr);
+            r.back().key = TB_KEYS[i];
+        }
     header(r, "tc.head", tr("Combined buttons"));
     for (int k = 0; k < TOUCH_COMBOS; k++) {
         action(r, "tc." + std::to_string(k), fmt("Button %d", k + 1), [k]() {

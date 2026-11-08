@@ -38,6 +38,7 @@ enum {
 enum { TB_ATTACKS, TB_DODGE, TB_GUARD, TB_SHEATHE, TB_PLUS, TB_MINUS, TB_DPAD, TB_L, TB_ZL, TB_ZR, TB_L3, TB_R3, TB_STICK,
        TB_RANGED, TB_FIRE, TB_SECOND, TB_AIM, TB_RSPECIAL, TB_AMMO, TB_ITEM_ARROWS, TB_MENU_ZL, TB_MENU_ZR, TB_COUNT };
 #define TOUCH_SHOW_DEFAULT {1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0}
+#define TOUCH_SHOW_TRAD_DEFAULT {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // (Traditional: every button on)
 #define TOUCH_COMBOS 6
 // a controller's buttons a combined button can be on (the less used ones)
 enum { PADB_NONE, PADB_L3, PADB_R3, PADB_MINUS, PADB_GUIDE, PADB_MISC, PADB_PADDLE1, PADB_PADDLE2, PADB_PADDLE3, PADB_PADDLE4,
@@ -119,7 +120,8 @@ typedef struct {
     char touch_combo[TOUCH_COMBOS][32];  // [Touch] Combo1..: the game's buttons one screen button presses together
                                          // ("A+X"; config_combo_mask); "" none
     int touch_combo_pad[TOUCH_COMBOS];   // [Touch] Combo1Pad..: PADB_*, a controller's button that does the same
-    int touch_scheme;         // [Touch] Layout: TS_*, how the controls on the screen are laid out (last: 0 by default, no value in CONFIG_DEFAULT_VALUES)
+    int touch_scheme;         // [Touch] Layout: TS_*, how the controls on the screen are laid out (0 by default, no value in CONFIG_DEFAULT_VALUES)
+    int touch_show_trad[TB_COUNT];  // [Touch] TradShow*: the same for the Traditional layout (TB_ATTACKS to TB_STICK; all on by default)
 } Config;
 uint32_t config_combo_mask(const char *text);  // "A+X" -> the BTN_* bits, 0 if there is nothing or anything else in it
 void config_combo_text(uint32_t mask, char *out, size_t size);  // and back
@@ -212,6 +214,7 @@ int config_live_touch_controls(void);  // [Touch] (runtime/touch.cpp)
 int config_live_touch_hud(void);
 int config_live_lock_on(void);
 int config_live_touch_show(int button);        // TB_*
+int config_live_touch_show_trad(int button);   // TB_*, in the Traditional layout
 uint32_t config_live_touch_combo(int index);   // its buttons (config_combo_mask)
 int config_live_touch_combo_pad(int index);    // PADB_*
 float config_live_touch_camera(void);
