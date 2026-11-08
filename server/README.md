@@ -40,7 +40,7 @@ Open the port for **TCP and UDP** in the firewall (and forward it, if the server
 | `-max-conns-per-ip` | 24 | connections at once from one IP address |
 | `-max-hubs` | 2000 | hubs listed at once |
 | `-max-hubs-per-ip` | 4 | hubs from one IP address |
-| `-list-max` | 56 | hubs in one search answer (the most one answer can carry; the game takes 24 networks per search and the client lists the rest on the next searches, up to 100 hubs). The answer is always the same for the same hubs: free places first, then the fullest, then the newest. With more hubs than that, the last ones are left out |
+| `-list-max` | 56 | hubs in one search answer (the most one answer can carry; the game takes 24 networks per search and the client lists the rest on the next searches, up to 500 hubs). The answer is always the same for the same hubs: free places first, then the fullest, then the newest. With more hubs than that, the last ones are left out |
 | `-bandwidth` | 1048576 | bytes a second per player link and direction (a hub uses far less) |
 | `-v` | off | log hubs and joins (never IP addresses) |
 

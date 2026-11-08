@@ -403,6 +403,7 @@ bool equal(const Config &a, const Config &b) {
     SAME(touch_controls);
     SAME(touch_scheme);
     SAME(touch_hud);
+    SAME(touch_auto_run);
     SAME(touch_camera);
     SAME(touch_opacity);
     SAME(aspect_ratio);
@@ -981,6 +982,7 @@ void reset_section() {
         c.touch_controls = f.touch_controls;
         c.touch_scheme = f.touch_scheme;
         c.touch_hud = f.touch_hud;
+        c.touch_auto_run = f.touch_auto_run;
         c.touch_camera = f.touch_camera;
         c.touch_opacity = f.touch_opacity;
         c.touch_vibration = f.touch_vibration;
@@ -1470,6 +1472,10 @@ std::vector<Row> main_rows() {
                    [](int v) { c.touch_scheme = v; }, ini("Layout"));
         r.back().help = tr("Adaptive: the buttons change with what you do: the menus' and the bows' and bowguns' own. Traditional: as an emulator's, the same buttons always: A B X Y, L R ZL ZR, + -, the d-pad and the stick. Each has a layout of its own in the editor.");
         add_bool(r, "touch.hud", "Move the HUD for touch", &c.touch_hud, ini("MoveHUD"));
+        if (c.touch_scheme == TS_TRADITIONAL) {  // (the Adaptive layout has no R button: it always runs with the stick)
+            add_bool(r, "touch.autorun", "Run with the stick", &c.touch_auto_run, ini("AutoRun"));
+            r.back().help = tr("On: the thumb past the stick's rim runs. Off: the stick only walks, and the R button runs.");
+        }
         add_bool(r, "lock.on", "Lock-on", &c.lock_on, ini("LockOn"));
         r.back().help = tr("The target icon, or a controller's right stick click, keeps the camera on the monster as in the newer games, and bows and bowguns fire at it. Off: the icon turns the camera to it once, as in the original game.");
         action(r, "touch.buttons", tr("Buttons on the screen"), []() { push(View::TouchButtons, "tb.0"); });

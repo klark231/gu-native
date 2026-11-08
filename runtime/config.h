@@ -123,6 +123,7 @@ typedef struct {
     int touch_combo_pad[TOUCH_COMBOS];   // [Touch] Combo1Pad..: PADB_*, a controller's button that does the same
     int touch_scheme;         // [Touch] Layout: TS_*, how the controls on the screen are laid out (0 by default, no value in CONFIG_DEFAULT_VALUES)
     int touch_show_trad[TB_COUNT];  // [Touch] TradShow*: the same for the Traditional layout (TB_ATTACKS to TB_STICK; all on by default)
+    int touch_auto_run;       // [Touch] AutoRun: Traditional layout only: the thumb past the stick's rim runs (R held); off (default): only the R button runs (last field: its default is the last value of CONFIG_DEFAULT_VALUES)
 } Config;
 uint32_t config_combo_mask(const char *text);  // "A+X" -> the BTN_* bits, 0 if there is nothing or anything else in it
 void config_combo_text(uint32_t mask, char *out, size_t size);  // and back
@@ -213,6 +214,7 @@ int config_live_discord_hunter(void);  // [Discord] ShowHunter
 int config_live_touch_scheme(void);    // [Touch] Layout: TS_*
 int config_live_touch_controls(void);  // [Touch] (runtime/touch.cpp)
 int config_live_touch_hud(void);
+int config_live_touch_auto_run(void);  // [Touch] AutoRun
 int config_live_lock_on(void);
 int config_live_touch_show(int button);        // TB_*
 int config_live_touch_show_trad(int button);   // TB_*, in the Traditional layout

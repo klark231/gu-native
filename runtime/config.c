@@ -32,9 +32,9 @@
 #define CONFIG_DEFAULT_SIZE 1920, 1080
 #define CONFIG_DEFAULT_FXAA 1
 #endif
-#define CONFIG_DEFAULT_VALUES DISPLAY_BORDERLESS, CONFIG_DEFAULT_SIZE, 0, 0, 60, 1, 1, CONFIG_DEFAULT_FXAA, FACE_POSITION, 39500, "", 0, 1, 1, {{1, 1, 1, 1}, 2}, 1.0f, 0.0f, 1.0f, UI_CENTER, 1, 100, 0, 0, 100, MENU_CONFIRM_ORIGINAL, 1, 0, FSR_NATIVE, 0.8f, 1, 0.9f, 1, FSR_UP_3, UPDATES_ASK, 1, 1.0f, 0, COMBO_LENIENT, "", "", "/", FXAA_ORIGINAL, 0, DEFAULT_BINDS, THEME_HUNTER, 1, 1, 1, TOUCH_AUTO, 1, 1.0f, 0.8f, 100, 1, 1, 0, 1, 0, 1, \
-    1, 0, 1, 1, TOUCH_SHOW_DEFAULT, {{""}}, {0}, 0, TOUCH_SHOW_TRAD_DEFAULT
-// (in Config's order, config.h: a new field there needs its value here, in its place - shadows, adreno_fix, bloom, reverb before
+#define CONFIG_DEFAULT_VALUES DISPLAY_BORDERLESS, CONFIG_DEFAULT_SIZE, 0, 0, 60, 1, 1, CONFIG_DEFAULT_FXAA, FACE_POSITION, 39500, "", 0, 0, 1, 1, {{1, 1, 1, 1}, 2}, 1.0f, 0.0f, 1.0f, UI_CENTER, 1, 100, 0, 0, 100, MENU_CONFIRM_ORIGINAL, 1, 0, FSR_NATIVE, 0.8f, 1, 0.9f, 1, FSR_UP_3, UPDATES_ASK, 1, 1.0f, 0, COMBO_LENIENT, "", "", "/", FXAA_ORIGINAL, 0, DEFAULT_BINDS, THEME_HUNTER, 1, 1, 1, TOUCH_AUTO, 1, 1.0f, 0.8f, 100, 1, 1, 0, 1, 0, 1, \
+    1, 0, 1, 1, TOUCH_SHOW_DEFAULT, {{""}}, {0}, 0, TOUCH_SHOW_TRAD_DEFAULT, 0
+// (hub_full_list is the 0 after the empty ldn_join text; in Config's order, config.h: a new field there needs its value here, in its place - shadows, adreno_fix, bloom, reverb before
 // touch_show: without them the touch buttons' defaults moved two places and most buttons were off)
 Config g_config = {CONFIG_DEFAULT_VALUES};
 Config config_defaults(void) { Config c = {CONFIG_DEFAULT_VALUES}; return c; }
@@ -249,6 +249,11 @@ static const char DEFAULT_INI[] =
     "; middle, the Hunter Arts and the target camera to the top right\n"
     "; Default: On\n"
     "MoveHUD = On\n"
+    "\n"
+    "; Traditional layout only: the thumb past the stick's rim runs (holds R) while the weapon is sheathed. Off: only the R button\n"
+    "; runs, so the stick just walks. (The Adaptive layout always runs with the stick.)\n"
+    "; Default: Off\n"
+    "AutoRun = Off\n"
     "\n"
     "; Which of the game's buttons are on the screen in a hunt. A hunt needs none of those off by default\n"
     "ShowAttacks = On\n"
@@ -619,6 +624,7 @@ const ConfigSetting g_settings[] = {
     {"Touch", "Controls", SET_CHOICE, F(touch_controls), 0, 0, 0, "Auto,On,Off", NULL, false, ERR_MISC},
     {"Touch", "Layout", SET_CHOICE, F(touch_scheme), 0, 0, 0, "Adaptive|adaptive|0,Traditional|tradicional|1", NULL, false, ERR_MISC},
     ON_OFF("Touch", "MoveHUD", touch_hud, false),
+    ON_OFF("Touch", "AutoRun", touch_auto_run, false),
     ON_OFF("Touch", "ShowAttacks", touch_show[TB_ATTACKS], false),
     ON_OFF("Touch", "ShowDodge", touch_show[TB_DODGE], false),
     ON_OFF("Touch", "ShowGuard", touch_show[TB_GUARD], false),

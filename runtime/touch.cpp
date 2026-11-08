@@ -924,6 +924,8 @@ void edit_event(State &s, const SDL_Event *e, float x, float y) {
 // (Sized and placed by the picture, not by the game's table, so it fits every window shape; colours: [Application] Theme.)
 bool hub_strip_on() { return ldn_hub_browsing() && ldn_hub_lists() > 1; }
 int hub_strip_count() { return std::min(ldn_hub_lists(), 8) + 2; }  // (the arrows and the numbers)
+// With more than 8 lists (up to 28 for 500 hubs) the 8 numbers are a window that follows the chosen list.
+int hub_strip_first() { return std::clamp(ldn_hub_list_chosen() - 3, 0, std::max(0, ldn_hub_lists() - 8)); }
 // Sized by the game's picture (picture(): its height, and centred in it, whatever shape the window is), not by the
 // game's table, so it sits the same on 16:9, 21:9, 4:3 ... It floats low in the middle, clear of the thumbs' buttons
 // and the game's text box, with a line under the table's reach saying which hubs the list holds.
@@ -970,7 +972,7 @@ void hub_strip_press(int i) {
     int n = hub_strip_count() - 2;
     if (i == 0) ldn_hub_list_step(-1);
     else if (i == n + 1) ldn_hub_list_step(1);
-    else ldn_hub_list_goto(i - 1);
+    else ldn_hub_list_goto(hub_strip_first() + i - 1);
 }
 extern "C" bool touch_event(const SDL_Event *e) {
     if (e->type != SDL_EVENT_FINGER_DOWN && e->type != SDL_EVENT_FINGER_MOTION && e->type != SDL_EVENT_FINGER_UP &&
@@ -1332,7 +1334,7 @@ extern "C" void touch_input(bool pad_connected, bool typing, uint64_t *buttons, 
         if (dbg) fprintf(stderr, "[touch] weapon %s\n", drawn == 1 ? "out" : drawn == 0 ? "sheathed" : "(not known)");
         drawn_was = drawn;
     }
-    if (s.stick_on && moving && s.h > 0 && drawn != 1) {
+    if (s.stick_on && moving && s.h > 0 && drawn != 1 && (!trad() || config_live_touch_auto_run())) {  // (Traditional with [Touch] AutoRun off: the R button runs)
         float r = DEFS[C_STICK].r * s.layout.scale[C_STICK] * s.h, d = hypotf(s.fx - s.bx, s.fy - s.by);
         static bool was;
         was = d > r * (was ? 1.45f : 1.6f);  // (well past the rim: a thumb at the edge in a fight still walks;
@@ -1480,7 +1482,7 @@ void hub_strip_draw(ImDrawList *dl, ImFont *font, float w, float h, float a) {
     for (int i = 0; i < cnt; i++) {
         ImVec2 p, q;
         hub_strip_rect(i, w, h, &p, &q);
-        bool arrow = i == 0 || i == cnt - 1, lit = !arrow && i - 1 == chosen;
+        bool arrow = i == 0 || i == cnt - 1, lit = !arrow && hub_strip_first() + i - 1 == chosen;
         dl->AddRectFilled(p, q, fade(lit ? c.lit : c.button, a), r);
         dl->AddRect(p, q, fade(lit ? c.lit_edge : c.edge, a), r, 0, line);
         ImVec2 m((p.x + q.x) * .5f, (p.y + q.y) * .5f);
@@ -1491,7 +1493,7 @@ void hub_strip_draw(ImDrawList *dl, ImFont *font, float w, float h, float a) {
             dl->AddLine(t1, tip, ink, g.bh * .08f), dl->AddLine(t2, tip, ink, g.bh * .08f);
         } else {
             char t[8];
-            snprintf(t, sizeof t, "%d", i);
+            snprintf(t, sizeof t, "%d", hub_strip_first() + i);
             ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0, t);
             dl->AddText(font, fs, ImVec2(m.x - sz.x * .5f, m.y - sz.y * .5f), ink, t);
         }

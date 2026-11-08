@@ -181,7 +181,7 @@ static struct {
 } L = {.mu = PTHREAD_MUTEX_INITIALIZER, .listen_s = BADSOCK, .disc_s = BADSOCK, .us = BADSOCK};
 
 // Scan results: where each found network's host is (hub: on the hub server at addr, 0: the host's own address).
-#define MAX_FOUND 128
+#define MAX_FOUND 512  // (a list holds up to HUB_LIST_MAX hubs)
 static struct { uint8_t bssid[6], session[16]; struct sockaddr_in addr; uint64_t hub; char server[256], key[64]; uint16_t ver; } found[MAX_FOUND];  // (ver, key: what the hub was listed under)
 static int nfound;
 
@@ -965,7 +965,7 @@ static void lobby_host_start(void) {
 static void lobby_host_stop(void) { lobby_gen++; }
 
 // Station: the hubs the server lists for a key (NULL: ini Key). A HUB_* state; ms: the request's round trip.
-#define LOBBY_LIST_MAX 128
+#define LOBBY_LIST_MAX 512
 typedef struct {
     uint8_t infos[LOBBY_LIST_MAX][NETINFO_SIZE];
     uint64_t ids[LOBBY_LIST_MAX];
@@ -1663,7 +1663,7 @@ static bool filter_ok(const uint8_t *info, const uint8_t *f) {
 // A hub server answers one search with only some of its hubs (a few picked at random when it has many), so the hubs of
 // the last searches are kept and listed together: the list of a Retry grows until it holds them all.
 #define SEEN_MAX MAX_FOUND
-#define HUB_LIST_MAX 100  // the most hubs one list (all its pages) holds
+#define HUB_LIST_MAX 500  // the most hubs one list (all its pages) holds
 #define HUB_PAGE 18       // hubs the game's Join Hub screen lists at once (it takes more, but shows 3 pages of 6)
 static int list_per = HUB_PAGE, list_total = 0;  // hubs in a list; hubs found
 static int list_next = -1, list_given, list_pages = 1, list_selected = 0;  // the list the next search gives (-1: the one after the last); the last one given; how many lists
@@ -1703,12 +1703,14 @@ HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan)
     browse_touch();
     static uint8_t infos[MAX_FOUND][NETINFO_SIZE];
     static LobbyList online[MAX_HUBS];
-    struct sockaddr_in addrs[MAX_FOUND];
-    uint64_t hubs[MAX_FOUND] = {0};
-    uint16_t vers[MAX_FOUND];  // the link version each found network speaks
-    uint8_t phone[MAX_FOUND] = {0};  // found in the phones' public room
-    const char *names[MAX_FOUND] = {0};  // (the hub server a found hub is on; LAN hubs: none)
-    int order[MAX_FOUND];  // found[i] is infos[order[i]]
+    // (static, like infos: 512 entries are too much for a game thread's stack; a scan never runs twice at once)
+    static struct sockaddr_in addrs[MAX_FOUND];
+    static uint64_t hubs[MAX_FOUND];
+    static uint16_t vers[MAX_FOUND];  // the link version each found network speaks
+    static uint8_t phone[MAX_FOUND];  // found in the phones' public room
+    static const char *names[MAX_FOUND];  // (the hub server a found hub is on; LAN hubs: none)
+    static int order[MAX_FOUND];  // found[i] is infos[order[i]]
+    memset(hubs, 0, sizeof hubs), memset(phone, 0, sizeof phone), memset(names, 0, sizeof names);
     char list[MAX_HUBS][LOBBY_NAME];
     pthread_t lt[MAX_HUBS];
     bool started[MAX_HUBS] = {false};
