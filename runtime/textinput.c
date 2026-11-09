@@ -10,13 +10,15 @@
 
 #include "overlay.h"
 #include "rt.h"
+#include "settings_panel.h"
 #include "textinput.h"
 
 #define TEXT_MAX 0x7d0  // bytes (the Switch keyboard's own limit is 500 characters)
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool g_active;
-static int g_window_on;  // text input on: 0 no, 1 for an entry, 2 for the port's menu (no screen keyboard)
+static int g_window_on;  // text input on: 0 no, 1 for an entry, 2 for the port's menu (no screen keyboard), 3 or 4 for the
+                         // menu's text page (the screen keyboard; 4: a password's)
 static char g_text[TEXT_MAX + 4];
 static int g_max_chars, g_event;  // g_event: TI_* waiting for the game's next poll (ENTER / CANCEL win over CHANGED)
 
@@ -134,16 +136,36 @@ bool textinput_event(const SDL_Event *e) {
     return false;
 }
 
+// Text input on, for what wants it: a server's address or a password types best without the keyboard's capitals,
+// corrections and suggestions
+static void start(SDL_Window *w, int want) {
+    if (want < 3) {
+        SDL_StartTextInput(w);
+        return;
+    }
+    SDL_PropertiesID p = SDL_CreateProperties();
+    SDL_SetNumberProperty(p, SDL_PROP_TEXTINPUT_TYPE_NUMBER,
+                          want == 4 ? SDL_TEXTINPUT_TYPE_TEXT_PASSWORD_VISIBLE : SDL_TEXTINPUT_TYPE_TEXT);
+    SDL_SetNumberProperty(p, SDL_PROP_TEXTINPUT_CAPITALIZATION_NUMBER, SDL_CAPITALIZE_NONE);
+    SDL_SetBooleanProperty(p, SDL_PROP_TEXTINPUT_AUTOCORRECT_BOOLEAN, false);
+    SDL_SetBooleanProperty(p, SDL_PROP_TEXTINPUT_MULTILINE_BOOLEAN, false);
+    SDL_StartTextInputWithProperties(w, p);
+    SDL_DestroyProperties(p);
+}
+
 void textinput_update(void) {
+    bool secret = false;
     int want = textinput_active() ? 1 : overlay_menu_open() ? 2 : 0;  // (Forge's menu takes typed text too)
 #ifdef __ANDROID__
+    // (the system keyboard types the menu's text page, and a Forge plugin's text box while it has the focus)
+    if (want == 2 && (settings_panel_typing(&secret) || overlay_wants_text())) want = secret ? 4 : 3;
     // (Back hid the screen keyboard and SDL turned text input off by itself: on again for a physical keyboard, the
     // screen keyboard still hidden; a tap brings it back, textinput_tap)
-    if (want == 1 && g_window_on == 1) {
+    if (want != 2 && want == g_window_on) {
         SDL_Window *w = ui_window();
         if (w && !SDL_TextInputActive(w) && !SDL_ScreenKeyboardShown(w)) {
             SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, "0");
-            SDL_StartTextInput(w);
+            start(w, want);
             SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, "1");
         }
     }
@@ -153,21 +175,23 @@ void textinput_update(void) {
     if (!w) return;
     if (g_window_on) SDL_StopTextInput(w);
 #ifdef __ANDROID__
-    // (there text input shows the screen keyboard: for the game's entries; the port's menu has its own keyboard view,
-    // a physical keyboard still types into it)
+    // (there text input shows the screen keyboard: for the game's entries and the menu's text page; the rest of the
+    // menu takes a physical keyboard's typing without it)
     if (want) SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, want == 2 ? "0" : "1");
 #endif
-    if (want) SDL_StartTextInput(w);
+    if (want) start(w, want);
     g_window_on = want;
 }
 
-// (Android) a tap while an entry is open brings the screen keyboard back if the player had hidden it
+// (Android) a tap while an entry or the menu's text page is open brings the screen keyboard back if the player had
+// hidden it
 void textinput_tap(void) {
 #ifdef __ANDROID__
     SDL_Window *w = ui_window();
-    if (g_window_on == 1 && w && !SDL_ScreenKeyboardShown(w)) {
+    if ((g_window_on == 1 || g_window_on >= 3) && w && !SDL_ScreenKeyboardShown(w)) {
         SDL_StopTextInput(w);
-        SDL_StartTextInput(w);
+        SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, "1");
+        start(w, g_window_on);
     }
 #endif
 }

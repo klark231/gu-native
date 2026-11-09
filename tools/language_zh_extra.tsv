@@ -442,3 +442,21 @@ The servers that list internet hubs. Select to change, remove or add servers.	�
 The two servers the game comes with.	游戏自带的两个服务器。
 Too many hub servers: the list is too long.	集会所服务器太多：列表太长。
 Type one server name, such as host or host:port.	输入一个服务器名称，例如 host 或 host:port。
+# ---- the phone's own keyboard and the clipboard
+Paste	粘贴
+Copy	复制
+Show the keyboard	显示键盘
+Brings the phone's keyboard back after Back hid it. A tap anywhere does too.	按“返回”隐藏手机键盘后，用它重新显示键盘。点按任意位置也可以。
+The clipboard is empty.	剪贴板是空的。
+Copied to the clipboard	已复制到剪贴板
+Paste servers	粘贴服务器
+Adds the servers in the clipboard: one, or several separated by spaces or commas, as a friend sends them.	添加剪贴板中的服务器：一个，或用空格或逗号分隔的多个，就像好友发给你的那样。
+Copy servers	复制服务器
+Puts the list in the clipboard, to send it to a friend: Paste servers adds them on their phone.	把列表放到剪贴板，方便发给好友：好友用“粘贴服务器”即可在手机上添加。
+# ---- direct connections (hole punching)
+Direct connections	直连
+In an internet hub, your game and the host's send their packets straight to each other when both routers let them, for a lower ping; else through the hub server. The other player's game then sees your IP address. Off: always through the hub server.	在互联网集会所中，双方路由器允许时，你的游戏和主机的游戏会直接互发数据包，延迟更低；否则通过集会所服务器。此时对方的游戏会看到你的 IP 地址。关：始终通过集会所服务器。
+Direct = On: in an internet hub, your game and the host's send their packets straight to each other when both	Direct = On：在互联网集会所中，双方路由器允许时，你的游戏和主机的游戏会直接互发数据包
+routers let them (the hub server helps them find each other), for a lower ping; else they go through the hub	（集会所服务器帮它们找到彼此），延迟更低；否则通过集会所
+server. Direct means the other player's game sees your IP address (as on the Switch). Off: always through the hub	服务器。直连意味着对方的游戏会看到你的 IP 地址（与 Switch 相同）。Off：始终通过集会所
+server, nobody sees your address. Both ends need it On for a direct connection.	服务器，没人看到你的地址。双方都需开启才能直连。

@@ -239,6 +239,7 @@ Por defecto el juego usa dos servidores públicos, `hunterhubid-gu-hub.duckdns.o
 
 1. En el engranaje, **Red**, **Salas por internet**, **Servidores de salas** lista los servidores uno por fila: cambia uno, quítalo o **Agrega un servidor** (hasta 8; un nombre o una IP, y `:puerto` si no es el 39510).
 2. **Comprobar servidor de salas** te dice si responden.
+3. **Conexiones directas** (activadas por defecto): si los dos jugadores las tienen y el servidor lo admite, sus juegos se envían los paquetes directamente, con menos ping, y vuelven al servidor cuando los routers no lo permiten. El juego del otro jugador ve entonces tu dirección IP; desactívalas para pasar siempre por el servidor.
 3. Opcional: todos ponen la misma **Clave de emparejamiento**, así solo tu grupo ve sus salas.
 4. Después se juega como en [Juego local](#juego-local): uno crea la sala y los demás la buscan.
 

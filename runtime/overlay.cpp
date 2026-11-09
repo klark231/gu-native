@@ -51,7 +51,7 @@ SDL_Window *ui_window(void);
 void vi_pause_game(void);
 }
 
-static std::atomic<bool> g_enabled, g_ready, g_open;
+static std::atomic<bool> g_enabled, g_ready, g_open, g_wants_text;
 static std::atomic<bool> g_settings_open, g_forge_open;
 static std::atomic<bool> g_modal_open;  // (the thank-you, settings_panel.cpp: a menu as far as input goes, until it is closed)
 static int g_menu_key;
@@ -109,6 +109,7 @@ struct Ev {
     char text[32];
 };
 static std::mutex g_in_lock;
+static char g_composing[256];  // (the system keyboard's text not yet committed: overlay_composition)
 static std::vector<Ev> g_in;
 static OverlayPad g_pad;
 
@@ -267,10 +268,18 @@ bool overlay_event(const SDL_Event *e) {
                          (e->key.mod & SDL_KMOD_ALT));
         return !port_key;
     }
-    case SDL_EVENT_TEXT_INPUT:
+    case SDL_EVENT_TEXT_INPUT: {
         v.kind = Ev::TEXT;
         SDL_strlcpy(v.text, e->text.text, sizeof v.text);
+        std::lock_guard<std::mutex> l(g_in_lock);
+        g_composing[0] = 0;  // (committed: it comes as this text)
         break;
+    }
+    case SDL_EVENT_TEXT_EDITING: {
+        std::lock_guard<std::mutex> l(g_in_lock);
+        SDL_strlcpy(g_composing, e->edit.text ? e->edit.text : "", sizeof g_composing);
+        return true;
+    }
     case SDL_EVENT_WINDOW_FOCUS_LOST: case SDL_EVENT_WINDOW_FOCUS_GAINED:
         v.kind = Ev::FOCUS, v.down = e->type == SDL_EVENT_WINDOW_FOCUS_GAINED;
         queue(v);
@@ -289,6 +298,13 @@ void overlay_pad(const OverlayPad *p) {
 
 bool overlay_enabled(void) { return g_enabled; }
 bool overlay_menu_open(void) { return g_open; }
+
+bool overlay_wants_text(void) { return g_wants_text; }
+
+void overlay_composition(char *out, size_t size) {
+    std::lock_guard<std::mutex> l(g_in_lock);
+    SDL_strlcpy(out, g_open ? g_composing : "", size);
+}
 
 static void apply_input(ImGuiIO &io) {
     std::vector<Ev> evs;
@@ -638,6 +654,31 @@ static void snap_clear(void) {
     g_snap.Valid = false;
 }
 
+// A texture ImGui wants made whose descriptor set could not be had (VK_ERROR_OUT_OF_POOL_MEMORY: the backend's pool
+// full). The backend still made its image, gave it a null set and marked it ready, and the next draw naming it
+// asserts ("ImDrawCmd is referring to ImTextureData that wasn't uploaded"). Undo it and ask again next frame, by
+// when textures ImGui let go of (an outgrown font atlas: freed after ImageCount frames) have freed their sets.
+// VkOverlayTex: the backend's ImGui_ImplVulkan_Texture (imgui_impl_vulkan.cpp, internal to it), field for field.
+#ifndef MHGU_NULL_BACKEND
+struct VkOverlayTex { VkDeviceMemory memory; VkImage image; VkImageView view; VkDescriptorSet set; };
+static VkDevice g_dev;
+static bool tex_create_failed(ImTextureData *tex) {
+    VkOverlayTex *bt = (VkOverlayTex *)tex->BackendUserData;
+    if (!bt || bt->set != VK_NULL_HANDLE) return false;
+    static int logged;
+    if (logged++ < 8) LOG("[forge] ImGui texture %dx%d: no descriptor set free, again next frame\n", tex->Width, tex->Height);
+    vkDestroyImageView(g_dev, bt->view, nullptr);
+    vkDestroyImage(g_dev, bt->image, nullptr);
+    vkFreeMemory(g_dev, bt->memory, nullptr);
+    IM_FREE(bt);
+    tex->BackendUserData = nullptr;
+    tex->SetStatus(ImTextureStatus_WantCreate);
+    return true;
+}
+#else
+static bool tex_create_failed(ImTextureData *) { return false; }
+#endif
+
 void overlay_frame(void *cpu) {
     // (once a frame on the game's update thread: with [Application] PauseInBackground the game stops here while the app
     // is in the background, its clock held: runtime/hle/vi.c)
@@ -658,6 +699,7 @@ void overlay_frame(void *cpu) {
     char line[256];
     bool chat = chat_composing(line, sizeof line);
     ImGuiIO &io = ImGui::GetIO();
+    g_wants_text = g_open && io.WantTextInput;  // (last frame's: a Forge plugin's text box has the focus; runtime/textinput.c)
     bool touch = touch_drawn();  // (hidden, the settings button still shows)
     bool stats = perfstats_visible();  // ([Performance] ShowStats: runtime/perfstats.cpp)
     bool fading = settings_panel_fading();  // (the settings menu closed a moment ago: fading out, taking no input)
@@ -737,17 +779,21 @@ void overlay_frame(void *cpu) {
     settings_panel_after_render(ImGui::GetDrawData());
 
     ImDrawData *dd = ImGui::GetDrawData();
+    bool tex_failed = false;
     if (dd->Textures)  // (texture uploads: on this thread, between the render thread's submissions)
         for (ImTextureData *tex : *dd->Textures)
             if (tex->Status != ImTextureStatus_OK) {
+                bool create = tex->Status == ImTextureStatus_WantCreate;
                 vk_lock();
                 uint64_t t0 = HITCH_ON ? hitch_now() : 0;
                 ImGui_ImplVulkan_UpdateTexture(tex);
+                if (create && tex->TexID == ImTextureID_Invalid) tex_failed |= tex_create_failed(tex);
                 if (HITCH_ON) hitch_add(HC_OVERLAY_TEX, hitch_now() - t0, (uint64_t)tex->Width * tex->Height * 4);
                 vk_unlock();
             }
     std::lock_guard<std::mutex> l(g_snap_lock);
     snap_clear();
+    if (tex_failed) return;  // (nothing drawn this frame: a draw naming a texture with no descriptor set is an assert)
     for (ImDrawList *list : dd->CmdLists) g_snap.CmdLists.push_back(list->CloneOutput());
     g_snap.CmdListsCount = dd->CmdListsCount;
     g_snap.TotalIdxCount = dd->TotalIdxCount;
@@ -783,7 +829,9 @@ void overlay_draw(VkCommandBuffer cb, const OverlayTarget *t) {
         info.QueueFamily = t->qfam;
         info.Queue = t->queue;
         info.PipelineCache = t->cache;
-        info.DescriptorPoolSize = IMGUI_IMPL_VULKAN_MINIMUM_SAMPLED_IMAGE_POOL_SIZE * 2;
+        // One set per ImGui texture: the font atlases (a new texture each time one grows or is repacked, the old one freed
+        // ImageCount frames later; damage numbers at many sizes do that over and over) and the plugins' own. 16 ran out.
+        info.DescriptorPoolSize = 1024;
         info.MinImageCount = 2;
         info.ImageCount = 8;  // (vertex buffers in turn: more than the frames ever in flight)
         info.PipelineInfoMain.RenderPass = t->pass;
@@ -796,6 +844,7 @@ void overlay_draw(VkCommandBuffer cb, const OverlayTarget *t) {
             return;
         }
         g_pass = t->pass;
+        g_dev = t->dev;
         g_ready = true;
     }
     std::lock_guard<std::mutex> l(g_snap_lock);

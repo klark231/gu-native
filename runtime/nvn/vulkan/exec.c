@@ -4186,7 +4186,7 @@ static VkDescriptorSet stage_set(int nbinds, const VkBindingInfo *binds, VkDescr
             shared_new_submission();
             if (!shared_have_rscale || !shared_on()) {
                 for (int k = 0; k < 67; k++) rs[k][0] = rs[k][1] = 1, rs[k][2] = rs[k][3] = 0;
-                memset(rs[66], 0xFF, 4);  // [66].x: the front-face mask's all-ones word (translate.c)
+                rs[66][0] = -1;  // [66].x: -1.0, the front-face mask's all ones once converted (translate.c)
                 shared_rscale = vk_transient_copy(rs, sizeof rs, 256), shared_have_rscale = true;
             }
             bi[n] = ubo_span(shared_rscale, sizeof rs);

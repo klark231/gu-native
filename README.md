@@ -239,6 +239,7 @@ To play with friends far away you need a hub server. By default the game uses tw
 2. **Check hub server** tells you whether they answer.
 3. Optional: everyone sets the same **Matchmaking key**, so only your group sees your hubs.
 4. **Show all hubs** asks each server several times per search, so every hub is in the numbered lists from the first search.
+5. **Direct connections** (on by default): when both players have it on and the hub server supports it, your games send their packets straight to each other for a lower ping, and fall back to the server when your routers don't allow it. The other player's game then sees your IP address; turn it off to always go through the server.
 
 The game speaks link versions 2 (gu-native) and 3 (the MHGURecomp PC build) and lists your hub under both, so players of either find it, and a search asks for both. Without a matchmaking key your hub is also listed in the phones' public room (`public-phone`, link 3), where the MHGURecomp Android build looks.
 4. Then play as in [Local play](#local-play): one creates the hub, the others search for it.

@@ -11,6 +11,7 @@
 #include "modorder.h"
 #include "net/net.h"
 #include "platform.h"
+#include "textinput.h"
 #include "touch.h"
 #include "imgui_internal.h"
 #ifndef MHGU_VERSION
@@ -79,6 +80,7 @@ struct Keyboard {
     size_t cursor = 0, capacity = 255;
     bool upper = false, select_all = false;
     std::function<bool(const std::string &, std::string &)> commit;
+    bool secret = false;  // (a password: Android's keyboard types it without suggestions or learning)
 };
 // The phone's sizes (touch_panel, each frame), from the screen's height in its pixels: a row, a tab and a button about
 // 0.09 of it, the text 0.034
@@ -619,6 +621,7 @@ bool equal(const Config &a, const Config &b) {
     SAME(bonus_content);
     SAME(village_in_hub);
     SAME(hub_full_list);
+    SAME(ldn_direct);
     SAME(mouse_sensitivity);
     SAME(touch_controls);
     SAME(touch_scheme);
@@ -803,9 +806,38 @@ void ask_close(bool *open) {
         *open = false;
 }
 void keyboard(const std::string &title, const std::string &initial, size_t cap,
-              std::function<bool(const std::string &, std::string &)> commit) {
-    s.keyboard = {title, initial, initial, initial.size(), cap, false, false, std::move(commit)};
+              std::function<bool(const std::string &, std::string &)> commit, bool secret = false) {
+    s.keyboard = {title, initial, initial, initial.size(), cap, false, false, std::move(commit), secret};
+#ifdef __ANDROID__
+    push(View::Keyboard, "key.accept");  // (the phone's own keyboard types: the page's first row is Accept)
+#else
     push(View::Keyboard, "key.0");
+#endif
+}
+// The clipboard: the text there, one line (a list copied from a chat comes with line breaks), or "" for none
+std::string clipboard_text() {
+    std::string t;
+    if (char *clip = SDL_GetClipboardText()) {
+        t = clip;
+        SDL_free(clip);
+    }
+    for (char &c : t)
+        if (c == '\r' || c == '\n' || c == '\t')
+            c = ' ';
+    while (!t.empty() && t.back() == ' ')
+        t.pop_back();
+    size_t lead = t.find_first_not_of(' ');
+    return lead == std::string::npos ? std::string() : t.substr(lead);
+}
+void copy_text(const std::string &text) {
+    if (SDL_SetClipboardText(text.c_str()))
+        overlay_notice(tr("Copied to the clipboard"), "");
+}
+size_t utf8_count(const std::string &t) {
+    size_t n = 0;
+    for (unsigned char c : t)
+        n += (c & 0xc0) != 0x80;
+    return n;
 }
 void insert(const std::string &text) {
     if (s.keyboard.select_all) {
@@ -950,7 +982,8 @@ void text(std::vector<Row> &rows, const char *id, const char *name, char *field,
     r.title = tr(name);
     r.value = shown;
     keyed(r, key);
-    r.activate = [name, at, size]() {
+    bool secret = key && (strstr(key, "Password") || strstr(key, "Token"));
+    r.activate = [name, at, size, secret]() {
         keyboard(tr(name), (char *)&s.draft + at, size - 1, [at, size](const std::string &typed, std::string &error) {
             Config temp = s.draft;
             SDL_strlcpy((char *)&temp + at, typed.c_str(), size);
@@ -961,7 +994,7 @@ void text(std::vector<Row> &rows, const char *id, const char *name, char *field,
             }
             s.draft = temp;
             return true;
-        });
+        }, secret);
     };
     rows.push_back(std::move(r));
 }
@@ -1091,6 +1124,35 @@ void hub_server_rows(std::vector<Row> &r) {
         });
     }, hub_servers().size() < HUB_SERVERS_MAX);
     r.back().help = tr("Another hub server: hubs are listed on all of them and a search asks all of them.");
+    action(r, "hs.paste", tr("Paste servers"), []() {
+        std::string clip = clipboard_text(), error;
+        std::vector<std::string> l = hub_servers();
+        int added = 0;
+        size_t i = 0;
+        while (i < clip.size()) {  // (one or several, as the Server setting takes them: spaces or commas between)
+            size_t j = clip.find_first_of(" ,;", i);
+            std::string one = clip.substr(i, j == std::string::npos ? std::string::npos : j - i), name;
+            i = j == std::string::npos ? clip.size() : j + 1;
+            if (one.empty()) continue;
+            if (l.size() >= HUB_SERVERS_MAX) { error = tr("At most 8 hub servers."); break; }
+            if (!hub_server_name(one, name, error)) break;
+            if (std::find(l.begin(), l.end(), name) == l.end()) l.push_back(name), added++;
+        }
+        if (clip.empty()) error = tr("The clipboard is empty.");
+        if (added) {
+            std::string why;
+            if (!hub_servers_set(l, why)) error = why;
+        }
+        s.error = error;
+    });
+    r.back().help = tr("Adds the servers in the clipboard: one, or several separated by spaces or commas, as a friend sends them.");
+    action(r, "hs.copy", tr("Copy servers"), []() {
+        std::string all;
+        for (const std::string &one : hub_servers())
+            all += (all.empty() ? "" : " ") + one;
+        copy_text(all);
+    }, !hub_servers().empty());
+    r.back().help = tr("Puts the list in the clipboard, to send it to a friend: Paste servers adds them on their phone.");
     action(r, "hs.reset", tr("Restore the default servers"), []() { s.draft.ldn_server[0] = 0; });
     r.back().help = tr("The two servers the game comes with.");
     action(r, "hs.back", tr("Back"), []() { pop(); });
@@ -1307,6 +1369,7 @@ void reset_section() {
         c.sync_small_monsters = f.sync_small_monsters;
         c.village_in_hub = f.village_in_hub;
         c.hub_full_list = f.hub_full_list;
+        c.ldn_direct = f.ldn_direct;
         break;
     case 4:
         c.hp = f.hp;
@@ -2404,6 +2467,8 @@ void hubs_rows(std::vector<Row> &r) {
     hub_check(r);
     add_bool(r, "fullhubs", "Show all hubs", &c.hub_full_list, ini("FullHubList"));
     r.back().help = tr("Join Hub: each search asks every hub server several times and merges the answers, so all the hubs are in the lists (the numbered buttons) from the first search, without pressing Retry. A little more network use.");
+    add_bool(r, "direct", "Direct connections", &c.ldn_direct, ini("Direct"));
+    r.back().help = tr("In an internet hub, your game and the host's send their packets straight to each other when both routers let them, for a lower ping; else through the hub server. The other player's game then sees your IP address. Off: always through the hub server.");
 }
 void ryu_rows(std::vector<Row> &r) {
     Config &c = s.draft;
@@ -2737,7 +2802,7 @@ void room_browser_rows(std::vector<Row> &r, int kind) {
                     return false;
                 }
                 return join_web_room(room, typed, kind);  // (the keyboard closes itself: back in the list)
-            });
+            }, true);
         });
         r.back().value = value;
         std::string help = std::string(room.address) + ":" + std::to_string(room.port);
@@ -2766,6 +2831,25 @@ std::vector<Row> rows_for_view(bool *open) {
     if (s.view == View::CitraMenu) { citra_rows(r); return r; }
     if (s.view == View::HubServers) { hub_server_rows(r); return r; }
     if (s.view == View::Keyboard) {
+#ifdef __ANDROID__
+        // (the phone's own keyboard types, with its clipboard; these rows are what it has no key for)
+        action(r, "key.accept", tr("Accept"), []() { accept_keyboard(); });
+        action(r, "key.paste", tr("Paste"), []() {
+            std::string clip = clipboard_text();
+            if (clip.empty())
+                s.error = tr("The clipboard is empty.");
+            else
+                insert(clip);
+        });
+        action(r, "key.copy", tr("Copy"), []() { copy_text(s.keyboard.buffer); }, !s.keyboard.buffer.empty());
+        action(r, "key.clear", tr("Clear"), []() {
+            s.keyboard.buffer.clear();
+            s.keyboard.cursor = 0;
+        });
+        action(r, "key.show", tr("Show the keyboard"), []() { textinput_tap(); });
+        r.back().help = tr("Brings the phone's keyboard back after Back hid it. A tap anywhere does too.");
+        action(r, "key.cancel", tr("Cancel"), []() { pop(); });
+#else
         std::string chars = "1234567890abcdefghijklmnopqrstuvwxyz.:,-_/@!$%&*+=?~()";
         if (s.keyboard.upper)
             for (char &c : chars)
@@ -2783,6 +2867,7 @@ std::vector<Row> rows_for_view(bool *open) {
         action(r, "key.case", tr("Case"), []() { s.keyboard.upper = !s.keyboard.upper; });
         action(r, "key.accept", tr("Accept"), []() { accept_keyboard(); });
         action(r, "key.cancel", tr("Cancel"), []() { pop(); });
+#endif
     } else if (s.view == View::Conflicts) {
         conflict_rows(r);
         action(r, "conflicts.back", tr("Back"), []() { pop(); });
@@ -3586,13 +3671,10 @@ void keyboard_keys() {
     }
     if (pressed(ImGuiKey_Backspace, true))
         erase_previous();
-    if (io.KeyCtrl && pressed(ImGuiKey_V)) {
-        char *clip = SDL_GetClipboardText();
-        if (clip) {
-            insert(clip);
-            SDL_free(clip);
-        }
-    }
+    if (io.KeyCtrl && pressed(ImGuiKey_V))
+        insert(clipboard_text());
+    if (io.KeyCtrl && pressed(ImGuiKey_C) && !s.keyboard.buffer.empty())
+        SDL_SetClipboardText(s.keyboard.buffer.c_str());
     if (io.KeyCtrl && pressed(ImGuiKey_A))
         s.keyboard.select_all = true;
     if (pressed(ImGuiKey_Delete, true) && s.keyboard.select_all)
@@ -4018,9 +4100,15 @@ void touch_panel(bool *open, const Config &before) {
         dl->AddRectFilled(field.Min, field.Max, IM_COL32(14, 10, 8, 235));
         dl->AddRect(field.Min, field.Max, k.rule, 0, 0, line * .7f);
         std::string text = s.keyboard.buffer;
-        text.insert(s.keyboard.cursor, "|");
+        char composing[256];  // (what the phone's keyboard is still composing, a word or Chinese pinyin: at the cursor)
+        overlay_composition(composing, sizeof composing);
+        if (s.keyboard.secret && !text.empty())
+            text.assign(utf8_count(text), '*');
+        text.insert(std::min(s.keyboard.cursor, text.size()), std::string(composing) + "|");
         float room = field.GetWidth() - f * 1.2f;
-        float upto = ImGui::CalcTextSize(text.c_str(), text.c_str() + s.keyboard.cursor + 1).x;
+        size_t at = std::min(s.keyboard.cursor, s.keyboard.buffer.size()) + strlen(composing) + 1;
+        if (s.keyboard.secret) at = std::min(text.size(), utf8_count(s.keyboard.buffer.substr(0, s.keyboard.cursor)) + strlen(composing) + 1);
+        float upto = ImGui::CalcTextSize(text.c_str(), text.c_str() + std::min(at, text.size())).x;
         float tx = field.Min.x + f * .6f - std::max(0.f, upto - room);  // (a long text: the part at the cursor shows)
         ImVec2 ts = ImGui::CalcTextSize(text.c_str());
         float ty = field.GetCenter().y - ts.y * .5f;
@@ -4536,6 +4624,12 @@ bool settings_panel_wheel(int notches) {
     return true;
 }
 bool settings_panel_modal() { return g_thanks == Thanks::Open; }
+static std::atomic<int> g_typing{0};  // (the menu's text page: 1 open, 2 a password's; for runtime/textinput.c)
+bool settings_panel_typing(bool *secret) {
+    int t = g_typing.load(std::memory_order_relaxed);
+    if (secret) *secret = t == 2;
+    return t != 0;
+}
 // Ownership has to precede NewFrame: native cancel/windowing runs there.
 void settings_panel_before_frame(bool open) {
     // (the thank-you, the menu open under it or not: every key, so ImGui's own navigation neither moves nor activates the
@@ -4592,6 +4686,7 @@ bool settings_panel_credits_up(void) {
 }
 void settings_panel(bool *open) {
     thanks_frame();  // (first: while the thank-you is open, nothing after it gets the frame's input)
+    g_typing.store(*open && s.view == View::Keyboard ? (s.keyboard.secret ? 2 : 1) : 0, std::memory_order_relaxed);
     if (!*open) {
         settings_panel_idle();
         draw_credits();

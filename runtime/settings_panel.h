@@ -34,3 +34,9 @@ bool settings_panel_wheel(int notches); // Choosing a keybind: takes the wheel t
 // (game frame) The thank-you is open: the overlay counts it as a menu open, so every input goes to it, none to the game.
 // (settings_panel_credits_up covers it too: the overlay draws frames while it waits after the credits, shows or fades out)
 bool settings_panel_modal(void);
+// Any thread, C too: the menu's text page is open (Android shows the system keyboard for it: runtime/textinput.c);
+// secret: a password's, typed without the keyboard's suggestions or learning
+#ifdef __cplusplus
+extern "C"
+#endif
+bool settings_panel_typing(bool *secret);

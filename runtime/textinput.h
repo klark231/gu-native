@@ -5,6 +5,10 @@
 
 union SDL_Event;
 
+#ifdef __cplusplus
+extern "C" {  // (settings_panel.cpp, C++, calls textinput_tap)
+#endif
+
 enum { TI_NONE, TI_CHANGED, TI_ENTER, TI_CANCEL };
 
 // game side (any thread)
@@ -20,3 +24,7 @@ void textinput_update(void);                     // each loop pass: the window's
 void textinput_tap(void);                        // (Android) a finger lifted: the screen keyboard back if it was hidden
 void textinput_type(const char *utf8);           // as typed (MHGU_CONTROL "type", paste)
 void textinput_key(int what);                    // TI_ENTER, TI_CANCEL, or TI_NONE for Backspace
+
+#ifdef __cplusplus
+}
+#endif

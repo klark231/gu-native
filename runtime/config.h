@@ -143,6 +143,8 @@ typedef struct {
     int touch_scheme;         // [Touch] Layout: TS_*, how the controls on the screen are laid out (Adaptive by default)
     int touch_show_trad[TB_COUNT];  // [Touch] TradShow*: the same for the Traditional layout (TB_ATTACKS to TB_STICK; all on by default)
     int touch_auto_run;       // [Touch] AutoRun: Traditional layout only: the thumb past the stick's rim runs (R held); off (default): only the R button runs
+    int ldn_direct;           // [Multiplayer] Direct: in an internet hub, game packets go straight between the players when
+                              // their routers let them (hole punching; they see each other's IP address), else through the server
     // Crossplay (runtime/net/ldn.c, crates/mhgu-crossplay)
     int crossplay;            // [Multiplayer] Crossplay: XP_* (Ryujinx LDN server, Yuzu rooms, Mixed, Citra rooms, All Rooms)
     char ryu_servers[256];    // [Multiplayer] RyuServers: RyuLdn servers (host[:port], comma separated)
@@ -291,6 +293,7 @@ float config_live_touch_opacity(void);
 int config_live_touch_vibration(void);  // [Touch] Vibration
 int config_live_phone_rumble(void);     // [Controls] PhoneRumble
 int config_live_hub_full_list(void);   // [Multiplayer] FullHubList
+int config_live_ldn_direct(void);      // [Multiplayer] Direct (net/ldn.c: for the next player link)
 int config_live_show_stats(void);       // [Performance] ShowStats
 int config_live_pause_background(void); // [Application] PauseInBackground
 int config_live_shadows(void);          // [Performance] Shadows

@@ -314,3 +314,27 @@ Android killing the game shows in `adb logcat` as `lowmemorykiller: Kill 'com.mh
   `runtime/settings_locale_zh.c`, made by `tools/gen_locale_zh.py` from `tools/language_zh.tsv` and `language_zh_extra.tsv` (edit those,
   run it again). Once Chinese is shown the overlay merges a CJK font from the system's (`cjk_font_if_needed`). The Java screens go
   through `Zh.t` (exact strings, then known pieces). A new menu string needs a line in `language_zh_extra.tsv` and the Spanish table.
+- Typing on Android: the menu's text page (`View::Keyboard`: a server, a key, a password) brings up the phone's own
+  keyboard (`textinput_update`: `settings_panel_typing`, and a Forge plugin's ImGui text box through `overlay_wants_text`),
+  with no capitals, corrections or suggestions (`SDL_StartTextInputWithProperties`; a password's with the password type).
+  The drawn character keys are a desktop's only (a controller there has no system keyboard). Its rows: Accept, Paste,
+  Copy, Clear, Show the keyboard (after Back hid it; a tap does too: `textinput_tap`), Cancel; the IME's Enter accepts.
+  SDL's Android input connection commits what the keyboard composes at once and corrects it with Backspace, so pinyin
+  needs nothing more; `overlay_composition` shows a desktop IME's text being composed. Hub servers has Paste servers
+  (one or several, spaces or commas) and Copy servers.
+- From Morerokk's MHGURecomp (gu-native split from it on 2026-11-01, near b04067f): attention scores above 30 fps
+  (`hle/hatestep.c`), shorter transitions alone (`hle/fastload.c`, off in a network session), small monster sync fixes,
+  part HP in HP scaling, a long chat line as one message, Village quests in a session releasing what a skipped demo
+  would (`villagehub.c` spawn_update, `hpscale_village_from_hub`), the FMZ 1 / alpha NaN fix and the front-face mask
+  as -1.0 (`translate.c`: the shader caches are made again once), controller rumble that no longer stalls its input,
+  a bigger ImGui descriptor pool, the faster interpreter. Not taken: commits that change `tools/gen.py` (GAMELIB_ID:
+  every player would make the game code again: the three-button combo, monsters closing the gap, kerning), the hub
+  server's random choice (this one lists in a fixed order), the mod loading speed-up (needs its partial archives first).
+- Direct connections (MHGURecomp 45f93da, ported by hand: `[Multiplayer] Direct`, on by default, "Direct connections" in
+  Internet hubs): on a relayed link each end asks its hub server for the other's public UDP address ("MHGQ"), the server
+  answers ("MHGP", with the pair's direct key) only once both asked; then game packets go straight between the players
+  (datagrams "MHGR" + pair + direct key), the relay beside them as the fallback (`direct_usable`, DIRECT_SILENCE_NS).
+  The station's UDP socket is no longer connected (it hears the host's address too). Compatible both ways with older
+  games and servers: they stay on the relay. Only a server with server.go's peer answer (this one) gives addresses, so
+  the public servers do nothing until their owners update them. `MHGU_LDN_RTT=1` logs round trips by path,
+  `MHGU_LDN_BLOCK_DIRECT=<s>[-<t>]` tests the fallback, `MHGU_LDN_DIRECT=0` turns it off. Not yet tried on a device.
