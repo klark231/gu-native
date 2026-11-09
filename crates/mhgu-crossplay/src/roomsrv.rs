@@ -315,7 +315,7 @@ fn room_loop(mut host: Host<UdpSocket>) {
             }
         }
         {
-            let mut srv = SRV.lock().unwrap();
+            let srv = SRV.lock().unwrap();
             let now = Instant::now();
             let stale: Vec<PeerID> = pending
                 .iter()

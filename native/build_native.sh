@@ -38,6 +38,7 @@ TARGET_FLAGS="--target=$RT$API"
 MHGU_XP_LIB="$ROOT/target/$RT/release/libmhgu_crossplay.a"
 [ -f "$MHGU_XP_LIB" ] || { echo "build_native.sh: $MHGU_XP_LIB is missing"; exit 1; }
 cd "$HERE"
+mkdir -p "$HERE/build"  # (a fresh checkout has no build folder, and the configure log goes there)
 
 "$CMAKE" -S "$(m "$HERE")" -B "$(m "$OUT")" -G Ninja -DCMAKE_MAKE_PROGRAM="$(m "$NINJA")" \
   -DCMAKE_TOOLCHAIN_FILE="$(m "$NDK/build/cmake/android.toolchain.cmake")" -DANDROID_ABI=$ABI \

@@ -694,7 +694,7 @@ fn p2p_start(main: &Arc<Conn>, d: &[u8]) {
     };
     {
         // Only one proxy per lobby, and only while this connection is still its main one.
-        let mut g = G.lock().unwrap();
+        let g = G.lock().unwrap();
         let keep = g.main.as_ref().map(|m| Arc::ptr_eq(m, main)).unwrap_or(false) && g.p2p.is_none();
         if keep {
             // (set below, after the Arc is cloned as p2p)
@@ -715,7 +715,7 @@ fn p2p_start(main: &Arc<Conn>, d: &[u8]) {
 
 fn wait_joined(c: &Arc<Conn>) -> Result<(u32, u32, [u8; RYU_NETINFO]), u32> {
     let end = Instant::now() + Duration::from_millis(2 * CONNECT_MS);
-    let mut err = err::CONNECT_TIMEOUT;
+    let err;
     loop {
         let p2p_wait = {
             let g = G.lock().unwrap();

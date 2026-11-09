@@ -102,10 +102,6 @@ fn wr_str(out: &mut Vec<u8>, s: &str) {
     out.extend_from_slice(&put_u32(s.len() as u32));
     out.extend_from_slice(s.as_bytes());
 }
-fn wr_vec(out: &mut Vec<u8>, d: &[u8]) {
-    out.extend_from_slice(&put_u32(d.len() as u32));
-    out.extend_from_slice(d);
-}
 
 struct Rd<'a> {
     d: &'a [u8],
