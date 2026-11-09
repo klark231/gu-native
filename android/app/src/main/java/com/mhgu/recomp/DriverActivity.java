@@ -63,7 +63,7 @@ public class DriverActivity extends Activity {
 
     private TextView text(String s, int size, int color, boolean bold) {
         TextView t = new TextView(this);
-        t.setText(s);
+        t.setText(Zh.t(s));
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, size);
         t.setTextColor(color);
         if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
@@ -80,7 +80,7 @@ public class DriverActivity extends Activity {
 
     private Button button(String s, boolean strong, int fill) {
         Button b = new Button(this);
-        b.setText(s);
+        b.setText(Zh.t(s));
         b.setAllCaps(false);
         b.setTextColor(strong ? GOLD : CREAM);
         b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
@@ -163,7 +163,7 @@ public class DriverActivity extends Activity {
     private Button closeButton;
 
     private void say(String s, boolean bad) {
-        status.setText(s);
+        status.setText(Zh.t(s));
         status.setTextColor(bad ? ALERT : GOLD);
     }
 
@@ -260,7 +260,7 @@ public class DriverActivity extends Activity {
             }
         }
         changed = true;
-        closeButton.setText(es ? "Reiniciar el juego" : "Restart the game");
+        closeButton.setText(Zh.t(es ? "Reiniciar el juego" : "Restart the game"));
         say(es ? "Se aplica al reiniciar el juego. Guarda antes tu partida." : "It applies when the game restarts. Save your game first.", false);
         refresh();
     }

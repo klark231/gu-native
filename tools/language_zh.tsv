@@ -1,0 +1,630 @@
+# MHGU Recomp Chinese (简体中文) UI strings: English<TAB>Chinese, UTF-8.
+# Lines starting with # or ; are comments. \n, \t and \\ are escapes; missing entries stay in English.
+Cheats	作弊
+Controls	操作
+Display	显示
+Graphics & Audio	画面与声音
+Menu Options	菜单选项
+Misc	杂项
+Mods	模组
+Network	网络
+Back	返回
+Confirm	确认
+Navigation	导航
+Save	保存
+Off	关
+On	开
+None	无
+Auto	自动
+Reset this tab	重置此标签页
+Cancel	取消
+Saved	已保存
+Saved - restart pending	已保存 - 等待重启
+* Restart required	* 需要重启
+SETTINGS	设置
+Borderless	无边框
+Fullscreen	全屏
+Window mode	窗口模式
+Windowed	窗口化
+Custom	自定义
+Desktop	桌面
+Screen resolution	屏幕分辨率
+Width	宽度
+Height	高度
+Render resolution	渲染分辨率
+100%	100%
+25%	25%
+33%	33%
+3D resolution	3D 分辨率
+40%	40%
+50%	50%
+66%	66%
+75%	75%
+80%	80%
+90%	90%
+The size of the 3D picture, in percent of the screen's. Lower is faster and softer.	3D 画面的尺寸，占屏幕的百分比。越低越快，也越模糊。
+Automatic aspect ratio	自动宽高比
+Aspect ratio	宽高比
+Field of view	视野
+16:9	16:9
+21:9	21:9
+32:9	32:9
+Edges	边缘
+HUD anchor	HUD 位置
+Fill the screen	填满屏幕
+Off (low-end)	关（低端）
+Low-end mode	低端模式
+Toaster	烤面包机
+For weak phones: turns off bloom, depth of field and shadows, uses lighter textures and keeps the HUD sharp over a smaller 3D picture. It also sets the 3D resolution and the frame rate, and you can change all of them. Toaster: everything for speed and the battery before looks: 25%, 30 FPS, no reverb, and a lighter HUD and textures still.	面向低性能手机：关闭泛光、景深和阴影，使用更轻量的纹理，并在较小的 3D 画面上保持 HUD 清晰。它还会设置 3D 分辨率和帧率，这些都可以再改。烤面包机：速度与续航优先于画面：25%、30 FPS、无混响，HUD 和纹理也更轻量。
+Frame rate limit	帧率限制
+VSync	垂直同步
+Show FPS and temperature	显示 FPS 和温度
+Shader prewarm	着色器预热
+2x	2x
+4x	4x
+8x	8x
+MSAA	MSAA
+Off (FSR)	关（FSR）
+FXAA	FXAA
+3.11	3.11
+FXAA mode	FXAA 模式
+Original	原版
+Draw distance	绘制距离
+No limit	无限制
+Shadows	阴影
+Bloom and depth of field	泛光与景深
+On (FSR)	开（FSR）
+Smooth gradients	平滑渐变
+Volume (%)	音量（%）
+Reverb	混响
+Mute in background	后台静音
+FSR	FSR
+FSR 3.1	FSR 3.1
+FSR 4	FSR 4
+Upscaler	放大算法
+FSR 3.1 in use	正在使用 FSR 3.1
+Balanced	均衡
+FSR quality	FSR 质量
+Native AA	原生 AA
+Performance	性能
+Quality	质量
+Ultra performance	极致性能
+Sharpness	锐度
+Object motion	物体运动
+Reactive mask	反应遮罩
+Animated surfaces	动态表面
+GPU driver	GPU 驱动
+System	系统
+Adreno only, at your own risk: load a Vulkan driver of your own. By default the system's is used.	仅限 Adreno，风险自负：加载自有的 Vulkan 驱动。默认使用系统驱动。
+Adreno fix	Adreno 修复
+FSR overrides MSAA and FXAA while active.	FSR 启用时会覆盖 MSAA 和 FXAA。
+This GPU can't run FSR 4, so FSR 3.1 is used.	此 GPU 无法运行 FSR 4，因此使用 FSR 3.1。
+FSR 4 could not start, so FSR 3.1 is used. The [fsr4] lines in log.txt say why.	FSR 4 无法启动，因此使用 FSR 3.1。log.txt 中的 [fsr4] 行说明了原因。
+A	A
+B	B
+L	L
+Minus	Minus
+Plus	Plus
+R	R
+X	X
+Y	Y
+ZL	ZL
+ZR	ZR
+Face buttons	按键布局
+Label	标签
+Position	位置
+Bottom button	下方按键
+Confirm button (recomp)	确认键（recomp）
+Right button	右方按键
+Button icons	按键图标
+PlayStation	PlayStation
+Switch	Switch
+Xbox	Xbox
+Background input	后台输入
+Combo input window	组合输入窗口
+Lenient	宽松
+Strict	严格
+Mouse sensitivity	鼠标灵敏度
+Touch controls	触屏控制
+Move the HUD for touch	为触屏移动 HUD
+Lock-on	锁定
+The target icon, or a controller's right stick click, keeps the camera on the monster as in the newer games, and bows and bowguns fire at it. Off: the icon turns the camera to it once, as in the original game.	目标图标或手柄的右摇杆按下会像新作一样让镜头持续对准怪物，弓和弩炮也会朝它射击。关闭：图标只把镜头转向它一次，与原版相同。
+Combined buttons	组合按键
+Add buttons of your own that press several of the game's at once, then place them with Customize touch controls.	添加自定义按键，一次按下游戏中的多个按键，然后用"自定义触屏控制"放置它们。
+Touch camera speed	触屏镜头速度
+Touch controls opacity	触屏控制不透明度
+Vibrate on touch	触屏震动
+Game rumble on the phone	手机上的游戏震动
+Customize touch controls	自定义触屏控制
+Move and resize each button on the screen: drag a button, pinch or use - / + for its size, then Save.	在屏幕上移动和调整每个按键：拖动按键，双指缩放或用 - / + 调整大小，然后保存。
+Map a controller	映射手柄
+For a controller the game does not read well: press each button once and it works from then on.	适用于游戏无法正确识别的手柄：每个按键按一次，之后就能正常使用。
+Keybinds	按键绑定
+The keys and mouse buttons for the Switch controller's buttons, for moving and for the item bar, and the chat key.	Switch 手柄各按键、移动和道具栏的键盘与鼠标按键，以及聊天键。
+Button %d	按键 %d
+Empty	空
+A button of your own presses several of the game's together. Place it with Customize touch controls.	自定义按键会同时按下游戏中的多个按键。用"自定义触屏控制"放置它。
+Down	下
+L3	L3
+Left	左
+R3	R3
+Right	右
+Up	上
+Controller button	手柄按键
+Guide	Guide
+Paddle 1	拨片 1
+Paddle 2	拨片 2
+Paddle 3	拨片 3
+Paddle 4	拨片 4
+Touchpad	触摸板
+That button of a controller does the same, and no longer does what it did.	手柄上的那个按键做同样的事，不再执行它原来的功能。
+Clear	清除
+Checking...	检查中...
+Online	在线
+Online, %d ms	在线，%d 毫秒
+Online, %d ms, %d hub(s)	在线，%d 毫秒，%d 个大厅
+Not found	未找到
+Unreachable	无法连接
+Connection lost	连接丢失
+No answer	无响应
+Busy	繁忙
+Other version	其他版本
+Refused	拒绝
+Not checked	未检查
+Check hub server	检查大厅服务器
+Asks the hub server above whether it answers, with the matchmaking key above: how long it takes, and how many hubs it lists.	用上面的匹配密钥询问上方的大厅服务器是否有响应：耗时多久，以及它列出多少个大厅。
+Host port (TCP / UDP)	主机端口（TCP / UDP）
+LAN	局域网
+Search hosts	搜索主机
+Hub server	大厅服务器
+Default	默认
+Matchmaking key	匹配密钥
+Public	公开
+Sync small monsters	同步小型怪物
+Village quests in Hub	大厅中的村庄任务
+Discord	Discord
+Discord Rich Presence	Discord Rich Presence
+Show hunter name and HR	显示猎人名称和 HR
+HP multipliers for single quests, by their quest ID: in those quests they are used instead of the ones above.	按任务 ID 为单个任务设置怪物 HP 倍率：在这些任务中会代替上面的设置。
+Monster HP Scaling	怪物 HP 缩放
+Hunter	猎人
+Hunters	猎人
+Per-quest overrides	按任务覆盖
+Quest ID	任务 ID
+Remove quest	移除任务
+Add quest	添加任务
+%s and %s both change %d file(s); %s is used	%s 和 %s 都修改了 %d 个文件；将使用 %s
+Which mod is used?	使用哪个模组？
+Use %s	使用 %s
+Add a mod	添加模组
+Copies a mod's folder (with romfs or exefs in it) or its .zip from your phone's storage. You can also put it yourself in the mods folder inside your game folder. The game restarts to load it.	从手机存储复制模组的文件夹（内含 romfs 或 exefs）或其 .zip。也可以自己把它放进游戏文件夹里的 mods 文件夹。游戏会重启以加载它。
+Add DLC	添加 DLC
+Your own DLC of the game: each one's folder holds a DLC.dlcp. You can also put them yourself in the dlc folder inside your game folder. Then, in the game's main menu: Download. Experimental.	游戏的自有 DLC：每个文件夹里有一个 DLC.dlcp。也可以自己把它们放进游戏文件夹里的 dlc 文件夹。然后在游戏主菜单中选择"下载"。实验性功能。
+No mods found in the mods folder	mods 文件夹中未找到模组
+Move down	下移
+Move up	上移
+Turn off	关闭
+Turn on	开启
+Checking for conflicts...	正在检查冲突...
+No conflicts found	未发现冲突
+Mods change the same files (%d): select to review	模组修改了相同的文件（%d）：选择以查看
+Apply suggested order	应用建议顺序
+Rescan mods	重新扫描模组
+Mods load from top to bottom: a later mod wins. Select a conflict to choose which mod is used. Press Save, then restart.	模组从上到下加载：靠后的模组优先。选择冲突以指定使用哪个模组。按保存，然后重启。
+Add cheats	添加作弊
+Copies cheat .txt files (Atmosphere's format, for 1.4.0) from your phone's storage. You can also put them yourself in the cheats folder inside your game folder. The game restarts to read them.	从手机存储复制作弊 .txt 文件（Atmosphere 格式，适用于 1.4.0）。也可以自己把它们放进游戏文件夹里的 cheats 文件夹。游戏会重启以读取它们。
+No cheats found in the cheats folder	cheats 文件夹中未找到作弊
+Always on	始终开启
+Online: only use cheats when everyone in the lobby agrees to it.	在线：只有在房间内所有人都同意时才使用作弊。
+Cheats turn on and off when you press Save, no restart needed. Turning one off undoes its changes to the game's code; values it already changed (money, items) stay. New cheat files show up after a restart.	按下保存时作弊会开启或关闭，无需重启。关闭一项会撤销它对游戏代码的修改；它已经改过的数值（金钱、物品）会保留。新的作弊文件会在重启后出现。
+English	英语
+Español	西班牙语
+Language	语言
+Blue	蓝色
+Gold	金色
+Menu theme	菜单主题
+Interface scale (%)	界面缩放（%）
+Pause in the background	后台暂停
+Confirm exit	确认退出
+Ask	询问
+Updates	更新
+Bonus content	附赠内容
+Game folder	游戏文件夹
+Where the game's exefs and romfs are read from. A new folder is used the next time the game starts.	游戏 exefs 和 romfs 的读取位置。下次启动游戏时会使用新文件夹。
+Import save	导入存档
+Brings your save from an emulator or another device. It replaces the characters on this device, and the current save is kept in a copy.	从模拟器或其他设备导入存档。它会替换本设备上的角色，当前存档会保留一份副本。
+Export save	导出存档
+Copies your save to a folder you choose, to take it to an emulator or another device.	将存档复制到你选择的文件夹，以便带到模拟器或其他设备。
+Share log	分享日志
+Sends the game's log to the app you choose, for whoever is helping you with a problem.	将游戏日志发送到你选择的应用，供帮助你解决问题的人查看。
+Licenses	许可证
+Attach menu	固定菜单
+Detach menu	分离菜单
+Lets the menu go anywhere on the screen: use Move menu, or drag its tabs with the mouse. Its bottom right corner sizes it.	让菜单可以放在屏幕任意位置：使用"移动菜单"，或用鼠标拖动它的标签页。右下角可调整大小。
+Puts the menu back at the top of the screen, at its usual size.	把菜单放回屏幕顶部，恢复通常大小。
+Move menu	移动菜单
+Restart	重启
+Exit game	退出游戏
+D-pad down	十字键下
+D-pad left	十字键左
+D-pad right	十字键右
+D-pad up	十字键上
+Item left	道具左
+Item right	道具右
+Left stick click	左摇杆按下
+Move back	向后移动
+Move forward	向前移动
+Move left	向左移动
+Move right	向右移动
+Right stick click	右摇杆按下
+Walk	行走
+Chat key	聊天键
+in use:	使用中：
+Movement	移动
+Buttons	按键
+Item bar	道具栏
+Set key	设置按键
+Add a second key	添加第二个按键
+Chat	聊天
+Reset keybinds	重置按键绑定
+That key is the recomp's own (%s).	该按键是 recomp 自用的（%s）。
+That key can't be used.	无法使用该按键。
+That key can't be used for chat.	该按键不能用于聊天。
+Settings	设置
+Forge menu	Forge 菜单
+Debug	调试
+Full screen	全屏
+Release mouse	释放鼠标
+Screenshot	截图
+D-pad	十字键
+A / B / X / Y	A / B / X / Y
+Plus  +	Plus  +
+Minus  -	Minus  -
+D-pad show / hide	十字键显示 / 隐藏
+Items: tap to use, swipe up / down for the ammo - drag to move	道具：点按使用，上下滑动切换弹药 - 拖动移动
+Hunter Arts - drag to move	狩技 - 拖动移动
+Lock-on - drag to move	锁定 - 拖动移动
+Drag to move - pinch or use - / + for its size	拖动移动 - 双指缩放或用 - / + 调整大小
+Grid	网格
+Tap a control to pick it, drag it to move it	点按控件以选中，拖动以移动
+Grid +	网格 +
+Grid -	网格 -
+Grid: Off	网格：关
+Grid: On	网格：开
+Align: Off	对齐：关
+Align: On	对齐：开
+Defaults	默认
+No controller connected	未连接手柄
+Mapped	已映射
+Forget the map of %s	忘记 %s 的映射
+The next time the game starts it reads this controller as before.	下次启动游戏时会像以前一样读取此手柄。
+Move both sticks and press the triggers once, then let everything go	移动两个摇杆并各按一次扳机，然后全部松开
+Continue	继续
+%d of %d: press	%d / %d：请按
+Skip	跳过
+Leave this one out: the buttons your controller does not have.	跳过这个：你的手柄没有的按键。
+Previous	上一个
+That's all of them	全部完成
+A (right button: confirm, special attack)	A（右方按键：确认、特殊攻击）
+B (bottom button: cancel, dodge)	B（下方按键：取消、翻滚）
+X (top button: attack)	X（上方按键：攻击）
+Y (left button: use item, sheathe)	Y（左方按键：使用道具、收刀）
+L (camera)	L（镜头）
+R (guard, run)	R（防御、奔跑）
+Plus (the game's menu)	Plus（游戏菜单）
+Left stick up	左摇杆上
+Left stick down	左摇杆下
+Left stick left	左摇杆左
+Left stick right	左摇杆右
+Right stick up	右摇杆上
+Right stick down	右摇杆下
+Right stick left	右摇杆左
+Right stick right	右摇杆右
+Controller	手柄
+Delete	删除
+Space	空格
+Case	大小写
+Accept	接受
+Reset	重置
+Save and close	保存并关闭
+Discard and close	放弃并关闭
+Save and exit	保存并退出
+Exit without saving	不保存退出
+Save and restart	保存并重启
+Press a key or mouse button for %s (Esc: cancel)	请为 %s 按下一个按键或鼠标键（Esc：取消）
+Combined button	组合按键
+Exit game?	退出游戏？
+Mod conflicts	模组冲突
+Press the key for chat (Esc: cancel)	请按下聊天键（Esc：取消）
+Reset this tab?	重置此标签页？
+Restart game?	重启游戏？
+Unsaved changes	未保存的更改
+Duplicate quest ID.	任务 ID 重复。
+Restart failed. The game is still running.	重启失败。游戏仍在运行。
+Resolution must be Desktop/Auto or 320x180 to 16384x16384.	分辨率必须为 Desktop/Auto 或 320x180 到 16384x16384。
+Aspect ratio must be Auto or between 0.5 and 10.	宽高比必须为自动或在 0.5 到 10 之间。
+FOV must be 0.5-2.0 and mouse sensitivity 0.1-10.	视野必须为 0.5-2.0，鼠标灵敏度为 0.1-10。
+Invalid frame cap, anti-aliasing, controller, HUD or volume setting.	帧率上限、抗锯齿、手柄、HUD 或音量设置无效。
+Invalid On/Off value.	开关值无效。
+Invalid FSR quality, provider, sharpness or reactive mask.	FSR 质量、提供者、锐度或反应遮罩无效。
+Invalid port or Join address list (no newlines, ';' or '#').	端口或加入地址列表无效（不能有换行、';' 或 '#'）。
+Invalid hub server or matchmaking key (no newlines, ';' or '#').	大厅服务器或匹配密钥无效（不能有换行、';' 或 '#'）。
+HP factors must be 0.05-20.	HP 倍率必须为 0.05-20。
+Invalid village HP or quest override count.	村庄 HP 或任务覆盖数量无效。
+Invalid menu confirmation policy.	菜单确认策略无效。
+Invalid interface scale.	界面缩放无效。
+Invalid button icon layout.	按键图标布局无效。
+Invalid menu language.	菜单语言无效。
+Invalid update setting.	更新设置无效。
+Draw distance must be 0-10 (0: no limit).	绘制距离必须为 0-10（0：无限制）。
+Invalid keybind.	按键绑定无效。
+Quest IDs must be greater than zero.	任务 ID 必须大于零。
+Quest HP factors must be 0.05-20.	任务 HP 倍率必须为 0.05-20。
+Too many settings to save (ENTRY_MAX).	要保存的设置太多（ENTRY_MAX）。
+Settings path is too long.	设置路径太长。
+Cannot read the existing settings file.	无法读取现有的设置文件。
+Cannot create a temporary settings file.	无法创建临时设置文件。
+Could not save settings; the previous file was kept.	无法保存设置；已保留之前的文件。
+Could not write mods/load_order.txt	无法写入 mods/load_order.txt
+Could not write %s	无法写入 %s
+Fullscreen, Windowed, Borderless	全屏、窗口化、无边框
+Resolution (WxH)	分辨率（宽x高）
+Rendering resolution (WxH)	渲染分辨率（宽x高）
+Higher = sharper (for supersampling)	越高越清晰（用于超采样）
+Default: Auto	默认：自动
+Set to 16:9 to preserve the game's native aspect ratio	设为 16:9 以保持游戏原生宽高比
+Between 0.5 and 2	在 0.5 到 2 之间
+Default: 1.0	默认：1.0
+At resolutions wider than 16:9, determines where the HUD goes	在宽于 16:9 的分辨率下，决定 HUD 的位置
+Center, Edges	居中、边缘
+Default: Center	默认：居中
+On a screen wider than 16:9, movies and the menus' backdrops fill it (a little is cut above and below) instead of showing bars at the sides	在宽于 16:9 的屏幕上，影片和菜单背景会填满屏幕（上下略有裁切），而不是在两侧显示黑边
+Default: On	默认：开
+Framerate cap	帧率上限
+Between 30 and 240	在 30 到 240 之间
+Default: 60	默认：60
+Shows the frame rate, the frame time and the device's temperature in a corner of the screen	在屏幕一角显示帧率、帧时间和设备温度
+Default: Off	默认：关
+Translate all of the game's shaders in the background at startup, so fewer things are drawn black the first time they appear. The first start does this in about 20 seconds while the logos play; it needs about 340 MB in the cache folder.	启动时在后台翻译游戏的所有着色器，减少首次出现时被绘制成黑色的情况。首次启动会在播放标志时用约 20 秒完成；缓存文件夹中需要约 340 MB。
+Multi-Sample Anti Aliasing, cycle modes with F7 key	多重采样抗锯齿，用 F7 键循环切换模式
+Off, 2x, 4x, 8x	关、2x、4x、8x
+GU's default FXAA	GU 默认的 FXAA
+Which FXAA: Original is GU's own, 3_11 is FXAA 3.11, which keeps textures sharper	选择 FXAA：原版是 GU 自带的，3_11 是 FXAA 3.11，能让纹理更清晰
+Original, 3_11	原版、3_11
+Default: Original	默认：原版
+How far away people in the villages and the Hubs are still drawn: 1 is the game's distance, 2 twice as far, 0.5 half as far, 0 no limit	村庄和大厅中人物仍会被绘制的距离：1 是游戏的距离，2 是两倍远，0.5 是一半，0 无限制
+Between 0 and 10	在 0 到 10 之间
+The shadows of the hunters, monsters and scenery. Off: none, a little faster on a weak GPU	猎人、怪物和场景的阴影。关闭：没有阴影，在低性能 GPU 上稍快
+The glow around lights and the blur of what is far away (bloom and depth of field). Off: faster on a weak GPU	灯光周围的光晕以及远处景物的模糊（泛光和景深）。关闭：在低性能 GPU 上更快
+Renders the picture with 16 bits per colour instead of 8, so dark skies and soft glows show no colour bands.	以每色 16 位而非 8 位渲染画面，因此昏暗的天空和柔和的光晕不会出现色带。
+Costs GPU time: about 1 ms a frame at 1600x1000, more at higher resolutions	消耗 GPU 时间：1600x1000 下每帧约 1 毫秒，分辨率越高消耗越多
+Volume of the whole game	整个游戏的音量
+Between 0 (mute) and 100	在 0（静音）到 100 之间
+Default: 100	默认：100
+The echo of caves and rooms (the game's reverb). Off: the sound is dry, and a weak phone's processor does less	洞穴和房间的回声（游戏的混响）。关闭：声音干涩，低性能手机的处理器负担更小
+Mute the game while its window is in the background (not focused)	当游戏窗口在后台（未聚焦）时静音
+FSR temporal upscaling	FSR 时域放大
+Which upscaler to use (FSR3 is FSR 3.1)	使用哪种放大算法（FSR3 即 FSR 3.1）
+FSR3, FSR4	FSR3、FSR4
+Default: FSR3	默认：FSR3
+NativeAA, Quality, Balanced, Performance, UltraPerformance	原生AA、质量、均衡、性能、极致性能
+Default: NativeAA	默认：原生AA
+FSR's sharpening filter strength	FSR 锐化滤镜强度
+Between 0 to 1	在 0 到 1 之间
+Default: 0.8	默认：0.8
+FSR Object Motion, reduces smearing	FSR 物体运动，减少拖影
+Reactive anti-ghosting	反应式抗残影
+Between 0 and 1	在 0 到 1 之间
+Default: 0.9	默认：0.9
+Animated surface textures skip FSR's frame history to avoid smearing	动态表面纹理会跳过 FSR 的帧历史以避免拖影
+An Adreno GPU with a Vulkan 1.1 driver can show the 3D picture repeated in a grid below 720 lines without MSAA.	使用 Vulkan 1.1 驱动的 Adreno GPU 在低于 720 线且无 MSAA 时可能会以网格状重复显示 3D 画面。
+Auto keeps 2x MSAA there; Off leaves MSAA as set (faster, and some of those drivers look better without it)	自动会在那里保持 2x MSAA；关闭则保持 MSAA 设置不变（更快，而且某些驱动在没有它时画面更好）
+Auto, Off	自动、关
+Controller face button layout. Set to "Label" to reverse A/B and X/Y on XBox controllers to match the button prompts (not recommended)	手柄按键布局。设为"标签"可在 Xbox 手柄上反转 A/B 和 X/Y 以匹配按键提示（不推荐）
+Position, Label	位置、标签
+Default: Position	默认：位置
+Confirm button in the settings menu (F1, or Minus + Plus on a controller). The game's own menus are unchanged.	设置菜单中的确认键（F1，或手柄上的 Minus + Plus）。游戏自带的菜单不变。
+Original, South (bottom button), East (right button)	原版、南（下方按键）、东（右方按键）
+Button icons in the settings menu	设置菜单中的按键图标
+Xbox, Switch, PlayStation	Xbox、Switch、PlayStation
+Default: Xbox	默认：Xbox
+Controller input is also registered if the window is out of focus	即使窗口未聚焦也会接收手柄输入
+How long the game waits for a second button after the first, for inputs like X+A. Lenient: as long as at 30 fps (on the Switch) at any frame rate. Strict: a fixed number of frames, so the higher the frame rate, the closer together both buttons have to be pressed	按下第一个按键后，游戏等待第二个按键的时间，用于 X+A 这类输入。宽松：在任何帧率下都相当于 30 fps（Switch 上）的时长。严格：固定帧数，因此帧率越高，两个按键必须按得越接近
+Lenient, Strict	宽松、严格
+Default: Lenient	默认：宽松
+The controls on the screen (a phone): Auto shows them while no controller is connected	屏幕上的控制（手机）：自动会在未连接手柄时显示
+Auto, On, Off	自动、开、关
+While they show, the HUD moves out of the thumbs' way: the status to the left edge, the item bar to the bottom middle, the Hunter Arts and the target camera to the top right	显示时，HUD 会移开拇指的位置：状态移到左边缘，道具栏移到底部中间，狩技和目标镜头移到右上角
+How far a drag turns the camera (1: about 90 degrees for a drag the screen's height)	拖动转动镜头的幅度（1：拖动屏幕高度约转 90 度）
+Between 0.2 and 5	在 0.2 到 5 之间
+How solid the controls are drawn	控制的绘制不透明度
+Between 0.2 and 1	在 0.2 到 1 之间
+A short vibration when a touch control is pressed	按下触屏控制时的短震动
+The game's rumble also on the phone's own vibrator (with or without a controller)	游戏的震动也会通过手机自身的振动器（无论是否连接手柄）
+Which port to host/join hubs on (TCP and UDP)	用于创建/加入大厅的端口（TCP 和 UDP）
+Default: 39500	默认：39500
+IP Address of the host to join. Use IP:Port if it doesn't match the port above.	要加入的主机 IP 地址。如果与上面的端口不同，请使用 IP:端口。
+Can be multiple IP addresses, comma-separated	可以是多个 IP 地址，用逗号分隔
+Hub server for playing over the internet without port forwarding: hubs you create are listed there, and Search Hubs shows its hubs next to the LAN's. host or host:port (default port 39510).	用于在互联网上游戏而无需端口转发的大厅服务器：你创建的大厅会列在那里，搜索大厅时也会在局域网大厅旁显示它的大厅。host 或 host:port（默认端口 39510）。
+Empty or Off: no internet hubs.	留空或关闭：不使用互联网大厅。
+Matchmaking key: hubs are only seen by players with the same key, so friends who all enter the same key only see each other's hubs. Empty: public, your hubs are seen by (and you see) everyone without a key.	匹配密钥：只有使用相同密钥的玩家才能看到彼此的大厅，因此所有输入相同密钥的好友只能看到彼此的大厅。留空：公开，你的大厅会被没有密钥的所有人看到（你也能看到他们的大厅）。
+Sync small monsters between players in multiplayer.	在多人游戏中同步玩家之间的小型怪物。
+(Currently off by default, pending a bug investigation where small monsters may refuse to attack players)	（目前默认关闭，正在调查小型怪物可能拒绝攻击玩家的 bug）
+Press L/R in the Hub while selecting a quest to swap to the Village Quest list instead, letting you play Village quests in multiplayer.	在大厅选择任务时按 L/R 可切换到村庄任务列表，让你能在多人游戏中游玩村庄任务。
+Show what you're doing in the game on your Discord profile (Discord must be running on this computer):	在你的 Discord 个人资料中显示你在游戏中的动态（此电脑上必须运行 Discord）：
+where you are, the quest's monsters and how many hunters are with you	你所在的位置、任务中的怪物以及随行猎人的数量
+Show your hunter's name and Hunter Rank there too	同时在那里显示你的猎人名称和猎人等级
+Playercount-specific HP multipliers for monsters in Hub quests.	大厅任务中按玩家人数设置的怪物 HP 倍率。
+Only affects large monster health.	只影响大型怪物的生命值。
+When joining a hub, the host's scaling settings are always used.	加入大厅时，始终使用主机的缩放设置。
+When playing a Village Quest from the Hub, first multiply the monster HP by this amount.	在大厅游玩村庄任务时，先将怪物 HP 乘以这个数值。
+This amount is then scaled again by the [Monster HP] settings.	然后这个数值会再按 [怪物 HP] 设置进行缩放。
+Default: 2.0	默认：2.0
+Language of the settings menu (F1, or Minus + Plus on a controller)	设置菜单的语言（F1，或手柄上的 Minus + Plus）
+English, Spanish	英语、西班牙语
+English, Spanish, Chinese	英语、西班牙语、中文
+Default: English	默认：英语
+Colours of the settings menu	设置菜单的颜色
+Gold, Blue, Hunter	金色、蓝色、猎人
+Default: Hunter	默认：猎人
+Size of the settings menu, in percent	设置菜单的大小，百分比
+Between 50 and 200	在 50 到 200 之间
+The game stops while the app is in the background (a phone: another app or the home screen), so it uses no battery there; it goes on where it was when you come back	应用在后台时（手机：另一个应用或主屏幕）游戏会停止，因此不会耗电；回来时会从原来的位置继续
+Ask before the game window closes (closing does not save the game)	关闭游戏窗口前询问（关闭不会保存游戏）
+What mhgurecomp-updater does when it is started: check GitHub for a newer release and ask before installing it, install it without asking, or only start the game. Starting mhgurecomp itself never checks or updates.	mhgurecomp-updater 启动时的行为：检查 GitHub 是否有新版本并在安装前询问、直接安装，或只启动游戏。启动 mhgurecomp 本身从不检查或更新。
+Ask, Auto, Off	询问、自动、关
+Default: Ask	默认：询问
+If enabled, the free online downloadable content (Event Quests, item packs, Palicoes) are automatically copied from the provided savegame inside the `bonus/` folder into your own savegame.	如果启用，免费的在线可下载内容（活动任务、物品包、随从猫）会从 `bonus/` 文件夹中提供的存档自动复制到你的存档。
+This only happens if your savegame hasn't received any downloadable content yet.	仅当你的存档尚未收到任何可下载内容时才会执行。
+The key that opens a line of chat, anywhere (in a quest too): a key's name as the settings menu shows it, or nothing for none	在任何地方（任务中也可以）打开一行聊天输入的按键：设置菜单中显示的按键名称，留空表示无
+Default: /	默认：/
+The glow around lights and the blur of what is far away. Off: faster on a weak phone. Low-end mode turns it off.	灯光周围的光晕以及远处景物的模糊。关闭：在低性能手机上更快。低端模式会关闭它。
+The echo of caves and rooms. Off: the sound is dry, and a weak phone's processor does less.	洞穴和房间的回声。关闭：声音干涩，低性能手机的处理器负担更小。
+The shadows of hunters, monsters and scenery. Off: a little faster on a weak phone.	猎人、怪物和场景的阴影。关闭：在低性能手机上稍快。
+Some Adreno drivers repeat the 3D picture in a grid at a low 3D resolution: Auto keeps 2x MSAA there. If the picture looks dark or flickers, or for more speed, choose Off.	某些 Adreno 驱动在低 3D 分辨率下会以网格状重复显示 3D 画面：自动会在那里保持 2x MSAA。如果画面发暗或闪烁，或者为了更快，请选择关闭。
+A host's IP address, to play over a VPN. Empty: searches your network.	主机的 IP 地址，用于通过 VPN 游玩。留空：搜索你的网络。
+A hub server's address (name or IP, and :port if it is not 39510), to play over the internet with everyone who uses the same server: their hubs show when you search for hubs in the game. Empty: none, only your network.	大厅服务器的地址（名称或 IP，如果不是 39510 则加上 :端口），用于和所有使用同一服务器的人在互联网上游戏：在游戏中搜索大厅时，他们的大厅会显示出来。留空：无，仅限你的网络。
+On the hub server, only players with the same key see each other's hubs: agree on one with your friends. Empty: public hubs.	在大厅服务器上，只有使用相同密钥的玩家才能看到彼此的大厅：和好友约定一个。留空：公开大厅。
+The health of large monsters in Hub quests, by number of hunters. When you join a hub, the host's values are used.	大厅任务中大型怪物的生命值，按猎人数。加入大厅时，使用主机的数值。
+How much of the scene you see: higher shows more.	你能看到多少场景：越高看得越多。
+On a screen wider than 16:9, where the HUD goes.	在宽于 16:9 的屏幕上，HUD 的位置。
+Movies and menu backdrops fill the screen, with a little cut above and below, instead of bars at the sides.	影片和菜单背景会填满屏幕，上下略有裁切，而不是在两侧显示黑边。
+The most frames a second. A lower limit heats the phone less and saves battery.	每秒最多帧数。限制越低，手机发热越少，也越省电。
+Shows the frame rate and the phone's temperature on the screen.	在屏幕上显示帧率和手机温度。
+Smooths the edges of 3D models. It asks more of the GPU.	平滑 3D 模型的边缘。对 GPU 要求更高。
+Smooths the edges of the whole picture. On Mali GPUs it can leave a green line at the edge of the screen.	平滑整个画面的边缘。在 Mali GPU 上可能会在屏幕边缘留下一条绿线。
+How far away people in towns are drawn: 1 is the game's distance, 2 twice as far, 0 no limit.	城镇中人物会被绘制的距离：1 是游戏的距离，2 是两倍远，0 无限制。
+The game's volume.	游戏的音量。
+Rebuilds the picture from a lower resolution. It needs a Vulkan 1.2 GPU.	从较低分辨率重建画面。需要 Vulkan 1.2 GPU。
+How low the resolution goes before the picture is rebuilt.	画面重建前分辨率会降到多低。
+How sharp FSR leaves the picture.	FSR 让画面保持多清晰。
+How A, B, X and Y are read on a controller. Position: as on the Switch. Label: by the letter printed on the button.	手柄上 A、B、X、Y 的读取方式。位置：与 Switch 相同。标签：按按键上印的字母。
+Auto: they show while no controller is connected.	自动：未连接手柄时显示。
+While the touch controls show, the HUD moves out of your thumbs' way.	显示触屏控制时，HUD 会移开拇指的位置。
+How far the camera turns for a drag.	拖动时镜头转动的幅度。
+How solid the touch controls look.	触屏控制的不透明度。
+A short vibration when you press a touch control.	按下触屏控制时的短震动。
+The game's rumble on the phone too, with or without a controller.	游戏的震动也会传到手机，无论是否连接手柄。
+The port for local play hubs. Everyone must use the same one.	本地游玩大厅的端口。所有人都必须使用同一个。
+Small monsters are the same for every player. Experimental: they may stop attacking.	小型怪物对每个玩家都相同。实验性：它们可能会停止攻击。
+In the Hub, L or R while choosing a quest shows the Village quests, to play them with others.	在大厅选择任务时按 L 或 R 会显示村庄任务，以便和其他人一起游玩。
+A Village quest played in the Hub first multiplies the monster's health by this.	在大厅游玩村庄任务时，会先将怪物的生命值乘以这个数值。
+The language of this menu.	此菜单的语言。
+The size of this menu.	此菜单的大小。
+The game stops while you are out of the app.	你离开应用时游戏会停止。
+Copies the free downloadable content (event quests, item packs, Palicoes) to a save that has not received it yet.	将免费可下载内容（活动任务、物品包、随从猫）复制到尚未收到它的存档。
+Comma	逗号
+Keypad Comma	小键盘逗号
+Semicolon	分号
+Keypad Hash	小键盘井号
+Mouse Left	鼠标左键
+Mouse Middle	鼠标中键
+Mouse Right	鼠标右键
+Mouse 4	鼠标 4
+Mouse 5	鼠标 5
+Wheel Up	滚轮上
+Wheel Down	滚轮下
+Sections	分区
+FOV multiplier	视野倍率
+HUD placement	HUD 位置
+Application audio	应用音频
+Master volume	主音量
+Allow controller input in the background	允许后台手柄输入
+Join addresses	加入地址
+Comma-separated host[:port] addresses. Use Local Wireless in MHGU. Internet hosts need port forwarding.	逗号分隔的 host[:port] 地址。在 MHGU 中使用本地无线。互联网主机需要端口转发。
+Synchronize small monsters	同步小型怪物
+Village quests at the Hub counter	大厅柜台处的村庄任务
+1.0 = original HP | 1 / 2 / 3 / 4 hunters	1.0 = 原始 HP | 1 / 2 / 3 / 4 名猎人
+1 / 2 / 3 / 4 hunters	1 / 2 / 3 / 4 名猎人
+Village quest HP in Hub	大厅中的村庄任务 HP
+Hunter factors	猎人倍率
+Remove	移除
+Add quest override	添加任务覆盖
+Confirm before closing	关闭前确认
+Import missing bonus content from donor save	从其他存档导入缺失的附赠内容
+Move panel inside game	在游戏内移动面板
+Exit game...	退出游戏...
+Saved. Restart for display, controls and network changes.	已保存。显示、控制和网络更改需重启生效。
+Save to apply. Unsaved changes are discarded on close.	保存以应用。未保存的更改会在关闭时丢弃。
+[X] Save	[X] 保存
+[Y] Undo changes	[Y] 撤销更改
+[B] Back	[B] 返回
+D-pad: Move   A: Select / edit   L / R: Section	十字键：移动   A：选择 / 编辑   L / R：分区
+Keep playing	继续游戏
+Close MHGU Recomp?	关闭 MHGU Recomp？
+Exit the game? Unsaved progress will be lost. Save in MHGU before closing.	退出游戏？未保存的进度将丢失。关闭前请在 MHGU 中保存。
+Move	移动
+Select	选择
+Undo	撤销
+Restart the game?	重启游戏？
+Unsaved game progress will be lost.	未保存的游戏进度将丢失。
+Settings will be saved.	设置将被保存。
+Render width (0 = Auto)	渲染宽度（0 = 自动）
+Render height (0 = Auto)	渲染高度（0 = 自动）
+Aspect ratio (0 = Auto)	宽高比（0 = 自动）
+Attack  X / A	攻击  X / A
+Dodge  B	翻滚  B
+Sheathe  Y	收刀  Y
+Run	奔跑
+Guard  R	防御  R
+Special  ZR	特殊  ZR
+Target  ZL	目标  ZL
+Camera  L	镜头  L
+Menu  +	菜单  +
+Map  -	地图  -
+Attacks	攻击
+Layout for bows and bowguns	弓与弩炮布局
+Fire / shoot	开火 / 射击
+Reload / melee	装填 / 近战
+Aim	瞄准
+Crouching fire / coating	蹲射 / 装瓶
+Ammo arrows	弹药箭头
+Item arrows	道具箭头
+ZL in menus	菜单中的 ZL
+ZR in menus	菜单中的 ZR
+Next ammo	下一发弹药
+Previous ammo	上一发弹药
+Layout: melee	布局：近战
+Layout: ranged	布局：远程
+Dodge (B)	翻滚（B）
+Guard (R)	防御（R）
+Sheathe (Y)	收刀（Y）
+Game menu (+)	游戏菜单（+）
+Minus (-)	Minus（-）
+Left stick click (L3)	左摇杆按下（L3）
+Right stick click (R3)	右摇杆按下（R3）
+Movement stick	移动摇杆
+ZR button on the screen	屏幕上的 ZR 按键
+Connected to the hub server %s	已连接到大厅服务器 %s
+Hub server %s not found	未找到大厅服务器 %s
+Can't reach the hub server %s	无法连接大厅服务器 %s
+Lost the connection to the hub server %s	与大厅服务器 %s 的连接已断开
+The hub server %s is busy	大厅服务器 %s 繁忙
+The hub server %s runs another version	大厅服务器 %s 运行的是其他版本
+The hub server %s refused the request	大厅服务器 %s 拒绝了请求
+The hub server %s did not answer	大厅服务器 %s 未响应
+Your hub is not listed online. Trying again...	你的大厅未在线列出。正在重试...
+Only hubs on your local network are shown.	仅显示本地网络中的大厅。
+Only hubs on your local network and Join addresses are shown.	仅显示本地网络和加入地址中的大厅。
+Could not join the hub.	无法加入大厅。
+Your hub is listed online again.	你的大厅已重新在线列出。
+The host did not answer through the hub server.	主机未通过大厅服务器响应。
+Discard	放弃
+Valid range	有效范围
+The game code (libmhgugame.so) does not fit this version of the app.\n\nMake it again with this version's tool, then open the game to choose the folder.	游戏代码（libmhgugame.so）与此版本的应用不匹配。\n\n请使用此版本的工具重新生成，然后打开游戏选择文件夹。
+Heavy attack  A	重攻击  A
+Light attack  X	轻攻击  X
+Attack and guard	攻击与防御
+Attacks: pill	攻击：胶囊
+Attacks: buttons	攻击：按键
+Attacks: corner	攻击：角落
+Attack  A / X	攻击  A / X
+Map  L3	地图  L3
+The game files were not found.\n\nOpen the game again to choose the folder with exefs and romfs.	未找到游戏文件。\n\n请重新打开游戏，选择包含 exefs 和 romfs 的文件夹。
+These game files are not version 1.4.0.\n\nOpen the game again to see what it needs and choose another folder.	这些游戏文件不是 1.4.0 版本。\n\n请重新打开游戏查看所需内容，并选择另一个文件夹。
+The game files are incomplete: romfs has %d files and version 1.4.0 has 35531%s.\n\nOpen the game again to see what it needs and choose another folder.	游戏文件不完整：romfs 有 %d 个文件，而 1.4.0 版本有 35531%s 个。\n\n请重新打开游戏查看所需内容，并选择另一个文件夹。
+, and its shader package is missing	，并且缺少着色器包
+The game stopped because of an error. The details are in log.txt, in Android/data/com.mhgu.recomp/files.	游戏因错误而停止。详细信息在 Android/data/com.mhgu.recomp/files 中的 log.txt 里。
+%s: to use it, set it up under the gear, Controls, Map a controller.	%s：要使用它，请在齿轮图标下的"操作"中设置"映射手柄"。
+A controller	一个手柄
+Controller not set up	手柄未设置

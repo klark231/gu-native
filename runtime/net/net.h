@@ -48,6 +48,10 @@ enum { HUB_UNKNOWN, HUB_CHECKING, HUB_OFF, HUB_ONLINE, HUB_NOT_FOUND, HUB_UNREAC
        HUB_BUSY, HUB_VERSION, HUB_REFUSED };
 int ldn_hub_status(const char *server, const char *key, int *ms, int *hubs);  // HUB_*
 void ldn_hub_check(const char *server, const char *key);  // asks the server for its hubs, in a thread
+// The room connections the saved crossplay settings keep (for the settings menu): ROOMS_YUZU, ROOMS_CITRA -> ROOM_*
+enum { ROOMS_YUZU, ROOMS_CITRA };
+enum { ROOM_OFF, ROOM_JOINING, ROOM_IN };
+int ldn_room_state(int kind);
 
 // The Room Browsers (runtime/net/webapi.c): a Web API's public room list (GET <url>/lobby), fetched in a thread.
 // WEBROOMS_YUZU: the Eden Web API (Yuzu-family rooms). WEBROOMS_CITRA: the Citra Web APIs (Azahar / Citra rooms, MH XX);

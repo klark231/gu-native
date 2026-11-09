@@ -110,13 +110,7 @@ static void boot(const char *root) {
 #include <dlfcn.h>
 #include "settings_locale.h"
 // A message before the settings are read: in the phone's language, as the settings' first run (config.c)
-static const char *boot_text(const char *english) {
-    int n = 0;
-    SDL_Locale **loc = SDL_GetPreferredLocales(&n);
-    bool spanish = loc && n > 0 && loc[0]->language && !SDL_strncasecmp(loc[0]->language, "es", 2);
-    SDL_free(loc);
-    return settings_text(spanish ? 1 : 0, english);
-}
+static const char *boot_text(const char *english) { return settings_text(MENU_LANG_AUTO, english); }
 // These files can't be played: GameFolderActivity shows what is wrong with them at the next start
 static void files_rejected(void) {
     const char *ext = SDL_GetAndroidExternalStoragePath();

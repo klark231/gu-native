@@ -407,6 +407,34 @@ fn parse_addr(server: &str) -> Option<(String, u16)> {
 }
 
 /// Joins the room at `server` (host[:port], default 24872). On success the fake address is returned.
+/// A room nickname as the rooms take one: 4 to 20 of letters, digits, space, '.', '_' and '-'.
+pub fn room_nick(s: &str) -> String {
+    let n: String = s.chars().filter(|c| c.is_ascii_alphanumeric() || " ._-".contains(*c)).take(20).collect();
+    let mut n = n.trim().to_string();
+    while n.len() < 4 {
+        n.push('_');
+    }
+    n
+}
+
+/// join, and if the nickname is taken in the room, the same with a number after it ("MHGU-2", ... "MHGU-5"); the
+/// first try is the name as typed (the room this app runs knows its own host by it).
+pub fn join_any_name(server: &str, nick: &str, password: &str) -> Result<[u8; 4], String> {
+    let mut last = match join(server, nick, password) {
+        Err(e) if e.contains("name is taken") => e,
+        r => return r,
+    };
+    let base = room_nick(nick);
+    for k in 2..=5 {
+        let name = room_nick(&format!("{}-{k}", &base[..base.len().min(17)]));
+        match join(server, &name, password) {
+            Err(e) if e.contains("name is taken") => last = e,
+            r => return r,
+        }
+    }
+    Err(last)
+}
+
 pub fn join(server: &str, nick: &str, password: &str) -> Result<[u8; 4], String> {
     leave();
     let (host, port) = parse_addr(server).ok_or("bad room address")?;

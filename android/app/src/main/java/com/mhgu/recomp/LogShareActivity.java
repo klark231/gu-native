@@ -51,7 +51,7 @@ public class LogShareActivity extends Activity {
 
     private TextView text(String s, int size, int color, boolean bold) {
         TextView t = new TextView(this);
-        t.setText(s);
+        t.setText(Zh.t(s));
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, size);
         t.setTextColor(color);
         t.setGravity(Gravity.CENTER);
@@ -69,7 +69,7 @@ public class LogShareActivity extends Activity {
 
     private Button button(String label, boolean strong) {
         Button b = new Button(this);
-        b.setText(label);
+        b.setText(Zh.t(label));
         b.setAllCaps(false);
         b.setTextColor(strong ? GOLD : CREAM);
         b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);

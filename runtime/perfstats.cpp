@@ -25,6 +25,7 @@
 #include "imgui.h"
 
 #include "config.h"
+#include "settings_locale.h"
 #include "perfstats.h"
 
 #define LOG(...) fprintf(stderr, __VA_ARGS__)
@@ -142,7 +143,8 @@ extern "C" void perfstats_draw(float w, float h) {
     if (fps < 0) return;  // (nothing measured yet)
 
     // the line: "60 FPS · 16.6 ms · max 24.1 · 38.5 °C (moderate)", the status only when there is one
-    bool es = config_language() == 1;
+    const int lang = config_language();
+    bool es = lang == MENU_LANG_ES;
     char f[16], ms[16], mx[16];
     snprintf(f, sizeof f, "%.0f", fps);
     decimal(ms, sizeof ms, avg_ms, es);
@@ -158,7 +160,7 @@ extern "C" void perfstats_draw(float w, float h) {
     add(avg_ms > 0 ? ms : "--", INK);
     add(" ms", GOLD);
     add(SEP, DIM);
-    add(es ? "m\xC3\xA1x " : "max ", GOLD);
+    add(es ? "m\xC3\xA1x " : lang == MENU_LANG_ZH ? settings_text(lang, "max ") : "max ", GOLD);
     add(mx, INK);
 #ifdef __ANDROID__
     static const char *const STATUS_EN[7] = {"", "light", "moderate", "severe", "critical", "emergency", "shutdown"};
@@ -175,7 +177,7 @@ extern "C" void perfstats_draw(float w, float h) {
     }
     if (st >= 1 && st <= 6) {
         if (t != INT_MIN) add(" (", GOLD); else add(SEP, DIM);
-        add(es ? STATUS_ES[st] : STATUS_EN[st], st >= 2 ? BAD : GOLD);
+        add(es ? STATUS_ES[st] : settings_text(lang, STATUS_EN[st]), st >= 2 ? BAD : GOLD);
         if (t != INT_MIN) add(")", GOLD);
     }
 #endif

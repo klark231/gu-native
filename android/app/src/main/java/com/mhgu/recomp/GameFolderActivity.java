@@ -111,9 +111,9 @@ public class GameFolderActivity extends Activity {
             verify(bad);
         } else if (chosen != null && !change) {
             status.setTextColor(ALERT);
-            status.setText(hasAccess()
+            status.setText(Zh.t(hasAccess()
                     ? (es ? "Ya no se encuentra la carpeta " + chosen + ". Elige dónde está ahora." : "The folder " + chosen + " is gone. Choose where it is now.")
-                    : (es ? "El juego perdió el permiso para leer la carpeta. Vuelve a darlo." : "The game lost its permission to read the folder. Please give it again."));
+                    : (es ? "El juego perdió el permiso para leer la carpeta. Vuelve a darlo." : "The game lost its permission to read the folder. Please give it again.")));
         }
     }
 
@@ -140,7 +140,7 @@ public class GameFolderActivity extends Activity {
 
     private TextView text(String s, int size, int color, boolean bold) {
         TextView t = new TextView(this);
-        t.setText(s);
+        t.setText(Zh.t(s));
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, size);
         t.setTextColor(color);
         if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
@@ -157,7 +157,7 @@ public class GameFolderActivity extends Activity {
 
     private Button button(String s, boolean main) {
         Button b = new Button(this);
-        b.setText(s);
+        b.setText(Zh.t(s));
         b.setAllCaps(false);
         b.setTextColor(main ? GOLD : CREAM);
         b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
@@ -170,14 +170,14 @@ public class GameFolderActivity extends Activity {
     /** The folder as it must look: folders in gold, what goes in them in cream. */
     private CharSequence tree() {
         String[] lines = {
-            es ? "Tu carpeta" : "Your folder",
+            es ? "Tu carpeta" : Zh.t("Your folder"),
             "├─ exefs",
             "│    main",
             "│    main.npdm",
             "│    rtld, sdk, subsdk0",
             "├─ romfs",
             "│    nativeNX",
-            es ? "│    ... 35.500 archivos" : "│    ... 35,500 files",
+            es ? "│    ... 35.500 archivos" : Zh.t("│    ... 35,500 files"),
             "├─ libmhgugame.so",
             "└─ libmhgugame.id",
         };
@@ -281,8 +281,8 @@ public class GameFolderActivity extends Activity {
     }
 
     private void refreshButton() {
-        if (pick != null) pick.setText(hasAccess() ? (es ? "Elegir carpeta" : "Choose folder")
-                                                   : (es ? "Dar permiso y elegir carpeta" : "Give permission and choose folder"));
+        if (pick != null) pick.setText(Zh.t(hasAccess() ? (es ? "Elegir carpeta" : "Choose folder")
+                                                   : (es ? "Dar permiso y elegir carpeta" : "Give permission and choose folder")));
     }
 
     // ---- reading any folder: the plain file paths the game uses need this permission
@@ -299,8 +299,8 @@ public class GameFolderActivity extends Activity {
         }
         waitingAccess = true;
         status.setTextColor(GOLD);
-        status.setText(es ? "Activa el acceso a todos los archivos y vuelve. El juego solo lee esa carpeta: no cambia nada."
-                          : "Turn on access to all files and come back. The game only reads that folder: it changes nothing.");
+        status.setText(Zh.t(es ? "Activa el acceso a todos los archivos y vuelve. El juego solo lee esa carpeta: no cambia nada."
+                          : "Turn on access to all files and come back. The game only reads that folder: it changes nothing."));
         try {
             startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + getPackageName())));
         } catch (ActivityNotFoundException e) {
@@ -335,7 +335,7 @@ public class GameFolderActivity extends Activity {
             startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), PICK);
         } catch (ActivityNotFoundException e) {
             status.setTextColor(ALERT);
-            status.setText(es ? "Este dispositivo no tiene selector de carpetas." : "This device has no folder picker.");
+            status.setText(Zh.t(es ? "Este dispositivo no tiene selector de carpetas." : "This device has no folder picker."));
         }
     }
 
@@ -473,8 +473,8 @@ public class GameFolderActivity extends Activity {
         File dir = pathOf(data.getData());
         if (dir == null) {
             status.setTextColor(ALERT);
-            status.setText(es ? "No se puede usar esa ubicación. Busca la carpeta en la memoria del teléfono o en la tarjeta SD."
-                              : "That location can't be used. Find the folder in the phone's storage or on the SD card.");
+            status.setText(Zh.t(es ? "No se puede usar esa ubicación. Busca la carpeta en la memoria del teléfono o en la tarjeta SD."
+                              : "That location can't be used. Find the folder in the phone's storage or on the SD card."));
             return;
         }
         verify(dir);
@@ -502,7 +502,7 @@ public class GameFolderActivity extends Activity {
     private void verify(File picked) {
         pick.setEnabled(false);
         status.setTextColor(GOLD);
-        status.setText(es ? "Comprobando los archivos..." : "Checking the files...");
+        status.setText(Zh.t(es ? "Comprobando los archivos..." : "Checking the files..."));
         new Thread(() -> {
             File[] ways = {picked, new File(picked, "data"), picked.getParentFile()};  // (or one level off)
             // (the game code changed folders or versions: what is kept goes with the new choice)
@@ -523,7 +523,7 @@ public class GameFolderActivity extends Activity {
                 pick.setEnabled(true);
                 if (problem != null) {
                     status.setTextColor(ALERT);
-                    status.setText(problem);
+                    status.setText(Zh.t(problem));
                 } else {
                     accept(found);
                 }
@@ -620,7 +620,7 @@ public class GameFolderActivity extends Activity {
         rejectedFile().delete();
         if (change) {
             status.setTextColor(GOLD);
-            status.setText(es ? "Listo: se usará la próxima vez que abras el juego." : "Done: it will be used the next time you open the game.");
+            status.setText(Zh.t(es ? "Listo: se usará la próxima vez que abras el juego." : "Done: it will be used the next time you open the game."));
             pick.setEnabled(false);
             return;
         }

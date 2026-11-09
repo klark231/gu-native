@@ -27,6 +27,7 @@
 #include <SDL3/SDL.h>
 
 #include "config.h"
+#include "settings_locale.h"
 #include "menu_confirm.h"
 #include "forge.h"
 #include "haptics.h"
@@ -553,13 +554,14 @@ static void joystick_seen(SDL_JoystickID id) {
         name ? name : "?", SDL_GetJoystickVendorForID(id), SDL_GetJoystickProductForID(id));
     if (name && (SDL_strcasestr(name, "consumer control") || SDL_strcasestr(name, "virtual") || SDL_strcasestr(name, "uinput")))
         return;  // (not a controller in the player's hands: pad_is_real)
-    bool es = config_language() == 1;
+    const int lang = config_language();
+    const bool es = lang == MENU_LANG_ES;
     char text[200];
     snprintf(text, sizeof text,
              es ? "%s: para usarlo, configúralo en el engranaje, Controles, Mapear un mando."
-                : "%s: to use it, set it up under the gear, Controls, Map a controller.",
-             name ? name : (es ? "Un mando" : "A controller"));
-    overlay_notice(es ? "Mando sin configurar" : "Controller not set up", text);
+                : settings_text(lang, "%s: to use it, set it up under the gear, Controls, Map a controller."),
+             name ? name : (es ? "Un mando" : settings_text(lang, "A controller")));
+    overlay_notice(es ? "Mando sin configurar" : settings_text(lang, "Controller not set up"), text);
 }
 
 static void pick_pad(void) {  // over every controller SDL sees now: those MHGU_PAD allows (all without it), first in use

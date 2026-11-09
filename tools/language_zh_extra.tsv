@@ -1,0 +1,183 @@
+# MHGU Recomp Chinese (简体中文) UI strings added beside tools/language_zh.tsv: English<TAB>Chinese, UTF-8.
+# The crossplay, room and touch layout strings. Same format: # or ; comments, \n \t \\ escapes.
+Drag to move  -  pinch or use - / + for its size	拖动移动  -  双指缩放或用 - / + 调整大小
+Items: tap to use, swipe to change - drag to move	道具：点按使用，滑动切换 - 拖动移动
+Buttons on the screen	屏幕上的按键
+Choose which of the game's buttons show on the screen, and add buttons of your own that press several at once.	选择游戏的哪些按键显示在屏幕上，并添加一次按下多个按键的自定义按键。
+Search	搜索
+Search rooms	搜索房间
+Shows only the rooms whose name, host or game has this text.	只显示名称、房主或游戏中包含此文字的房间。
+Last joined	上次加入
+Crossplay	跨平台联机
+Ryujinx	Ryujinx
+Yuzu Room	Yuzu 房间
+Mixed	混合
+Citra Room	Citra 房间
+Play with console emulators: Ryujinx (RyuLdn servers), Yuzu-family rooms (Eden, Suyu, Yuzu, Citron), or both at once (Mixed); or Citra Room: Azahar / Citra rooms, to play with Monster Hunter XX on the 3DS. Small monster sync and HP scaling are off in those hubs.	与主机模拟器一起游玩：Ryujinx（RyuLdn 服务器）、Yuzu 系房间（Eden、Suyu、Yuzu、Citron），或同时使用两者（混合）；或 Citra 房间：Azahar / Citra 房间，与 3DS 上的怪物猎人 XX 一起游玩。在这些大厅中，小型怪物同步和 HP 缩放会关闭。
+RyuLdn servers	RyuLdn 服务器
+Run a RyuLdn server	运行 RyuLdn 服务器
+RyuLdn port	RyuLdn 端口
+RyuLdn passphrase	RyuLdn 口令
+Yuzu Room server	Yuzu 房间服务器
+Run a Yuzu Room	运行 Yuzu 房间
+Yuzu Room port	Yuzu 房间端口
+Yuzu Room name	Yuzu 房间名称
+Adaptive	自适应
+Adaptive: the buttons change with what the game is doing. Traditional: an emulator's layout, the same always, with its own saved positions.	自适应：按键会随游戏中的操作而变化。传统：模拟器式布局，始终不变，并有单独保存的位置。
+Advanced	高级
+All Rooms	所有房间
+Azahar / Citra rooms, where Monster Hunter XX players are: the room browser, the room and its password.	Azahar / Citra 房间，怪物猎人 XX 玩家所在之处：房间浏览器、房间及其密码。
+Eden / Suyu players join this device's address and port. With All Rooms, this is the way that lets them meet your LAN, hub and MHXX players too.	Eden / Suyu 玩家会加入此设备的地址和端口。在"所有房间"模式下，这样他们也能与你的局域网、大厅和 MHXX 玩家相遇。
+Eden, Suyu, Yuzu and Citron players' rooms: run one on this device, or join one.	Eden、Suyu、Yuzu 和 Citron 玩家的房间：在此设备上运行一个，或加入一个。
+Hubs over the internet through a hub server: the server, the matchmaking key, and a check that it answers.	通过大厅服务器进行的互联网大厅：服务器、匹配密钥，以及检查它是否响应。
+In the hub	大厅内
+In the room	已在房间中
+Internet hubs	互联网大厅
+Joining...	正在加入...
+Leave the room	离开房间
+Leaves the Citra room and forgets it. The room browser finds it again.	离开 Citra 房间并忘记它。房间浏览器可以再次找到它。
+Lists the public Azahar / Citra rooms, where Monster Hunter XX players are. Pick one to join it; most players never need the rows below.	列出公开的 Azahar / Citra 房间，怪物猎人 XX 玩家就在那里。选择一个即可加入；大多数玩家用不到下面的选项。
+Lists the public Yuzu-family rooms (Eden, Suyu) from the Yuzu Web API. Pick one to join it.	列出 Yuzu Web API 中公开的 Yuzu 系房间（Eden、Suyu）。选择一个即可加入。
+Local play and hubs	本地游玩与大厅
+Or join one	或加入一个
+Play with console emulators: Ryujinx (RyuLdn servers), Yuzu-family rooms (Eden, Suyu, Yuzu, Citron), or both at once (Mixed); or Citra Room: Azahar / Citra rooms, to play with Monster Hunter XX on the 3DS. All Rooms: a hub you host is on the LAN / hub server, in the Yuzu room and in the Citra room at once, and this device passes everything between them. Small monster sync and HP scaling are off in those hubs.	与主机模拟器一起游玩：Ryujinx（RyuLdn 服务器）、Yuzu 系房间（Eden、Suyu、Yuzu、Citron），或同时使用两者（混合）；或 Citra 房间：Azahar / Citra 房间，与 3DS 上的怪物猎人 XX 一起游玩。所有房间：你创建的大厅同时出现在局域网 / 大厅服务器、Yuzu 房间和 Citra 房间中，由此设备在它们之间转发一切。在这些大厅中，小型怪物同步和 HP 缩放会关闭。
+Room nickname	房间昵称
+Run a room on this device	在此设备上运行房间
+Run a server on this device	在此设备上运行服务器
+Run with the stick	用摇杆奔跑
+Ryujinx (RyuLdn)	Ryujinx（RyuLdn）
+The RyuLdn servers Ryujinx players use, or one run on this device.	Ryujinx 玩家使用的 RyuLdn 服务器，或在此设备上运行的服务器。
+The stick pushed past its rim runs. Off: hold R to run, as with a controller.	摇杆推过边缘即奔跑。关闭：按住 R 奔跑，与手柄相同。
+This device	此设备
+This device, port %d	此设备，端口 %d
+Touch layout	触屏布局
+Traditional	传统
+Your name in the room's member list, in Yuzu Rooms and in Citra Rooms (your hunter's name in the game doesn't change). 4 to 20 letters, digits, spaces, dots, dashes or underscores; if someone in the room has it already, a number is added for that room.	你在 Yuzu 房间和 Citra 房间成员列表中的名字（游戏中猎人的名字不会改变）。4 到 20 个字母、数字、空格、点、短横线或下划线；如果房间里已有人使用，会为该房间加上一个数字。
+Yuzu Room password	Yuzu 房间密码
+Yuzu Web API URL	Yuzu Web API 地址
+Citra Room server	Citra 房间服务器
+Citra Room password	Citra 房间密码
+Citra Web API URL	Citra Web API 地址
+Citra Web API URL 2	Citra Web API 地址 2
+Citra Token	Citra 令牌
+Yuzu Room Browser	Yuzu 房间浏览器
+Citra Room Browser	Citra 房间浏览器
+Lists the public Yuzu-family rooms (Eden, Suyu) from the Yuzu Web API above. Pick one to join it.	列出上方 Yuzu Web API 中公开的 Yuzu 系房间（Eden、Suyu）。选择一个即可加入。
+Lists the public Azahar / Citra rooms from the Citra Web APIs above, where Monster Hunter XX players are. Pick one to join it.	列出上方 Citra Web API 中公开的 Azahar / Citra 房间，怪物猎人 XX 玩家就在那里。选择一个即可加入。
+Refresh	刷新
+Loading...	加载中...
+Asks the Yuzu Web API for the public rooms again.	再次向 Yuzu Web API 获取公开房间。
+Asks the Citra Web APIs for the public rooms again.	再次向 Citra Web API 获取公开房间。
+Incompatible	不兼容
+This room speaks another room protocol version than this app (Citra rooms: 4).	此房间使用的房间协议版本与本应用不同（Citra 房间：4）。
+Hide locked	隐藏加密房间
+Hides the rooms that need a password.	隐藏需要密码的房间。
+Hide full	隐藏已满房间
+Hides the rooms with no free place.	隐藏没有空位的房间。
+Hide empty	隐藏空房间
+Hides the rooms nobody is in.	隐藏无人的房间。
+Locked	已加密
+Host	房主
+Can't get the room list: %s	无法获取房间列表：%s
+No room matches the filters	没有符合筛选条件的房间
+No public rooms right now	当前没有公开房间
+Room password	房间密码
+Type the room's password.	输入房间的密码。
+Invalid crossplay mode, port, server, room name, password or Web API URL (no newlines, ';' or '#').	跨平台联机模式、端口、服务器、房间名称、密码或 Web API 地址无效（不能有换行、';' 或 '#'）。
+English	英语
+Español	西班牙语
+中文	中文
+Auto (phone language)	自动（手机语言）
+The language of this menu. Auto: the phone's language (English, Spanish or Chinese; English for any other).	此菜单的语言。自动：使用手机语言（英语、西班牙语或中文；其他语言为英语）。
+light	轻度
+moderate	中度
+severe	严重
+critical	危急
+emergency	紧急
+shutdown	即将关机
+max 	最高 
+# ---- the settings file's comments (desktop help texts, one ini line each)
+MHGU Recomp settings. Delete this file to reset to default settings, the file is regenerated.	MHGU Recomp 设置。删除此文件即可恢复默认设置，文件会重新生成。
+With RenderResolution Auto: the 3D picture's resolution, in percent of the screen's (lower = faster, softer)	RenderResolution 为自动时：3D 画面的分辨率，占屏幕的百分比（越低越快，也越模糊）
+Between 25 and 100	在 25 到 100 之间
+On a screen wider than 16:9, movies and the menus' backdrops fill it (a little is cut above and below) instead	在宽于 16:9 的屏幕上，影片和菜单背景会填满屏幕（上下略有裁切），
+of showing bars at the sides	而不是在两侧显示黑边
+How far away people in the villages and the Hubs are still drawn: 1 is the game's distance, 2 twice as far,	村庄和大厅中人物仍会被绘制的距离：1 是游戏的距离，2 是两倍远，
+0.5 half as far, 0 no limit	0.5 是一半，0 无限制
+Translate all of the game's shaders in the background at startup, so fewer things are drawn black the first time	启动时在后台翻译游戏的所有着色器，减少首次出现时
+they appear. The first start does this in about 20 seconds while the logos play; it needs about 340 MB in the cache folder.	被绘制成黑色的情况。首次启动会在播放标志时用约 20 秒完成；缓存文件夹中需要约 340 MB。
+Off, On or Toaster. On, for a weak phone: no bloom or depth of field, cheaper and smaller textures, and the HUD stays	关、开或烤面包机。开，面向低性能手机：无泛光和景深，纹理更省更小，HUD
+sharp over a smaller 3D picture. Toaster: all of that and more, for speed and the battery before looks: the HUD at	在较小的 3D 画面上保持清晰。烤面包机：以上全部再加更多，速度与续航优先于画面：HUD
+most 540 lines tall and lighter textures still. It does not change the resolution, the frame rate, Shadows, Bloom or	最高 540 线，纹理也更轻量。它本身不会更改分辨率、帧率、阴影、泛光或
+Reverb by itself: the menu's switch does that	混响：菜单中的开关会更改这些
+How long the game waits for a second button after the first, for inputs like X+A. Lenient: as long as at 30 fps	按下第一个按键后，游戏等待第二个按键的时间，用于 X+A 这类输入。宽松：在任何帧率下都相当于 30 fps
+(on the Switch) at any frame rate. Strict: a fixed number of frames, so the higher the frame rate, the closer	（Switch 上）的时长。严格：固定帧数，因此帧率越高，
+together both buttons have to be pressed	两个按键必须按得越接近
+The key that opens a line of chat, anywhere (in a quest too): a key's name as the settings menu shows it, or	在任何地方（任务中也可以）打开一行聊天输入的按键：设置菜单中显示的按键名称，
+nothing for none	留空表示无
+The lock-on, as in the newer games: the target icon or the right stick's click keep the camera on the monster,	锁定，与新作相同：目标图标或右摇杆按下会让镜头持续对准怪物，
+and a bow's or a bowgun's shots go to it. Off: the icon turns the camera to it once, as in the original game	弓和弩炮也会朝它射击。关闭：图标只把镜头转向它一次，与原版相同
+While they show, the HUD moves out of the thumbs' way: the status to the left edge, the item bar to the bottom	显示时，HUD 会移开拇指的位置：状态移到左边缘，道具栏移到底部
+middle, the Hunter Arts and the target camera to the top right	中间，狩技和目标镜头移到右上角
+The layout. Adaptive: the buttons change with what the game is doing (a hunt, a menu, a bow). Traditional: an	布局。自适应：按键随游戏中的操作变化（狩猎、菜单、弓）。传统：
+emulator's, the same always (A B X Y, L R ZL ZR, + -, the d-pad and the stick), with a layout file of its own	模拟器式布局，始终不变（A B X Y、L R ZL ZR、+ -、十字键和摇杆），有单独的布局文件
+Adaptive, Traditional	自适应、传统
+Default: Adaptive	默认：自适应
+Traditional: the stick pushed past its rim runs. Off: hold R to run, as with a controller	传统：摇杆推过边缘即奔跑。关闭：按住 R 奔跑，与手柄相同
+Which buttons the Traditional layout shows	传统布局显示哪些按键
+Which of the game's buttons are on the screen in a hunt. A hunt needs none of those off by default	狩猎时屏幕上显示游戏的哪些按键。默认关闭的那些在狩猎中都不是必需的
+With a bow or a bowgun in hand, a layout of their own in a hunt, and which of its buttons show	手持弓或弩炮时，狩猎中使用其专用布局，以及显示其中哪些按键
+Arrows beside the item bar. A swipe on the bar turns it too	道具栏旁的箭头。在道具栏上滑动也能切换
+Buttons of your own, each pressing several of the game's together: A+X, ZL+R, L+Up...	自定义按键，每个同时按下游戏中的多个按键：A+X、ZL+R、L+上...
+A B X Y L R ZL ZR Plus Minus Up Down Left Right L3 R3, joined by +	A B X Y L R ZL ZR Plus Minus Up Down Left Right L3 R3，用 + 连接
+ComboNPad: a controller's button that does the same: None, L3, R3, Minus, Guide, Misc, Paddle1 to Paddle4, Touchpad	ComboNPad：手柄上执行相同功能的按键：None、L3、R3、Minus、Guide、Misc、Paddle1 到 Paddle4、Touchpad
+The keys or mouse buttons for each Switch button, for moving (the left stick) and for turning the item bar	每个 Switch 按键、移动（左摇杆）和切换道具栏所用的键盘按键或鼠标键
+(ItemLeft / ItemRight: one item per press, in a hunt, without holding L).	（ItemLeft / ItemRight：狩猎中每按一次切换一个道具，无需按住 L）。
+Up to two each, separated by a comma, or None.	每项最多两个，用逗号分隔，或 None。
+Mouse buttons: Mouse Left, Mouse Right, Mouse Middle, Mouse 4, Mouse 5, Wheel Up, Wheel Down.	鼠标键：Mouse Left、Mouse Right、Mouse Middle、Mouse 4、Mouse 5、Wheel Up、Wheel Down。
+Esc, Insert, F1 and F7 to F12 are the recomp's own keys.	Esc、Insert、F1 以及 F7 到 F12 是 recomp 自用的按键。
+Default:	默认：
+Hub server for playing over the internet without port forwarding: hubs you create are listed there, and	用于在互联网上游戏而无需端口转发的大厅服务器：你创建的大厅会列在那里，
+Search Hubs shows its hubs next to the LAN's. host or host:port (default port 39510).	搜索大厅时也会在局域网大厅旁显示它的大厅。host 或 host:port（默认端口 39510）。
+Matchmaking key: hubs are only seen by players with the same key, so friends who all enter the same key	匹配密钥：只有使用相同密钥的玩家才能看到彼此的大厅，因此所有输入相同密钥的好友
+only see each other's hubs. Empty: public, your hubs are seen by (and you see) everyone without a key.	只能看到彼此的大厅。留空：公开，你的大厅会被没有密钥的所有人看到（你也能看到他们的大厅）。
+Crossplay mode: Off keeps native hubs only; Ryujinx uses RyuLdn servers; Yuzu Room uses Yuzu-family rooms (Eden, Suyu,	跨平台联机模式：关闭只使用原生大厅；Ryujinx 使用 RyuLdn 服务器；Yuzu 房间使用 Yuzu 系房间（Eden、Suyu、
+Yuzu, Citron); Mixed uses both at once; Citra Room plays with Monster Hunter XX players in Azahar / Citra rooms; All Rooms	Yuzu、Citron）；混合同时使用两者；Citra 房间与 Azahar / Citra 房间中的怪物猎人 XX 玩家一起游玩；所有房间
+hosts one hub on the LAN / hub server, in the Yuzu room and in the Citra room at once (this device relays between them;	让一个大厅同时出现在局域网 / 大厅服务器、Yuzu 房间和 Citra 房间中（由此设备在它们之间转发；
+the Yuzu room works best run here, RoomHost). Everyone must run the same game version (1.4.0). Small monster sync and HP	Yuzu 房间最好在此设备上运行，RoomHost）。所有人都必须运行相同的游戏版本（1.4.0）。小型怪物同步和 HP
+scaling are port features: they are off in crossplay hubs.	缩放是移植版的功能：在跨平台联机大厅中会关闭。
+RyuLdn server addresses, host[:port], comma separated. Default port: 30456. Empty: none (RyuHost can run one here).	RyuLdn 服务器地址，host[:port]，用逗号分隔。默认端口：30456。留空：无（RyuHost 可在此运行一个）。
+Run a RyuLdn server on this device for Ryujinx players. Others use this device's address and RyuPort.	在此设备上为 Ryujinx 玩家运行 RyuLdn 服务器。其他人使用此设备的地址和 RyuPort。
+Internet play needs port forwarding or a shared VPN.	互联网游玩需要端口转发或共享 VPN。
+TCP port of the RyuLdn server this device runs (1 to 65535).	此设备运行的 RyuLdn 服务器的 TCP 端口（1 到 65535）。
+Default: 30456	默认：30456
+RyuLdn lobby passphrase. Empty: public. A private lobby is Ryujinx- and eight hexadecimal digits, the same on every client.	RyuLdn 房间口令。留空：公开。私人房间为 Ryujinx- 加八位十六进制数，所有客户端必须相同。
+Yuzu-family room server, host[:port] (Eden, Suyu, Yuzu, Citron). Default port: 24872. Empty: no remote room.	Yuzu 系房间服务器，host[:port]（Eden、Suyu、Yuzu、Citron）。默认端口：24872。留空：无远程房间。
+The Yuzu Room Browser in the Network tab fills this in from the rooms the Yuzu (Eden) Web API lists.	网络标签页中的 Yuzu 房间浏览器会根据 Yuzu（Eden）Web API 列出的房间填写此项。
+Run a Yuzu-family room on this device. Others use this device's address and RoomPort.	在此设备上运行 Yuzu 系房间。其他人使用此设备的地址和 RoomPort。
+Port of the room this device runs (1 to 65535).	此设备运行的房间的端口（1 到 65535）。
+Default: 24872	默认：24872
+Your nickname in a room, and the name of the room this device runs.	你在房间中的昵称，以及此设备运行的房间的名称。
+Default: MHGU	默认：MHGU
+Room password. Empty: open. Everyone in the room uses the same one.	房间密码。留空：开放。房间里的所有人使用同一个。
+The Yuzu (Eden) Web API the Yuzu Room Browser asks for the list of public rooms (a host, or http:// / https:// and a host).	Yuzu 房间浏览器用来获取公开房间列表的 Yuzu（Eden）Web API（主机名，或 http:// / https:// 加主机名）。
+Eden and Suyu both come from Yuzu and share this room list.	Eden 和 Suyu 都源自 Yuzu，共用此房间列表。
+Default: api.ynet-fun.xyz	默认：api.ynet-fun.xyz
+The room the Room Browser joined last, kept so it is pinned at the top of the list. The browser writes these two.	房间浏览器上次加入的房间，保留以便固定在列表顶部。这两项由浏览器写入。
+Citra-family room server (Azahar, Citra), host[:port]. Default port: 24872. Empty: none. Crossplay = Citra Room plays	Citra 系房间服务器（Azahar、Citra），host[:port]。默认端口：24872。留空：无。跨平台联机 = Citra 房间时
+Monster Hunter XX (3DS) players in it. The Citra Room Browser in the Network tab fills this in.	与其中的怪物猎人 XX（3DS）玩家一起游玩。网络标签页中的 Citra 房间浏览器会填写此项。
+The Citra room's password. Empty: open.	Citra 房间的密码。留空：开放。
+The Citra Web API the Citra Room Browser asks for the public rooms (a host, or http:// / https:// and a host), and a	Citra 房间浏览器用来获取公开房间的 Citra Web API（主机名，或 http:// / https:// 加主机名），以及
+second one whose rooms are added to the list. Empty: off. The defaults are AzaharPlus's.	第二个，其房间会加入列表。留空：关闭。默认值与 AzaharPlus 相同。
+Default: http://88.198.47.46:5000 and http://3ds.mgn.pub:3000	默认：http://88.198.47.46:5000 和 http://3ds.mgn.pub:3000
+The token sent with a join request to a Citra room (an Azahar network token, or a room JWT). Empty: join anonymously,	加入 Citra 房间时随请求发送的令牌（Azahar 网络令牌或房间 JWT）。留空：匿名加入，
+which public rooms accept.	公开房间接受匿名加入。
+The Citra room the Citra Room Browser joined last, pinned at the top of the list. The browser writes these two.	Citra 房间浏览器上次加入的 Citra 房间，固定在列表顶部。这两项由浏览器写入。
+(Optional: quest-specific HP multipliers go here. Comma-separated per playercount, 1 line per quest. Example:)	（可选：在此填写特定任务的 HP 倍率。按玩家人数用逗号分隔，每个任务一行。示例：）
+The game stops while the app is in the background (a phone: another app or the home screen), so it uses no	应用在后台时（手机：另一个应用或主屏幕）游戏会停止，因此不会
+battery there; it goes on where it was when you come back	耗电；回来时会从原来的位置继续
+Language of the settings menu (F1, or Minus + Plus on a controller). Auto: the phone's (Chinese, Spanish, else English)	设置菜单的语言（F1，或手柄上的 Minus + Plus）。自动：使用手机语言（中文、西班牙语，否则为英语）
+Auto, English, Spanish, Chinese	自动、英语、西班牙语、中文
+Default: Auto	默认：自动
+What mhgurecomp-updater does when it is started: check GitHub for a newer release and ask before installing it,	mhgurecomp-updater 启动时的行为：检查 GitHub 是否有新版本并在安装前询问、
+install it without asking, or only start the game. Starting mhgurecomp itself never checks or updates.	直接安装，或只启动游戏。启动 mhgurecomp 本身从不检查或更新。

@@ -51,7 +51,7 @@ public class SaveExportActivity extends Activity {
 
     private TextView text(String s, int size, int color, boolean bold) {
         TextView t = new TextView(this);
-        t.setText(s);
+        t.setText(Zh.t(s));
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, size);
         t.setTextColor(color);
         if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
@@ -68,7 +68,7 @@ public class SaveExportActivity extends Activity {
 
     private Button button(String s, boolean strong) {
         Button b = new Button(this);
-        b.setText(s);
+        b.setText(Zh.t(s));
         b.setAllCaps(false);
         b.setTextColor(strong ? GOLD : CREAM);
         b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
@@ -139,7 +139,7 @@ public class SaveExportActivity extends Activity {
     }
 
     private void say(String s, boolean bad) {
-        status.setText(s);
+        status.setText(Zh.t(s));
         status.setTextColor(bad ? ALERT : GOLD);
     }
 

@@ -37,6 +37,7 @@ static void ImGui_ImplVulkan_UpdateTexture(ImTextureData *) {}
 #include "perfstats.h"
 #include "hle/chat.h"
 #include "settings_panel.h"
+#include "settings_locale.h"
 
 #define LOG(...) fprintf(stderr, __VA_ARGS__)
 
@@ -51,6 +52,44 @@ static std::atomic<bool> g_enabled, g_ready, g_open;
 static std::atomic<bool> g_settings_open, g_forge_open;
 static int g_menu_key;
 static float g_font_size;
+static ImFont *g_main_font;  // (the menu's; the CJK font is merged into it)
+static bool g_cjk_tried;
+
+// Chinese in the menu: the system's CJK font merged into the menu's (Roboto has no Chinese). Loaded only once Chinese
+// is shown, since it is big (about 20 MB read in); ImGui 1.92 makes its glyphs as they are first drawn.
+static void cjk_font_if_needed() {
+    if (g_cjk_tried || !settings_zh_used || !g_main_font) return;
+    g_cjk_tried = true;
+    static const struct { const char *path; int index; } fonts[] = {
+#ifdef _WIN32
+        {"C:/Windows/Fonts/msyh.ttc", 0}, {"C:/Windows/Fonts/msyh.ttf", 0}, {"C:/Windows/Fonts/simhei.ttf", 0},
+        {"C:/Windows/Fonts/simsun.ttc", 0},
+#else
+        // (Android's Noto CJK collection: 0 Japanese, 1 Korean, 2 Simplified Chinese, 3 Traditional)
+        {"/system/fonts/NotoSansCJK-Regular.ttc", 2}, {"/system/fonts/NotoSansSC-Regular.otf", 0},
+        {"/system/fonts/NotoSansHans-Regular.otf", 0}, {"/system/fonts/MiSansVF.ttf", 0},
+        {"/system/fonts/DroidSansFallbackFull.ttf", 0}, {"/system/fonts/DroidSansFallback.ttf", 0},
+        {"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 2},
+        {"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 2},
+        {"/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", 0},
+#endif
+    };
+    for (const auto &f : fonts) {
+        FILE *probe = fopen(f.path, "rb");
+        if (!probe) continue;
+        fclose(probe);
+        ImFontConfig cfg;
+        cfg.MergeMode = true;
+        cfg.DstFont = g_main_font;
+        cfg.FontNo = f.index;
+        cfg.SizePixels = g_font_size;
+        if (ImGui::GetIO().Fonts->AddFontFromFileTTF(f.path, g_font_size, &cfg)) {
+            LOG("[forge] Chinese glyphs from %s\n", f.path);
+            return;
+        }
+    }
+    LOG("[forge] no Chinese font found on this device: Chinese text shows as boxes\n");
+}
 static ImGuiStyle g_base_style;  // (unscaled; scaled copies follow the window's height)
 static float g_scale;
 
@@ -407,7 +446,7 @@ void overlay_init(const char *font_path, float font_size, int menu_key) {
         if (!font_path && access(p, R_OK) == 0) font_path = p;
 #endif
     ImFont *font = font_path ? io.Fonts->AddFontFromFileTTF(font_path, g_font_size, &cfg) : nullptr;
-    if (!font) io.Fonts->AddFontDefaultVector(&cfg);
+    g_main_font = font ? font : io.Fonts->AddFontDefaultVector(&cfg);
     ImGui::StyleColorsDark();
     forge_style(ImGui::GetStyle());
     ImGui::GetStyle().FontSizeBase = g_font_size;
@@ -560,6 +599,7 @@ void overlay_frame(void *cpu) {
         g_plugins_init = true;
         forge_imgui_init(cpu);
     }
+    cjk_font_if_needed();  // (before the frame: the atlas can't change inside one)
     ImGui_ImplVulkan_NewFrame();
     settings_panel_before_frame(g_settings_open);
     ImGui::NewFrame();

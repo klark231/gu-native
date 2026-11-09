@@ -179,7 +179,7 @@ pub extern "C" fn mhgu_room_join(
     server: *const c_char, nick: *const c_char, password: *const c_char, ip: *mut u8,
     err: *mut c_char, err_size: i32,
 ) -> bool {
-    match room::join(&cstr(server), &cstr(nick), &cstr(password)) {
+    match room::join_any_name(&cstr(server), &cstr(nick), &cstr(password)) {
         Ok(a) => {
             if !ip.is_null() { unsafe { std::ptr::copy_nonoverlapping(a.as_ptr(), ip, 4); } }
             true

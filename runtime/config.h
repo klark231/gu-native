@@ -12,6 +12,7 @@ enum { DISPLAY_WINDOWED, DISPLAY_FULLSCREEN, DISPLAY_BORDERLESS };
 enum { FACE_POSITION, FACE_LABEL };
 enum { COMBO_LENIENT, COMBO_STRICT };
 enum { TOUCH_AUTO, TOUCH_ON, TOUCH_OFF };  // [Touch] Controls (runtime/touch.cpp)  // [Controls] ComboInputWindow (runtime/hle/combowin.c)
+enum { TS_ADAPTIVE, TS_TRADITIONAL };     // [Touch] Layout: the game-aware layout, or an emulator's fixed one (touch.cpp)
 enum { MENU_CONFIRM_ORIGINAL, MENU_CONFIRM_SOUTH, MENU_CONFIRM_EAST };
 enum { FXAA_ORIGINAL, FXAA_311 };  // [Anti-aliasing] FXAAMode (runtime/nvn/vulkan/exec.c)
 
@@ -37,6 +38,8 @@ enum {
 enum { TB_ATTACKS, TB_DODGE, TB_GUARD, TB_SHEATHE, TB_PLUS, TB_MINUS, TB_DPAD, TB_L, TB_ZL, TB_ZR, TB_L3, TB_R3, TB_STICK,
        TB_RANGED, TB_FIRE, TB_SECOND, TB_AIM, TB_RSPECIAL, TB_AMMO, TB_ITEM_ARROWS, TB_MENU_ZL, TB_MENU_ZR, TB_COUNT };
 #define TOUCH_SHOW_DEFAULT {1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0}
+// Traditional shows all of a controller's buttons (TB_ATTACKS .. TB_STICK); the ranged ones don't apply to it
+#define TOUCH_SHOW_TRAD_DEFAULT {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}
 #define TOUCH_COMBOS 6
 // a controller's buttons a combined button can be on (the less used ones)
 enum { PADB_NONE, PADB_L3, PADB_R3, PADB_MINUS, PADB_GUIDE, PADB_MISC, PADB_PADDLE1, PADB_PADDLE2, PADB_PADDLE3, PADB_PADDLE4,
@@ -71,7 +74,7 @@ typedef struct {
     int background_input;     // the controller keeps working while the window is in the background (runtime/ui.c)
     int volume;               // host master volume, 0..100; independent of the game's music / SFX settings
     int button_icons;         // 0: Xbox, 1: Switch, 2: PlayStation (visual guides only)
-    int language;             // 0: English, 1: Spanish (host menu only)
+    int language;             // MENU_LANG_* (settings_locale.h): English, Spanish, Chinese or Auto (the phone's); host menu only
     int menu_scale;           // host UI text/layout scale, 50..200 percent
     int menu_confirm;         // independent confirmation policy for the host settings menu
     int confirm_exit;         // ask before closing the application
@@ -118,9 +121,13 @@ typedef struct {
     char touch_combo[TOUCH_COMBOS][32];  // [Touch] Combo1..: the game's buttons one screen button presses together
                                          // ("A+X"; config_combo_mask); "" none
     int touch_combo_pad[TOUCH_COMBOS];   // [Touch] Combo1Pad..: PADB_*, a controller's button that does the same
+    // (these three are set by name in CONFIG_DEFAULT_VALUES, like the crossplay fields below)
+    int touch_scheme;                    // [Touch] Layout: TS_*
+    int touch_auto_run;                  // [Touch] AutoRun: Traditional runs with the stick past its rim (off: R runs)
+    int touch_show_trad[TB_COUNT];       // [Touch] TradShow*: which buttons the Traditional layout shows
     // Crossplay (runtime/net/ldn.c, crates/mhgu-crossplay). Last in the struct on purpose: CONFIG_DEFAULT_VALUES (config.c)
     // sets these by name after the positional ones, so no other field moves.
-    int crossplay;            // [Multiplayer] Crossplay: XP_OFF, XP_RYU (Ryujinx LDN server), XP_ROOM (Yuzu rooms) or XP_MIXED
+    int crossplay;            // [Multiplayer] Crossplay: XP_* (Ryujinx LDN server, Yuzu rooms, Mixed, Citra rooms, All Rooms)
     char ryu_servers[256];    // [Multiplayer] RyuServers: RyuLdn servers (host[:port], comma separated)
     int ryu_host;             // [Multiplayer] RyuHost: run a RyuLdn server in this process
     int ryu_port;             // [Multiplayer] RyuPort: that server's TCP port
@@ -141,7 +148,8 @@ typedef struct {
     char last_citra_room[96];       // [Multiplayer] LastCitraRoom: "address:port" of the Citra room joined last
     char last_citra_room_name[64];  // [Multiplayer] LastCitraRoomName: and its name (empty: any name)
 } Config;
-enum { XP_OFF, XP_RYU, XP_ROOM, XP_MIXED, XP_CITRA };  // (XP_ROOM: Yuzu-family rooms; XP_CITRA: Citra-family / Azahar rooms, MH XX)
+enum { XP_OFF, XP_RYU, XP_ROOM, XP_MIXED, XP_CITRA, XP_ALL };  // (XP_ROOM: Yuzu-family rooms; XP_CITRA: Citra-family / Azahar
+// rooms, MH XX; XP_ALL: a hosted hub is on the LAN / hub server, in the Yuzu room and in the Citra room at once)
 #define WEB_API_DEFAULT_URL "api.ynet-fun.xyz"  // the Eden build's default (its web_api_url setting)
 #define CITRA_WEB_API_DEFAULT_URL "http://88.198.47.46:5000"    // AzaharPlus's defaults (its web_api_url and web_api_url_2)
 #define CITRA_WEB_API_DEFAULT_URL_2 "http://3ds.mgn.pub:3000"
@@ -237,6 +245,9 @@ int config_live_lock_on(void);
 int config_live_touch_show(int button);        // TB_*
 uint32_t config_live_touch_combo(int index);   // its buttons (config_combo_mask)
 int config_live_touch_combo_pad(int index);    // PADB_*
+int config_live_touch_scheme(void);            // [Touch] Layout: TS_*
+int config_live_touch_auto_run(void);          // [Touch] AutoRun
+int config_live_touch_show_trad(int button);   // [Touch] TradShow*: TB_*
 float config_live_touch_camera(void);
 float config_live_touch_opacity(void);
 int config_live_touch_vibration(void);  // [Touch] Vibration
@@ -252,7 +263,8 @@ void config_live_ldn(char *server, size_t server_size, char *key, size_t key_siz
 bool config_restart_required(const Config *draft); // Raw cold fields vs this process's startup INI values.
 float config_audio_gain(void);  // atomic, safe on audio threads; 0 while muted in the background
 void config_window_focus(bool focused);  // the window got / lost the focus (runtime/host_input.c)
-int config_language(void);     // last saved UI language, atomic across host threads
+int config_language(void);     // the saved UI language as it shows (Auto: the phone's), atomic across host threads
+void config_refresh_system_language(void);  // the phone's language may have changed (SDL_EVENT_LOCALE_CHANGED)
 bool config_confirm_exit(void); // atomic, safe on the host main thread
 
 #ifdef __cplusplus

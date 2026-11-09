@@ -15,6 +15,7 @@
 #include <SDL3/SDL.h>
 
 #include "config.h"
+#include "settings_locale.h"
 #include "rt.h"
 
 #include "keymap.h"
@@ -32,8 +33,9 @@
 #define CONFIG_DEFAULT_SIZE 1920, 1080
 #define CONFIG_DEFAULT_FXAA 1
 #endif
-#define CONFIG_DEFAULT_VALUES DISPLAY_BORDERLESS, CONFIG_DEFAULT_SIZE, 0, 0, 60, 1, 1, CONFIG_DEFAULT_FXAA, FACE_POSITION, 39500, "", 0, 1, 1, {{1, 1, 1, 1}, 2}, 1.0f, 0.0f, 1.0f, UI_CENTER, 1, 100, 0, 0, 100, MENU_CONFIRM_ORIGINAL, 1, 0, FSR_NATIVE, 0.8f, 1, 0.9f, 1, FSR_UP_3, UPDATES_ASK, 1, 1.0f, 0, COMBO_LENIENT, "", "", "/", FXAA_ORIGINAL, 0, DEFAULT_BINDS, THEME_HUNTER, 1, 1, 1, TOUCH_AUTO, 1, 1.0f, 0.8f, 100, 1, 1, 0, 1, 0, 1, \
+#define CONFIG_DEFAULT_VALUES DISPLAY_BORDERLESS, CONFIG_DEFAULT_SIZE, 0, 0, 60, 1, 1, CONFIG_DEFAULT_FXAA, FACE_POSITION, 39500, "", 0, 1, 1, {{1, 1, 1, 1}, 2}, 1.0f, 0.0f, 1.0f, UI_CENTER, 1, 100, 0, MENU_LANG_AUTO, 100, MENU_CONFIRM_ORIGINAL, 1, 0, FSR_NATIVE, 0.8f, 1, 0.9f, 1, FSR_UP_3, UPDATES_ASK, 1, 1.0f, 0, COMBO_LENIENT, "", "", "/", FXAA_ORIGINAL, 0, DEFAULT_BINDS, THEME_HUNTER, 1, 1, 1, TOUCH_AUTO, 1, 1.0f, 0.8f, 100, 1, 1, 0, 1, 0, 1, \
     1, 0, 1, 1, TOUCH_SHOW_DEFAULT, \
+    .touch_scheme = TS_ADAPTIVE, .touch_auto_run = 1, .touch_show_trad = TOUCH_SHOW_TRAD_DEFAULT, \
     .crossplay = XP_OFF, .ryu_servers = "", .ryu_host = 0, .ryu_port = 30456, .ryu_password = "", \
     .room_server = "", .room_host = 0, .room_port = 24872, .room_name = "MHGU", .room_password = "", \
     .web_api_url = WEB_API_DEFAULT_URL, \
@@ -248,6 +250,31 @@ static const char DEFAULT_INI[] =
     "; Default: On\n"
     "MoveHUD = On\n"
     "\n"
+    "; The layout. Adaptive: the buttons change with what the game is doing (a hunt, a menu, a bow). Traditional: an\n"
+    "; emulator's, the same always (A B X Y, L R ZL ZR, + -, the d-pad and the stick), with a layout file of its own\n"
+    "; Adaptive, Traditional\n"
+    "; Default: Adaptive\n"
+    "Layout = Adaptive\n"
+    "\n"
+    "; Traditional: the stick pushed past its rim runs. Off: hold R to run, as with a controller\n"
+    "; Default: On\n"
+    "AutoRun = On\n"
+    "\n"
+    "; Which buttons the Traditional layout shows\n"
+    "TradShowAttacks = On\n"
+    "TradShowDodge = On\n"
+    "TradShowGuard = On\n"
+    "TradShowSheathe = On\n"
+    "TradShowPlus = On\n"
+    "TradShowMinus = On\n"
+    "TradShowDpad = On\n"
+    "TradShowL = On\n"
+    "TradShowZL = On\n"
+    "TradShowZR = On\n"
+    "TradShowL3 = On\n"
+    "TradShowR3 = On\n"
+    "TradShowStick = On\n"
+    "\n"
     "; Which of the game's buttons are on the screen in a hunt. A hunt needs none of those off by default\n"
     "ShowAttacks = On\n"
     "ShowDodge = On\n"
@@ -357,7 +384,9 @@ static const char DEFAULT_INI[] =
     "Key =\n"
     "\n"
     "; Crossplay mode: Off keeps native hubs only; Ryujinx uses RyuLdn servers; Yuzu Room uses Yuzu-family rooms (Eden, Suyu,\n"
-    "; Yuzu, Citron); Mixed uses both at once. Everyone must run the same game version (1.4.0). Small monster sync and HP\n"
+    "; Yuzu, Citron); Mixed uses both at once; Citra Room plays with Monster Hunter XX players in Azahar / Citra rooms; All Rooms\n"
+    "; hosts one hub on the LAN / hub server, in the Yuzu room and in the Citra room at once (this device relays between them;\n"
+    "; the Yuzu room works best run here, RoomHost). Everyone must run the same game version (1.4.0). Small monster sync and HP\n"
     "; scaling are port features: they are off in crossplay hubs.\n"
     "; Default: Off\n"
     "Crossplay = Off\n"
@@ -504,10 +533,10 @@ static const char DEFAULT_INI[] =
     "; Default: On\n"
     "ConfirmExit = On\n"
     "\n"
-    "; Language of the settings menu (F1, or Minus + Plus on a controller)\n"
-    "; English, Spanish\n"
-    "; Default: English\n"
-    "Language = English\n"
+    "; Language of the settings menu (F1, or Minus + Plus on a controller). Auto: the phone's (Chinese, Spanish, else English)\n"
+    "; Auto, English, Spanish, Chinese\n"
+    "; Default: Auto\n"
+    "Language = Auto\n"
     "\n"
     "; Button icons in the settings menu\n"
     "; Xbox, Switch, PlayStation\n"
@@ -672,6 +701,21 @@ const ConfigSetting g_settings[] = {
     ON_OFF("Controls", "LockOn", lock_on, false),
     {"Touch", "Controls", SET_CHOICE, F(touch_controls), 0, 0, 0, "Auto,On,Off", NULL, false, ERR_MISC},
     ON_OFF("Touch", "MoveHUD", touch_hud, false),
+    {"Touch", "Layout", SET_CHOICE, F(touch_scheme), 0, 0, 0, "Adaptive,Traditional|emulator", NULL, false, ERR_MISC},
+    ON_OFF("Touch", "AutoRun", touch_auto_run, false),
+    ON_OFF("Touch", "TradShowAttacks", touch_show_trad[TB_ATTACKS], false),
+    ON_OFF("Touch", "TradShowDodge", touch_show_trad[TB_DODGE], false),
+    ON_OFF("Touch", "TradShowGuard", touch_show_trad[TB_GUARD], false),
+    ON_OFF("Touch", "TradShowSheathe", touch_show_trad[TB_SHEATHE], false),
+    ON_OFF("Touch", "TradShowPlus", touch_show_trad[TB_PLUS], false),
+    ON_OFF("Touch", "TradShowMinus", touch_show_trad[TB_MINUS], false),
+    ON_OFF("Touch", "TradShowDpad", touch_show_trad[TB_DPAD], false),
+    ON_OFF("Touch", "TradShowL", touch_show_trad[TB_L], false),
+    ON_OFF("Touch", "TradShowZL", touch_show_trad[TB_ZL], false),
+    ON_OFF("Touch", "TradShowZR", touch_show_trad[TB_ZR], false),
+    ON_OFF("Touch", "TradShowL3", touch_show_trad[TB_L3], false),
+    ON_OFF("Touch", "TradShowR3", touch_show_trad[TB_R3], false),
+    ON_OFF("Touch", "TradShowStick", touch_show_trad[TB_STICK], false),
     ON_OFF("Touch", "ShowAttacks", touch_show[TB_ATTACKS], false),
     ON_OFF("Touch", "ShowDodge", touch_show[TB_DODGE], false),
     ON_OFF("Touch", "ShowGuard", touch_show[TB_GUARD], false),
@@ -711,7 +755,7 @@ const ConfigSetting g_settings[] = {
     {"Multiplayer", "Join", SET_TEXT, F(ldn_join), sizeof g_config.ldn_join, 0, 0, NULL, NULL, true, ERR_NET},
     {"Multiplayer", "Server", SET_TEXT, F(ldn_server), sizeof g_config.ldn_server, 0, 0, NULL, NULL, false, ERR_SERVER},
     {"Multiplayer", "Key", SET_TEXT, F(ldn_key), sizeof g_config.ldn_key, 0, 0, NULL, NULL, false, ERR_SERVER},
-    {"Multiplayer", "Crossplay", SET_CHOICE, F(crossplay), 0, 0, 0, "Off,Ryujinx,Yuzu Room|Room|Yuzu|Eden|Suyu,Mixed,Citra Room|Citra|Azahar", NULL, false, ERR_XP},
+    {"Multiplayer", "Crossplay", SET_CHOICE, F(crossplay), 0, 0, 0, "Off,Ryujinx,Yuzu Room|Room|Yuzu|Eden|Suyu,Mixed,Citra Room|Citra|Azahar,All Rooms|All|Rooms", NULL, false, ERR_XP},
     {"Multiplayer", "RyuServers", SET_TEXT, F(ryu_servers), sizeof g_config.ryu_servers, 0, 0, NULL, NULL, false, ERR_XP},
     ON_OFF("Multiplayer", "RyuHost", ryu_host, false),
     {"Multiplayer", "RyuPort", SET_INT, F(ryu_port), 0, 1, 65535, NULL, NULL, false, ERR_XP},
@@ -746,7 +790,7 @@ const ConfigSetting g_settings[] = {
     ON_OFF("Audio", "Reverb", reverb, false),
     ON_OFF("Application", "PauseInBackground", pause_background, false),
     ON_OFF("Application", "ConfirmExit", confirm_exit, false),
-    {"Application", "Language", SET_CHOICE, F(language), 0, 0, 0, "English|en,Spanish|es", NULL, false, ERR_LANGUAGE},
+    {"Application", "Language", SET_CHOICE, F(language), 0, 0, 0, "English|en,Spanish|es|Español,Chinese|zh|中文|Simplified Chinese,Auto|System|Phone", NULL, false, ERR_LANGUAGE},
     {"Application", "ButtonIcons", SET_CHOICE, F(button_icons), 0, 0, 0, "Xbox,Switch,PlayStation", NULL, false, ERR_ICONS},
     {"Application", "Theme", SET_CHOICE, F(menu_theme), 0, 0, 0, "Gold,Blue,Hunter", NULL, false, ERR_MISC},
     {"Application", "MenuScale", SET_INT, F(menu_scale), 0, 50, 200, NULL, NULL, false, ERR_SCALE},
@@ -1131,23 +1175,8 @@ void config_load(void) {
     FILE *f = fopen(path, "r");
     if (!f) {
         FILE *o = fopen(path, "w");
-        const char *ini = DEFAULT_INI, *lang = NULL;
-#ifdef __ANDROID__
-        // (a phone set to Spanish: the settings menu in Spanish from the start)
-        int nloc = 0;
-        SDL_Locale **loc = SDL_GetPreferredLocales(&nloc);
-        bool spanish = loc && nloc > 0 && loc[0]->language && !SDL_strncasecmp(loc[0]->language, "es", 2);
-        SDL_free(loc);
-        if (spanish) lang = strstr(ini, "Language = English\n");
-#endif
-        if (o && lang) {
-            fwrite(ini, 1, (size_t)(lang - ini), o);
-            fputs("Language = Spanish\n", o);
-            fputs(lang + strlen("Language = English\n"), o);
-            fclose(o);
-            g_config.language = 1;
-            LOG("[config] wrote the default settings to %s (the menu in Spanish, as the system)\n", path);
-        } else if (o) {
+        const char *ini = DEFAULT_INI;  // (Language = Auto: the menu follows the phone's language from the start)
+        if (o) {
             fputs(ini, o);
             fclose(o);
             LOG("[config] wrote the default settings to %s\n", path);
@@ -1224,8 +1253,8 @@ void config_load(void) {
         const char *value = getenv(crossplay_env[i].env);
         if (!setting || !value) continue;
         if (setting->kind == SET_BOOL && (!strcmp(value, "0") || !strcmp(value, "1"))) value = *value == '0' ? "Off" : "On";
-        if (!strcmp(crossplay_env[i].key, "Crossplay") && strlen(value) == 1 && *value >= '0' && *value <= '3') {
-            static const char *const modes[] = {"Off", "Ryujinx", "Yuzu Room", "Mixed"};
+        if (!strcmp(crossplay_env[i].key, "Crossplay") && strlen(value) == 1 && *value >= '0' && *value <= '5') {
+            static const char *const modes[] = {"Off", "Ryujinx", "Yuzu Room", "Mixed", "Citra Room", "All Rooms"};
             value = modes[*value - '0'];
         }
         if (setting->kind == SET_TEXT && strlen(value) >= setting->field2) continue;

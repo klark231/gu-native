@@ -29,6 +29,18 @@
 // (touch_hud_piece / touch_hud_frame). While the port's settings menu is open, fingers are its mouse.
 // Shown while no controller is connected ([Touch] Controls = Auto), always (On) or never (Off).
 #include <SDL3/SDL.h>
+#ifdef _WIN32
+#include <io.h>
+#ifndef NOMINMAX
+#define NOMINMAX  // (std::min / std::max below)
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -363,14 +375,29 @@ bool load_layout(Layout *l) {
 }
 
 void save_layout(const Layout &l) {
-    FILE *f = fopen(layout_file(), "w");
+    // (to a temporary file, on the disk, then over the old one: the app closed or killed while saving keeps the old layout)
+    char temp[128];
+    snprintf(temp, sizeof temp, "%s.tmp", layout_file());
+    FILE *f = fopen(temp, "w");
     if (!f) { fprintf(stderr, "[touch] could not save %s\n", layout_file()); return; }
     fprintf(f, "# touch controls: name, centre (screen heights from its edge and the bottom), size\n");
     for (int i = 0; i < C_LAID; i++) fprintf(f, "%s %.4f %.4f %.3f\n", DEFS[i].key, l.x[i], l.y[i], l.scale[i]);
     fprintf(f, "# the game's HUD parts moved for touch: name, offset from their place (the game's 1280x720 units), 1\n");
     for (int k = 0; k < TZ_COUNT; k++) fprintf(f, "%s %.1f %.1f 1\n", ZONE_KEY[k], l.zx[k], l.zy[k]);
     fprintf(f, "attack_style %d 0 1\n", l.style);
-    fclose(f);
+    bool ok = fflush(f) == 0 && !ferror(f);
+#ifdef _WIN32
+    ok = ok && _commit(_fileno(f)) == 0;
+#else
+    ok = ok && fsync(fileno(f)) == 0;
+#endif
+    ok = fclose(f) == 0 && ok;
+#ifdef _WIN32
+    ok = ok && MoveFileExA(temp, layout_file(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+#else
+    ok = ok && rename(temp, layout_file()) == 0;
+#endif
+    if (!ok) { remove(temp); fprintf(stderr, "[touch] could not save %s (the old layout is kept)\n", layout_file()); return; }
     fprintf(stderr, "[touch] layout saved (%s)\n", layout_file());
 }
 

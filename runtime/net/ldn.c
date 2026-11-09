@@ -33,6 +33,7 @@
 #include "../kernel.h"
 #include "../overlay.h"
 #include "../settings_locale.h"
+#include "citra_room.h"
 #include "net.h"
 // Each caller thread owns one snapshot of the saved crossplay settings.
 static __thread Config xp_config;
@@ -73,6 +74,19 @@ extern void mhgu_room_send_proxy(const uint8_t *sip, uint16_t sport, const uint8
 extern bool mhgu_roomsrv_start(int port, const char *name, const char *password, const char *host_nick, char *err, int err_size);
 extern void mhgu_roomsrv_stop(void);
 extern bool mhgu_roomsrv_running(void);
+
+// "All Rooms": a hosted hub let into the Yuzu room too (crates/mhgu-crossplay/src/yuzu_door.rs)
+extern void mhgu_ydoor_set_hooks(void (*info)(const uint8_t *), void (*packet)(uint32_t, uint32_t, uint16_t, uint16_t, const uint8_t *, uint32_t));
+extern bool mhgu_ydoor_host(const uint8_t *hub);
+extern void mhgu_ydoor_update(const uint8_t *hub);
+extern void mhgu_ydoor_stop(void);
+extern void mhgu_ydoor_lost(void);
+extern void mhgu_ydoor_ldn(uint8_t type, const uint8_t *lip, const uint8_t *data, uint32_t len);
+extern void mhgu_ydoor_proxy(const uint8_t *sip, uint16_t sport, const uint8_t *dip, uint16_t dport, uint8_t proto, bool bc,
+                             const uint8_t *data, uint32_t len);
+extern void mhgu_ydoor_members(const uint8_t (*ips)[4], int n);
+extern void mhgu_ydoor_reject(uint32_t ip);
+extern void mhgu_ydoor_send(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport, const uint8_t *data, uint32_t len);
 
 extern void mhgu_xb_begin(const uint8_t *info, uint32_t host_ip, uint32_t mask);
 extern void mhgu_xb_end(void);
@@ -144,6 +158,9 @@ enum { DR_NONE, DR_BY_USER, DR_BY_SYSTEM, DR_DESTROYED_BY_USER, DR_DESTROYED_BY_
 #define R_VERSION_TOO_LOW LDN_RESULT(113)
 #define R_VERSION_TOO_HIGH LDN_RESULT(114)
 #define R_TOO_MANY_PLAYERS LDN_RESULT(144)
+
+enum { DOOR_NONE, DOOR_CITRA, DOOR_YUZU };
+enum { ORIGIN_HUB, ORIGIN_CITRA, ORIGIN_YUZU };  // where a packet into the hosted hub came from
 
 // ---- link protocol
 #define PROTO_MAGIC "MHGL"
@@ -227,11 +244,14 @@ static struct {
     bool room;                   // the network is a hub in a Yuzu-family room
     bool room_client[MAX_NODES]; // host: the room players in the hub, by node
     uint8_t room_cip[MAX_NODES][4];
+    bool citra;                  // the network is a 3DS one in a Citra-family room (MHXX players; citra_bridge.rs)
+    bool yuzu;                   // host, All Rooms: the hub is in the Yuzu room too (yuzu_door.rs)
+    uint8_t door_of[MAX_NODES];  // host: whose player is in each slot (DOOR_*; our own stations are DOOR_NONE)
 } L = {.mu = PTHREAD_MUTEX_INITIALIZER, .listen_s = BADSOCK, .disc_s = BADSOCK, .us = BADSOCK};
 
 // Scan results: where each found network's host is (hub: on the hub server at addr, 0: the host's own address).
 #define MAX_FOUND 32
-static struct { uint8_t bssid[6], session[16]; struct sockaddr_in addr; uint64_t hub; uint8_t info[NETINFO_SIZE]; int ryu; bool room; } found[MAX_FOUND];
+static struct { uint8_t bssid[6], session[16]; struct sockaddr_in addr; uint64_t hub; uint8_t info[NETINFO_SIZE]; int ryu; bool room, citra; } found[MAX_FOUND];
 static int nfound;
 
 static void signal_change(void) {
@@ -415,7 +435,7 @@ uint32_t ldn_own_ip(void) { return L.own_ip; }
 uint32_t ldn_broadcast_ip(void) { return L.subnet ? L.subnet | (L.ryu && L.ryu_mask ? ~L.ryu_mask : 0xFFu) : 0xFFFFFFFFu; }
 bool ldn_net_up(void) { return L.state == ST_AP_CREATED || L.state == ST_STATION_CONNECTED; }
 bool ldn_hosting(void) { return L.state == ST_AP_CREATED; }
-bool ldn_crossplay(void) { return L.ryu || L.room; }
+bool ldn_crossplay(void) { return L.ryu || L.room || L.citra || L.yuzu; }
 bool ldn_party(int *n, int *max, char *id, size_t size) {
     pthread_mutex_lock(&L.mu);
     bool up = ldn_net_up();
@@ -436,17 +456,24 @@ bool ldn_party(int *n, int *max, char *id, size_t size) {
 static bool udp_usable(const Link *l) { return l->udp_up && plat_now_ns() - l->udp_rx_ns < UDP_SILENCE_NS; }
 
 // Host: deliver to the host's own sockets and/or forward to the stations (from: the sending node, 0 = the host).
-static void host_route(int from, const VPacket *p, const void *data, uint32_t len) {
-    bool all = p->dst_ip == ldn_broadcast_ip() || p->dst_ip == 0xFFFFFFFFu;
+// Hosting in a Citra room / a Yuzu room too (All Rooms): what is for everyone, or for none of our own stations, also
+// goes to the doors (each passes on what is for its players; origin: the door it came from, it doesn't go back).
+static void host_route_ex(int from, int origin, const VPacket *p, const void *data, uint32_t len) {
+    bool all = p->dst_ip == ldn_broadcast_ip() || p->dst_ip == 0xFFFFFFFFu, ours = false;
     if (all || p->dst_ip == L.own_ip) vsock_deliver(p, data, len);
     for (int i = 1; i < MAX_NODES; i++) {
         Link *l = &L.nodes[i];
+        ours |= l->alive && l->ip == p->dst_ip;
         if (i == from || !l->alive || !(all || l->ip == p->dst_ip)) continue;
         hsock ds = L.disc_s;
         if (!(ds != BADSOCK && udp_usable(l) && udp_send(ds, &l->uaddr, l, U_DATA, p, data, len)))
             link_send(l, F_PACKET, p, sizeof *p, data, len);
     }
+    bool out = p->proto == VPROTO_UDP && (all || (!ours && p->dst_ip != L.own_ip));
+    if (out && L.citra && origin != ORIGIN_CITRA) mhgu_uds_send(p->src_ip, p->dst_ip, p->dst_port, data, len);
+    if (out && L.yuzu && origin != ORIGIN_YUZU) mhgu_ydoor_send(p->src_ip, p->dst_ip, p->src_port, p->dst_port, data, len);
 }
+static void host_route(int from, const VPacket *p, const void *data, uint32_t len) { host_route_ex(from, ORIGIN_HUB, p, data, len); }
 
 static void ip_bytes(uint32_t ip, uint8_t b[4]) { b[0] = (uint8_t)(ip >> 24); b[1] = (uint8_t)(ip >> 16); b[2] = (uint8_t)(ip >> 8); b[3] = (uint8_t)ip; }
 static void ryu_xmit(const VPacket *p, const void *data, uint32_t len) {
@@ -462,6 +489,10 @@ static void room_xmit(const VPacket *p, const void *data, uint32_t len) {
     mhgu_room_send_proxy(s, p->src_port, d, p->dst_port, 4, all, data, len);
 }
 void ldn_send(const VPacket *p, const void *data, uint32_t len) {
+    if (L.citra && L.state != ST_AP_CREATED) {  // (joined in the Citra room: the bridge plays this game's packets as a 3DS's)
+        if (ldn_net_up() && p->proto == VPROTO_UDP) mhgu_uds_send(p->src_ip, p->dst_ip, p->dst_port, data, len);
+        return;
+    }
     if (L.ryu || L.room) {  // (an emulator's network: its server or room carries the packets)
         if (!ldn_net_up()) return;
         if (L.ryu) ryu_xmit(p, data, len); else room_xmit(p, data, len);
@@ -479,7 +510,7 @@ void ldn_send(const VPacket *p, const void *data, uint32_t len) {
 
 // The port's own messages to every other game in the network (reliable, in order: the TCP link).
 void ldn_send_aux(const void *data, uint32_t len) {
-    if (L.ryu || L.room) return;  // (the emulators' players don't speak the port's messages)
+    if (L.ryu || L.room || (L.citra && L.state != ST_AP_CREATED)) return;  // (the emulators' players don't speak them)
     if (L.state == ST_AP_CREATED) {
         for (int i = 1; i < MAX_NODES; i++)
             if (L.nodes[i].alive) link_send(&L.nodes[i], F_AUX, data, len, NULL, 0);
@@ -591,6 +622,89 @@ static void ryu_stop(void) {
     vsock_network_down();
 }
 
+// ---- crossplay doors (Citra Room, All Rooms): players of a room in the hub this game hosts. ldn.c keeps the slots:
+// each door is told the hub without its own players (it sees the others as reachable through us) and hands back the
+// hub with them; they go in the slots no one else holds. Two taking one slot at once: the first keeps it.
+static void push_info_locked(int except);
+static bool link_slot_locked(int i) { return L.nodes[i].alive || L.nodes[i].has_thread; }
+static void door_recount_locked(void) {
+    int n = 1;
+    for (int i = 1; i < MAX_NODES; i++) n += node_at(L.info, i)[NODE_CONNECTED] ? 1 : 0;
+    L.info[NI_NODE_COUNT] = (uint8_t)n;
+}
+// the door's hub: its players into free slots (or its own); returns how many of its players lost a clash (their IPs in clash)
+static int door_merge_locked(int door, const uint8_t *info, uint32_t *clash) {
+    uint8_t copy[NETINFO_SIZE];
+    memcpy(copy, info, NETINFO_SIZE);
+    if (!info_sane(copy)) return 0;
+    int nclash = 0;
+    for (int i = 1; i < MAX_NODES; i++) {
+        uint8_t *mine = node_at(L.info, i), *theirs = node_at(copy, i);
+        bool held = link_slot_locked(i) || (L.door_of[i] != DOOR_NONE && L.door_of[i] != door);
+        if (held) {
+            if (theirs[NODE_CONNECTED] && memcmp(theirs + NODE_MAC, mine + NODE_MAC, 6)) clash[nclash++] = rd32(theirs + NODE_IP);
+            continue;
+        }
+        memcpy(mine, theirs, NODE_SIZE);
+        L.door_of[i] = mine[NODE_CONNECTED] ? (uint8_t)door : DOOR_NONE;
+    }
+    door_recount_locked();
+    return nclash;
+}
+static void door_drop_locked(int door) {  // (its room is gone)
+    for (int i = 1; i < MAX_NODES; i++)
+        if (L.door_of[i] == door) memset(node_at(L.info, i), 0, NODE_SIZE), L.door_of[i] = DOOR_NONE;
+    door_recount_locked();
+}
+// every door, of the hub without its own players (the doors hand nothing back here: safe under L.mu)
+static void door_sync_locked(void) {
+    if (L.state != ST_AP_CREATED) return;
+    for (int door = DOOR_CITRA; door <= DOOR_YUZU; door++) {
+        if (door == DOOR_CITRA ? !L.citra : !L.yuzu) continue;
+        uint8_t view[NETINFO_SIZE];
+        memcpy(view, L.info, NETINFO_SIZE);
+        int n = 1;
+        for (int i = 1; i < MAX_NODES; i++) {
+            if (L.door_of[i] == door) memset(node_at(view, i), 0, NODE_SIZE);
+            n += node_at(view, i)[NODE_CONNECTED] ? 1 : 0;
+        }
+        view[NI_NODE_COUNT] = (uint8_t)n;
+        if (door == DOOR_CITRA) mhgu_uds_host_update(view);
+        else mhgu_ydoor_update(view);
+    }
+}
+
+// ---- the Yuzu room as a door (All Rooms)
+static void ydoor_info_changed(const uint8_t *info) {
+    uint32_t clash[MAX_NODES];
+    int nclash = 0;
+    pthread_mutex_lock(&L.mu);
+    if (L.yuzu && info && L.state == ST_AP_CREATED) {
+        nclash = door_merge_locked(DOOR_YUZU, info, clash);
+        push_info_locked(0);
+    }
+    pthread_mutex_unlock(&L.mu);
+    for (int i = 0; i < nclash; i++) mhgu_ydoor_reject(clash[i]);
+    signal_change();
+}
+static void ydoor_packet(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport, const uint8_t *data, uint32_t len) {
+    if (!L.yuzu || L.state != ST_AP_CREATED) return;
+    VPacket p = {.src_ip = src, .dst_ip = dst, .src_port = sport, .dst_port = dport, .proto = VPROTO_UDP, .kind = 0};
+    host_route_ex(0, ORIGIN_YUZU, &p, data, len);
+}
+static void ydoor_lost(void) {
+    mhgu_ydoor_lost();
+    pthread_mutex_lock(&L.mu);
+    bool was = L.yuzu;
+    if (was) {
+        L.yuzu = false;
+        door_drop_locked(DOOR_YUZU);
+        push_info_locked(0);
+    }
+    pthread_mutex_unlock(&L.mu);
+    if (was) { LOG("[ldn] the Yuzu room is gone: its players left, the hub goes on\n"); signal_change(); }
+}
+
 // ---- crossplay: a Yuzu-family room
 static uint32_t ip_u32(const uint8_t b[4]) { return (uint32_t)b[0] << 24 | (uint32_t)b[1] << 16 | (uint32_t)b[2] << 8 | b[3]; }
 static void room_mac(uint8_t mac[6]) { uint8_t ip[4]; mhgu_room_own_ip(ip); mac[0] = 0x02, mac[1] = 0; memcpy(mac + 2, ip, 4); }
@@ -639,6 +753,10 @@ static bool room_in_hub_locked(uint32_t ip) {
 }
 
 static void room_ldn_received(uint8_t type, const uint8_t lip[4], const uint8_t rip[4], bool bc, const uint8_t *data, uint32_t len) {
+    if (L.yuzu) {  // (All Rooms: the hub is the door's to show)
+        if (type == RLDN_SCAN || type == RLDN_CONNECT || type == RLDN_DISCONNECT) mhgu_ydoor_ldn(type, lip, data, len);
+        return;
+    }
     if (mhgu_xb_active() && (type == RLDN_SCAN || type == RLDN_CONNECT || type == RLDN_DISCONNECT)) {
         mhgu_xb_room_ldn(type, lip, rip, bc, data, len);
         return;
@@ -743,6 +861,7 @@ static void room_ldn_received(uint8_t type, const uint8_t lip[4], const uint8_t 
 
 static void room_proxy_received(const uint8_t sip[4], uint16_t sport, const uint8_t dip[4], uint16_t dport, uint8_t proto, bool bc,
                                 const uint8_t *data, uint32_t len) {
+    if (L.yuzu) { mhgu_ydoor_proxy(sip, sport, dip, dport, proto, bc, data, len); return; }
     if (mhgu_xb_active()) { mhgu_xb_room_proxy(sip, sport, dip, dport, proto, bc, data, len); return; }
     if (!L.room || proto != 4) return;
     pthread_mutex_lock(&L.mu);
@@ -754,6 +873,7 @@ static void room_proxy_received(const uint8_t sip[4], uint16_t sport, const uint
 }
 
 static void room_members_changed(const uint8_t (*ips)[4], int n) {
+    if (L.yuzu) { mhgu_ydoor_members(ips, n); return; }
     if (mhgu_xb_active()) { mhgu_xb_room_members(ips, n); return; }
     bool changed = false;
     pthread_mutex_lock(&L.mu);
@@ -775,6 +895,7 @@ static void room_members_changed(const uint8_t (*ips)[4], int n) {
 }
 static void room_lost(void) {
     LOG("[room] the room connection ended\n");
+    if (L.yuzu) { ydoor_lost(); return; }
     mhgu_xb_end();
     bool gone = false;
     pthread_mutex_lock(&L.mu);
@@ -785,6 +906,104 @@ static void room_lost(void) {
     }
     pthread_mutex_unlock(&L.mu);
     if (gone) { vsock_network_down(); signal_change(); }
+}
+
+// ---- crossplay: a Citra-family room (Azahar, Citra): Monster Hunter XX players' 3DS networks. The bridge
+// (crates/mhgu-crossplay/src/citra_bridge.rs) is one 3DS in the room: it lists MHXX players' networks, joins them,
+// and hosts this game's network for them; it hands us an nn::ldn network for each.
+// The bridge's network: hosting, its MHXX players go in the slots our own stations don't hold (a clash, both taking
+// one slot at once: ours keeps it, the MHXX player is sent away); joined, it is the network.
+static void citra_info_changed(const uint8_t *info) {
+    bool gone = false;
+    uint32_t clash[MAX_NODES];
+    int nclash = 0;
+    pthread_mutex_lock(&L.mu);
+    if (L.citra && info && L.state == ST_AP_CREATED) {
+        nclash = door_merge_locked(DOOR_CITRA, info, clash);
+        push_info_locked(0);  // (our stations, the hub server's list and the other door hear of it)
+    } else if (L.citra && info) {
+        uint8_t copy[NETINFO_SIZE];
+        memcpy(copy, info, NETINFO_SIZE);
+        if (ldn_net_up() && info_sane(copy)) memcpy(L.info, copy, NETINFO_SIZE);
+    } else if (L.citra && L.state == ST_AP_CREATED) {
+        // the room is gone: its players with it; the network goes on for everyone else
+        L.citra = false;
+        door_drop_locked(DOOR_CITRA);
+        push_info_locked(0);
+        LOG("[ldn] the Citra room is gone: its players left, the hub goes on\n");
+    } else if (L.citra && L.state == ST_STATION_CONNECTED) {
+        L.state = ST_ERROR, L.reason = DR_SIGNAL_LOST, gone = true;
+        L.citra = false, L.own_ip = L.subnet = 0;
+    }
+    pthread_mutex_unlock(&L.mu);
+    for (int i = 0; i < nclash; i++) mhgu_uds_reject(clash[i]);
+    if (gone) { LOG("[ldn] the network in the Citra room is gone\n"); vsock_network_down(); }
+    signal_change();
+}
+static void citra_packet(uint32_t src, uint32_t dst, const uint8_t *data, uint32_t len) {
+    if (!L.citra || !ldn_net_up()) return;
+    VPacket p = {.src_ip = src, .dst_ip = dst, .src_port = 12345, .dst_port = 12345, .proto = VPROTO_UDP, .kind = 0};
+    if (L.state == ST_AP_CREATED) host_route_ex(0, ORIGIN_CITRA, &p, data, len);  // (to us, our stations, the other door)
+    else vsock_deliver(&p, data, len);
+}
+static void host_stop(uint32_t reason);
+static void citra_stop(void) {  // leaves the network (the room stays); hosting, our own host closes too
+    if (!L.citra) return;
+    bool host = L.state == ST_AP_CREATED;
+    if (host) mhgu_uds_host_stop();
+    else mhgu_uds_leave();
+    L.citra = false;
+    if (host) host_stop(DR_DESTROYED_BY_USER);
+    vsock_network_down();
+}
+static bool citra_configured(void) {
+    return (xp_config.crossplay == XP_CITRA || xp_config.crossplay == XP_ALL) && xp_config.citra_room_server[0];
+}
+
+static pthread_t citra_keep_th;
+static pthread_mutex_t citra_keep_mu = PTHREAD_MUTEX_INITIALIZER;
+static bool citra_keep_started;
+static int citra_wanted;
+static Config citra_keep_config;
+static void *citra_keeper(void *arg) {
+    (void)arg;
+    xp_config = citra_keep_config;  // (the settings applied when it started)
+    uint64_t next = 0;
+    while (__atomic_load_n(&citra_wanted, __ATOMIC_ACQUIRE)) {
+        uint64_t now = plat_now_ns();
+        if (now >= next && citra_configured() && !mhgu_uds_ready()) {
+            char err[96] = "";
+            if (!mhgu_uds_start(xp_config.citra_room_server, xp_config.room_name, xp_config.citra_room_password,
+                                xp_config.citra_token, err, sizeof err)) {
+                LOG("[ldn] joining the Citra room %s failed: %s\n", xp_config.citra_room_server, err);
+                next = now + 15000000000ull;
+            }
+        }
+        plat_sleep_until_ns(plat_now_ns() + 500000000ull);
+    }
+    return NULL;
+}
+static void citra_start(void) {
+    if (!citra_configured()) return;
+    pthread_mutex_lock(&citra_keep_mu);
+    if (!citra_keep_started) {
+        citra_keep_config = xp_config;
+        __atomic_store_n(&citra_wanted, 1, __ATOMIC_RELEASE);
+        if (!pthread_create(&citra_keep_th, NULL, citra_keeper, NULL)) citra_keep_started = true;
+        else __atomic_store_n(&citra_wanted, 0, __ATOMIC_RELEASE);
+    }
+    pthread_mutex_unlock(&citra_keep_mu);
+}
+static void citra_shutdown(void) {
+    pthread_mutex_lock(&citra_keep_mu);
+    __atomic_store_n(&citra_wanted, 0, __ATOMIC_RELEASE);
+    if (citra_keep_started) {
+        pthread_join(citra_keep_th, NULL);
+        citra_keep_started = false;
+    }
+    citra_stop();
+    mhgu_uds_stop();
+    pthread_mutex_unlock(&citra_keep_mu);
 }
 
 static void mixed_bridge_start(void) {
@@ -798,7 +1017,7 @@ static bool ryu_configured(void) {
            (xp_config.ryu_servers[0] || xp_config.ryu_host);
 }
 static bool room_configured(void) {
-    return (xp_config.crossplay == XP_ROOM || xp_config.crossplay == XP_MIXED) &&
+    return (xp_config.crossplay == XP_ROOM || xp_config.crossplay == XP_MIXED || xp_config.crossplay == XP_ALL) &&
            (xp_config.room_server[0] || xp_config.room_host);
 }
 static char roomsrv_self[32];
@@ -836,6 +1055,11 @@ static void *room_keeper(void *arg) {
     }
     return NULL;
 }
+int ldn_room_state(int kind) {
+    if (kind == ROOMS_CITRA) return mhgu_uds_ready() ? ROOM_IN : __atomic_load_n(&citra_wanted, __ATOMIC_ACQUIRE) ? ROOM_JOINING : ROOM_OFF;
+    return mhgu_room_connected() ? ROOM_IN : __atomic_load_n(&room_wanted, __ATOMIC_ACQUIRE) ? ROOM_JOINING : ROOM_OFF;
+}
+
 static void room_start(void) {
     if (!room_enabled()) return;
     pthread_mutex_lock(&room_keep_mu);
@@ -917,11 +1141,15 @@ static void crossplay_prepare(void) {
         applied.room_host != xp_config.room_host || applied.room_port != xp_config.room_port ||
         strcmp(applied.room_server, xp_config.room_server) || strcmp(applied.room_name, xp_config.room_name) ||
         strcmp(applied.room_password, xp_config.room_password));
+    bool citra_changed = prepared && (applied.crossplay != xp_config.crossplay ||
+        strcmp(applied.citra_room_server, xp_config.citra_room_server) || strcmp(applied.room_name, xp_config.room_name) ||
+        strcmp(applied.citra_room_password, xp_config.citra_room_password) || strcmp(applied.citra_token, xp_config.citra_token));
     bool ryu_changed = prepared && (applied.crossplay != xp_config.crossplay ||
         applied.ryu_host != xp_config.ryu_host || applied.ryu_port != xp_config.ryu_port ||
         strcmp(applied.ryu_servers, xp_config.ryu_servers) || strcmp(applied.ryu_password, xp_config.ryu_password));
     if (!active) {
         if (room_changed) { room_shutdown(); roomsrv_unwanted(); }
+        if (citra_changed) citra_shutdown();
         if (ryu_changed) ryusrv_unwanted();
         applied = xp_config;
         prepared = true;
@@ -934,6 +1162,7 @@ static void crossplay_prepare(void) {
         roomsrv_wanted();
         room_start();
     }
+    if (citra_configured()) citra_start();
     pthread_mutex_unlock(&prepare_mu);
 }
 
@@ -942,6 +1171,7 @@ static void push_info_locked(int except) {  // to every station (and the hub ser
     for (int i = 1; i < MAX_NODES; i++)
         if (i != except && L.nodes[i].alive) link_send(&L.nodes[i], F_INFO, L.info, NETINFO_SIZE, NULL, 0);
     L.lobby_dirty = true;
+    door_sync_locked();  // (and the doors' players: Citra room, Yuzu room)
 }
 
 // A station's connection: accepted here, or opened to the hub server for a player it announced (relay_pair != 0).
@@ -980,7 +1210,8 @@ static void *station_thread(void *arg) {
     else if (L.accept_policy == 1) refuse = R_CONNECT_REJECTED;  // RejectAll
     else if (L.info[NI_NODE_COUNT] >= L.info[NI_NODE_MAX]) refuse = R_TOO_MANY_PLAYERS;
     else {
-        for (slot = 1; slot < MAX_NODES && (L.nodes[slot].alive || L.nodes[slot].has_thread); slot++) {}
+        for (slot = 1; slot < MAX_NODES && (L.nodes[slot].alive || L.nodes[slot].has_thread ||
+                                            L.door_of[slot] != DOOR_NONE); slot++) {}
         if (slot >= MAX_NODES || slot >= L.info[NI_NODE_MAX]) refuse = R_TOO_MANY_PLAYERS;
     }
     if (refuse) {
@@ -1521,6 +1752,8 @@ static bool host_start(void) {
 }
 
 static void host_stop(uint32_t reason) {  // (caller: not holding L.mu)
+    if (L.yuzu) { mhgu_ydoor_stop(); L.yuzu = false; }
+    memset(L.door_of, 0, sizeof L.door_of);
     lobby_host_stop();
     if (L.hosting) {
         L.hosting = false;
@@ -1756,6 +1989,8 @@ HLE_FUNC("_ZN2nn3ldn10InitializeEv", ldn_initialize) { NTRACE();
     if (!hooked) {
         hooked = true;
         mhgu_ryu_set_hooks(ryu_lobby_changed, ryu_data_received);
+        mhgu_uds_set_hooks(citra_info_changed, citra_packet);
+        mhgu_ydoor_set_hooks(ydoor_info_changed, ydoor_packet);
     }
     crossplay_snapshot();
     mhgu_ryu_set_config(xp_config.ryu_servers, "", xp_config.ryu_password);
@@ -1763,6 +1998,7 @@ HLE_FUNC("_ZN2nn3ldn10InitializeEv", ldn_initialize) { NTRACE();
         ryusrv_wanted();
         roomsrv_wanted();
         room_start();
+        citra_start();
         L.state = ST_INITIALIZED, L.reason = DR_NONE;
         rand_bytes(L.mac, 6);
         L.mac[0] = (uint8_t)((L.mac[0] & 0xFC) | 0x02);  // locally administered, unicast
@@ -1775,9 +2011,10 @@ HLE_FUNC("_ZN2nn3ldn10InitializeEv", ldn_initialize) { NTRACE();
 
 static void to_initialized(void) {
     int st = L.state;
-    if (L.ryu || L.room) {
+    if (L.ryu || L.room || L.citra) {
         if (L.ryu) ryu_stop();
-        else room_stop();
+        else if (L.room) room_stop();
+        else citra_stop();
         L.own_ip = L.subnet = 0;
         return;
     }
@@ -1791,6 +2028,7 @@ HLE_FUNC("_ZN2nn3ldn8FinalizeEv", ldn_finalize) { NTRACE();
     lan_wifi(false);
     to_initialized();
     room_shutdown();
+    citra_shutdown();
     roomsrv_unwanted();
     ryusrv_unwanted();
     L.state = ST_NONE;
@@ -1881,9 +2119,15 @@ static uint32_t create_network(const uint8_t *cfg, const uint8_t *sec, const uin
     if (L.state != ST_ACCESS_POINT) return R_INVALID_STATE;
     crossplay_prepare();
     if (ryu_configured()) return create_ryu(cfg, sec, user);
-    bool via_room = room_configured() && mhgu_room_connected();
-    if (room_configured() && !via_room) return R_CONNECT_FAILURE;  // (a Yuzu Room hub needs the room)
+    // All Rooms: our own host, and each room we're in (none: the LAN / hub server only)
+    const bool all = xp_config.crossplay == XP_ALL;
+    bool via_room = !all && room_configured() && mhgu_room_connected();
+    if (!all && room_configured() && !via_room) return R_CONNECT_FAILURE;  // (a Yuzu Room hub needs the room)
     if (via_room) room_mac(L.mac);
+    bool via_citra = !via_room && citra_configured() && (!all || mhgu_uds_ready());
+    if (via_citra && !mhgu_uds_ready()) return R_CONNECT_FAILURE;  // (a Citra Room network needs the room)
+    if (via_citra) mhgu_uds_mac(L.mac);  // (its beacons come from this member's MAC)
+    bool via_yuzu = all && room_configured() && mhgu_room_connected();
     pthread_mutex_lock(&L.mu);
     memset(L.info, 0, NETINFO_SIZE);
     memcpy(L.info, cfg, 0x10);  // IntentId
@@ -1915,6 +2159,9 @@ static uint32_t create_network(const uint8_t *cfg, const uint8_t *sec, const uin
         L.own_ip = ip_u32(ip), L.subnet = L.own_ip & 0xFFFFFF00u;
         memset(L.room_client, 0, sizeof L.room_client);
         memcpy(L.info + NI_SSID, "\x12YuzuFakeSsidForLdn", 19);  // (what the emulators' scans expect)
+    } else if (via_citra) {
+        L.subnet = mhgu_uds_subnet();  // (169.254.x.0 from our MAC: the phones that join work it out the same way)
+        L.own_ip = L.subnet | 1;
     } else {
         L.subnet = 0xA9FE0000u | (uint32_t)(1 + arc4random() % 254) << 8;  // 169.254.x.0/24
         L.own_ip = L.subnet | 1;
@@ -1932,11 +2179,24 @@ static uint32_t create_network(const uint8_t *cfg, const uint8_t *sec, const uin
     memcpy(L.info + NI_AUTH_ID, &auth, 8);
     memset(L.nodes, 0, sizeof L.nodes);
     for (int i = 0; i < MAX_NODES; i++) pthread_mutex_init(&L.nodes[i].wmu, NULL);
+    uint8_t hosted[NETINFO_SIZE];
+    memcpy(hosted, L.info, NETINFO_SIZE);
     pthread_mutex_unlock(&L.mu);
+    memset(L.door_of, 0, sizeof L.door_of);
+    bool hosted_here = false;
     if (via_room) L.room = true;
-    else host_start();
+    else {
+        // our own host (LAN, hub server), and the room doors: one network, every kind of player
+        if (via_citra) L.citra = mhgu_uds_host(hosted);
+        if (via_yuzu) L.yuzu = mhgu_ydoor_host(hosted);
+        hosted_here = host_start();
+        if (!hosted_here && (L.citra || L.yuzu)) LOG("[ldn] no LAN / hub server players: only the rooms'\n");
+    }
+    if (via_citra && !L.citra && !all) return R_CONNECT_FAILURE;
     L.state = ST_AP_CREATED;
-    LOG("[ldn] network created%s: %s, up to %d players, version %u\n", via_room ? " in the room" : "", ipstr(L.own_ip), L.info[NI_NODE_MAX], L.lcv);
+    LOG("[ldn] network created%s%s%s%s: %s, up to %d players, version %u\n", via_room ? " in the Yuzu room" : "",
+        hosted_here ? " on the LAN / hub server" : "", L.citra ? ", in the Citra room" : "", L.yuzu ? ", in the Yuzu room" : "",
+        ipstr(L.own_ip), L.info[NI_NODE_MAX], L.lcv);
     signal_change();
     return 0;
 }
@@ -1955,6 +2215,7 @@ HLE_FUNC("_ZN2nn3ldn14DestroyNetworkEv", ldn_destroy) { NTRACE();
     if (L.state != ST_AP_CREATED) { RET(R_INVALID_STATE); return; }
     if (L.ryu) ryu_stop();
     else if (L.room) room_stop();
+    else if (L.citra) citra_stop();
     else host_stop(DR_DESTROYED_BY_USER);
     vsock_network_down();
     L.state = ST_ACCESS_POINT;
@@ -1998,6 +2259,8 @@ HLE_FUNC("_ZN2nn3ldn22SetStationAcceptPolicyENS0_12AcceptPolicyE", ldn_set_accep
 
 // Reject(Ipv4Address): the host sends a player away
 HLE_FUNC("_ZN2nn3ldn6RejectENS0_11Ipv4AddressE", ldn_reject) { NTRACE();
+    if (L.citra) mhgu_uds_reject(ARG(0));  // (an MHXX player; one of our own stations below)
+    if (L.yuzu) mhgu_ydoor_reject(ARG(0));  // (a Yuzu room player)
     if (L.ryu) {
         for (int i = 1; i < MAX_NODES; i++)
             if (node_at(L.info, i)[NODE_CONNECTED] && rd32(node_at(L.info, i) + NODE_IP) == ARG(0))
@@ -2095,7 +2358,8 @@ HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan)
             ryu_of[n++] = rsrv[j] + 1;
         }
     }
-    if (xp_config.crossplay == XP_ROOM && room_enabled() && mhgu_room_connected() && n < MAX_FOUND) {  // the room's hubs
+    if ((xp_config.crossplay == XP_ROOM || xp_config.crossplay == XP_ALL) && room_enabled() && mhgu_room_connected() &&
+        n < MAX_FOUND) {  // the room's hubs
         uint8_t own[4], all[4] = {0xFF, 0xFF, 0xFF, 0xFF};
         mhgu_room_own_ip(own);
         pthread_mutex_lock(&room_scan_mu);
@@ -2112,11 +2376,22 @@ HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan)
         }
         pthread_mutex_unlock(&room_scan_mu);
     }
+    bool citra_of[MAX_FOUND] = {0};
+    if (citra_configured() && mhgu_uds_ready() && n < MAX_FOUND) {  // MHXX players' networks in the Citra room
+        static uint8_t cinfo[MAX_FOUND][NETINFO_SIZE];
+        int cn = mhgu_uds_scan((uint8_t *)cinfo, MAX_FOUND - n);
+        for (int j = 0; j < cn && n < MAX_FOUND; j++) {
+            memcpy(infos[n], cinfo[j], NETINFO_SIZE);
+            memset(&addrs[n], 0, sizeof addrs[n]);
+            citra_of[n++] = true;
+        }
+    }
     nfound = 0;
     for (int i = 0; i < n; i++) {
         if (!info_sane(infos[i]) || !filter_ok(infos[i], filter)) continue;
         found[nfound].ryu = ryu_of[i];
         found[nfound].room = room_of[i];
+        found[nfound].citra = citra_of[i];
         memcpy(found[nfound].info, infos[i], NETINFO_SIZE);
         memcpy(found[nfound].bssid, infos[i] + NI_BSSID, 6);
         memcpy(found[nfound].session, infos[i] + NI_SESSION_ID, 16);
@@ -2157,6 +2432,29 @@ static uint32_t connect_network(const uint8_t *info, const uint8_t *user, uint16
         L.state = ST_STATION_CONNECTED, L.reason = DR_NONE;
         pthread_mutex_unlock(&L.mu);
         LOG("[ldn] joined a RyuLdn lobby as %s\n", ipstr(L.own_ip));
+        signal_change();
+        return 0;
+    }
+    if (found[i].citra) {  // an MHXX player's network in the Citra room
+        if (!mhgu_uds_ready()) return R_CONNECT_FAILURE;
+        uint8_t out[NETINFO_SIZE];
+        uint32_t ip = 0;
+        uint32_t r = mhgu_uds_connect(found[i].bssid, user, out, &ip);
+        if (r) {
+            LOG("[ldn] joining the MHXX network failed (%s)\n", r == 1 ? "it is gone" : "its host did not take us");
+            return r == 1 ? R_CONNECT_NOT_FOUND : R_CONNECT_TIMEOUT;
+        }
+        pthread_mutex_lock(&L.mu);
+        if (info_sane(out)) memcpy(L.info, out, NETINFO_SIZE);
+        L.citra = true, L.lcv = lcv, L.own_ip = ip, L.subnet = ip & 0xFFFFFF00u;
+        L.state = ST_STATION_CONNECTED, L.reason = DR_NONE;
+        pthread_mutex_unlock(&L.mu);
+        if (mhgu_uds_info(out) && info_sane(out)) {  // (an update that came while we were setting up)
+            pthread_mutex_lock(&L.mu);
+            if (L.citra) memcpy(L.info, out, NETINFO_SIZE);
+            pthread_mutex_unlock(&L.mu);
+        }
+        LOG("[ldn] joined an MHXX player's network in the Citra room as %s\n", ipstr(L.own_ip));
         signal_change();
         return 0;
     }
@@ -2275,6 +2573,7 @@ HLE_FUNC("_ZN2nn3ldn10DisconnectEv", ldn_disconnect) { NTRACE();
     if (L.state != ST_STATION_CONNECTED && L.state != ST_ERROR) { RET(R_INVALID_STATE); return; }
     if (L.ryu) ryu_stop();
     else if (L.room) room_stop();
+    else if (L.citra) citra_stop();
     else station_leave();
     L.state = ST_STATION, L.reason = DR_BY_USER;
     L.own_ip = L.subnet = 0;

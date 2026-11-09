@@ -251,6 +251,7 @@ int ui_run(void) {
                     overlay_request_close();
                     continue;
                 }
+                if (e.type == SDL_EVENT_LOCALE_CHANGED) config_refresh_system_language();  // (the menu's Auto follows it)
                 host_input_event(&e);
             } while (SDL_PollEvent(&e));
         }

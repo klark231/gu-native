@@ -1,6 +1,7 @@
 // Atomic INI persistence and live settings. Cold boot state is never mutated;
 // each consumer reads hot values atomically on its own thread.
 #include "config.h"
+#include "settings_locale.h"
 #include <SDL3/SDL.h>
 #include <ctype.h>
 #include <errno.h>
@@ -18,11 +19,11 @@
 
 static Config saved, startup;
 static bool have_saved, runtime_ready, runtime_fsr;
-static SDL_AtomicInt volume = {100}, confirm_exit = {1}, language = {0}, mute_in_background, window_focused = {1};
+static SDL_AtomicInt volume = {100}, confirm_exit = {1}, language = {MENU_LANG_AUTO}, mute_in_background, window_focused = {1};
 static SDL_AtomicInt live_fps, live_fov, live_mouse, live_draw = {0x3f800000}, live_fxaa = {1}, live_msaa = {1},
                      live_vsync = {1}, live_face, live_menu_confirm, live_background = {1}, live_combo, live_chat_key,
                      live_fxaa_mode, live_smooth, live_discord, live_discord_hunter, live_binds[BINDS][BIND_KEYS],
-                     live_touch, live_touch_hud, live_touch_show[TB_COUNT], live_touch_combo[TOUCH_COMBOS], live_touch_combo_pad[TOUCH_COMBOS], live_touch_cam, live_touch_opacity, live_lock_on = {1},
+                     live_touch, live_touch_hud, live_touch_show[TB_COUNT], live_touch_show_trad[TB_COUNT], live_touch_scheme, live_touch_auto_run = {1}, live_touch_combo[TOUCH_COMBOS], live_touch_combo_pad[TOUCH_COMBOS], live_touch_cam, live_touch_opacity, live_lock_on = {1},
                      live_touch_vibration = {1}, live_phone_rumble = {1}, live_show_stats, live_pause_bg = {1},
                      live_shadows = {1}, live_bloom = {1}, live_reverb = {1};
 static void set_float(SDL_AtomicInt *slot, float value) {
@@ -58,6 +59,9 @@ static void publish_live(const Config *c, bool all) {
     if (all || c->touch_controls != saved.touch_controls) SDL_SetAtomicInt(&live_touch, c->touch_controls);
     if (all || c->touch_hud != saved.touch_hud) SDL_SetAtomicInt(&live_touch_hud, c->touch_hud);
     for (int i = 0; i < TB_COUNT; i++) SDL_SetAtomicInt(&live_touch_show[i], c->touch_show[i]);
+    for (int i = 0; i < TB_COUNT; i++) SDL_SetAtomicInt(&live_touch_show_trad[i], c->touch_show_trad[i]);
+    if (all || c->touch_scheme != saved.touch_scheme) SDL_SetAtomicInt(&live_touch_scheme, c->touch_scheme);
+    if (all || c->touch_auto_run != saved.touch_auto_run) SDL_SetAtomicInt(&live_touch_auto_run, c->touch_auto_run);
     for (int i = 0; i < TOUCH_COMBOS; i++) {
         SDL_SetAtomicInt(&live_touch_combo[i], (int)config_combo_mask(c->touch_combo[i]));
         SDL_SetAtomicInt(&live_touch_combo_pad[i], c->touch_combo_pad[i]);
@@ -138,6 +142,11 @@ int config_live_lock_on(void) { return SDL_GetAtomicInt(&live_lock_on); }
 int config_live_touch_show(int button) { return SDL_GetAtomicInt(&live_touch_show[button]); }
 uint32_t config_live_touch_combo(int index) { return (uint32_t)SDL_GetAtomicInt(&live_touch_combo[index]); }
 int config_live_touch_combo_pad(int index) { return SDL_GetAtomicInt(&live_touch_combo_pad[index]); }
+int config_live_touch_scheme(void) { return SDL_GetAtomicInt(&live_touch_scheme); }
+int config_live_touch_auto_run(void) { return SDL_GetAtomicInt(&live_touch_auto_run); }
+int config_live_touch_show_trad(int button) {
+    return button >= 0 && button < TB_COUNT ? SDL_GetAtomicInt(&live_touch_show_trad[button]) : 1;
+}
 
 // The names of a combined button's parts, in BTN_* order (hle/input.h)
 static const char *const COMBO_NAMES[16] = {"A", "B", "X", "Y", "L3", "R3", "L", "R", "ZL", "ZR", "Plus", "Minus", "Left", "Up", "Right", "Down"};
@@ -199,7 +208,25 @@ void config_live_crossplay(Config *out) {
     memcpy(out->citra_token, live_crossplay.citra_token, sizeof out->citra_token);
     SDL_UnlockSpinlock(&live_ldn_lock);
 }
-int config_language(void) { return SDL_GetAtomicInt(&language); }
+int config_language(void) { return settings_language(SDL_GetAtomicInt(&language)); }
+// The phone's language for Auto: its first preferred one, if the menu has it (zh: Chinese, es: Spanish), else English
+static SDL_AtomicInt system_language = {-1};
+static int locale_language(void) {
+    int n = 0, lang = MENU_LANG_EN;
+    SDL_Locale **loc = SDL_GetPreferredLocales(&n);
+    if (loc && n > 0 && loc[0]->language) {
+        if (!SDL_strncasecmp(loc[0]->language, "zh", 2)) lang = MENU_LANG_ZH;
+        else if (!SDL_strncasecmp(loc[0]->language, "es", 2)) lang = MENU_LANG_ES;
+    }
+    SDL_free(loc);
+    return lang;
+}
+void config_refresh_system_language(void) { SDL_SetAtomicInt(&system_language, locale_language()); }
+int settings_system_language(void) {
+    int lang = SDL_GetAtomicInt(&system_language);
+    if (lang < 0) SDL_SetAtomicInt(&system_language, lang = locale_language());
+    return lang;
+}
 Config config_editable(void) { return saved; }
 float config_audio_gain(void) {
     if (SDL_GetAtomicInt(&mute_in_background) && !SDL_GetAtomicInt(&window_focused)) return 0.0f;
@@ -241,7 +268,7 @@ bool config_validate(const Config *c, char *error, size_t size) {
 
 // What config_save writes: a setting of the table (setting) or a Quest<number> entry (setting NULL)
 typedef struct { const ConfigSetting *setting; const char *section; char key[64], value[256]; bool seen; } Entry;
-#define ENTRY_MAX (HP_QUESTS_MAX + 128)  // (every setting of g_settings, 67 now, and the quests set apart)
+#define ENTRY_MAX (HP_QUESTS_MAX + 128)  // (every setting of g_settings, about 125 now, and the quests set apart)
 static void normalize(const char *s, char *out, size_t size) {
     size_t n = 0;
     for (; *s && n + 1 < size; s++)

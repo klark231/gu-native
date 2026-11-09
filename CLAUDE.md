@@ -43,7 +43,7 @@ Windows, in Git Bash, with the Android SDK, NDK 27.0.12077973, CMake 3.22.1 and 
 
 1. Put the sources in `deps/src/`: `SDL3-3.4.18`, `ffmpeg` (9.0.2) and `shaderc` (2026.4, with glslang 16.6.0 and SPIRV-Tools and
    SPIRV-Headers 1.4.363.0 in its `third_party`). Then run `bash deps/build_deps.sh arm64-v8a` and `bash deps/build_ffmpeg.sh arm64-v8a`.
-2. `bash native/build_native.sh arm64-v8a` builds the runtime. It first builds `crates/mhgu-crossplay` (Rust: crossplay with Ryujinx and Yuzu-family rooms), so it needs rustup with the `aarch64-linux-android` target (`x86_64-linux-android` for that ABI) and, the first time, network access for cargo. With `MHGU_DEV=1` in front, a test build.
+2. `bash native/build_native.sh arm64-v8a` builds the runtime. It first builds `crates/mhgu-crossplay` (Rust: crossplay with Ryujinx, Yuzu-family rooms and Citra-family rooms), so it needs rustup with the `aarch64-linux-android` target (`x86_64-linux-android` for that ABI) and, the first time, network access for cargo. With `MHGU_DEV=1` in front, a test build.
 3. `cd android && ./gradlew assembleRelease`. It signs only if `android/keystore.properties` and `mhgu.keystore` exist.
 
 The public APK leaves `libmhgugame.so` out. `-Pwithgame` keeps it for your own tests: never publish that APK.
@@ -185,3 +185,26 @@ Android killing the game shows in `adb logcat` as `lowmemorykiller: Kill 'com.mh
 - The touch menu layout can show ZL and ZR tabs beside L and R (`C_MZL`, `C_MZR`), each with `[Touch] ShowMenuZL` / `ShowMenuZR`, off by
   default (Buttons on the screen).
 - Bugs that only show on some devices are common here. Test on a real phone, and on a device without Snapdragon.
+- Citra Room crossplay (`[Multiplayer] Crossplay = Citra Room`, `crates/mhgu-crossplay/src/citra_bridge.rs`): the game is one 3DS in an
+  Azahar / Citra room. MHXX players' networks come from their beacons (`uds.rs`) and show in the game's search; joining one is a UDS
+  join, and hosting sends beacons so MHXX players can join. Pia packets are converted as the AzaharPlus MHGU hub bridge does (`pia.rs`),
+  with each UDS node at 169.254.x.n (x from the host's MAC) and our friend code seed made for our IP. The room routes by MAC, so each
+  phone is one console: several MHGU players are several phones in the room. Hosting in Citra Room mode is also our normal host
+  (LAN, hub server): one network, `citra_sync_locked` tells the bridge our own stations, MHXX players take the slots those don't hold, and
+  `host_route_ex` relays between both sides. If the room drops, its players leave and the hub goes on.
+- `Crossplay = All Rooms` (XP_ALL): a hosted hub is on our own host, in the Citra room and in the Yuzu room at once. Each room is a
+  door (`citra_bridge.rs`, `yuzu_door.rs`): ldn.c keeps the slots (`L.door_of`), tells each door the hub without its players
+  (`door_sync_locked`, from `push_info_locked`) and takes back only its players (`door_merge_locked`). `host_route_ex` relays between
+  all of them. Yuzu room players see the others at 192.168.250.k, which only a room that sends unknown IPs to its host passes on:
+  the room this app runs (RoomHost) does. Joining is still one network at a time; the search lists all of them.
+- The Network tab: local play, an Internet hubs submenu, the Crossplay mode, Room nickname (`RoomName`, both room families; a taken one gets
+  -2..-5 in that room), and a submenu per room family the mode uses (`xp_uses`: Ryujinx, Yuzu Room, Citra Room), each row showing
+  `ldn_room_state`. Settings save through `config_save` (temp file, fsync, rename); touch layouts the same way (`save_layout`). The nickname is `[Multiplayer] RoomName`. Not yet seen on
+  a device: the log's `[citra]` lines tell what it did.
+- The touch Layout (`[Touch] Layout = Adaptive / Traditional`, `AutoRun`, `TradShow*`) lives in `config.h` / `config_store.c`; `touch.cpp`
+  needs all three, or it does not compile.
+- Languages: `[Application] Language = Auto` (the default) follows the phone (`settings_system_language`, SDL's locale, refreshed on
+  `SDL_EVENT_LOCALE_CHANGED`): zh is Simplified Chinese, es Spanish, anything else English. Spanish is in `settings_locale.h`; Chinese is
+  `runtime/settings_locale_zh.c`, made by `tools/gen_locale_zh.py` from `tools/language_zh.tsv` and `language_zh_extra.tsv` (edit those,
+  run it again). Once Chinese is shown the overlay merges a CJK font from the system's (`cjk_font_if_needed`). The Java screens go
+  through `Zh.t` (exact strings, then known pieces). A new menu string needs a line in `language_zh_extra.tsv` and the Spanish table.

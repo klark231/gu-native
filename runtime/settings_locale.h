@@ -2,8 +2,27 @@
 #pragma once
 #include <string.h>
 
+// The menu's languages ([Application] Language). Auto follows the phone's (settings_system_language): Chinese and
+// Spanish when it is one of those, else English. The Chinese is in settings_locale_zh.c, made by tools/gen_locale_zh.py.
+enum { MENU_LANG_EN, MENU_LANG_ES, MENU_LANG_ZH, MENU_LANG_AUTO };
+#ifdef __cplusplus
+extern "C" {
+#endif
+int settings_system_language(void);                // the phone's: MENU_LANG_EN, _ES or _ZH (config_store.c)
+const char *settings_text_zh(const char *english);  // (English when it has no Chinese yet)
+extern volatile int settings_zh_used;              // Chinese was shown: overlay.cpp adds a font with its glyphs
+#ifdef __cplusplus
+}
+#endif
+// A setting's language as it shows: Auto (or anything unknown) is the phone's
+static inline int settings_language(int language) {
+    return language >= MENU_LANG_EN && language <= MENU_LANG_ZH ? language : settings_system_language();
+}
+
 static inline const char *settings_text(int language, const char *english) {
-    if (language != 1) return english;
+    language = settings_language(language);
+    if (language == MENU_LANG_ZH) return settings_text_zh(english);
+    if (language != MENU_LANG_ES) return english;
     static const struct { const char *en, *es; } messages[] = {
         {"SETTINGS", "OPCIONES"},
         {"Sections", "Secciones"},
@@ -342,6 +361,40 @@ static inline const char *settings_text(int language, const char *english) {
         {"Run a Yuzu Room", "Ejecutar una sala Yuzu"},
         {"Yuzu Room port", "Puerto de la sala Yuzu"},
         {"Yuzu Room name", "Nombre de la sala Yuzu"},
+        {"Auto (phone language)", "Automático (idioma del teléfono)"},
+        {"The language of this menu. Auto: the phone's language (English, Spanish or Chinese; English for any other).",
+         "El idioma de este menú. Automático: el del teléfono (inglés, español o chino; inglés para cualquier otro)."},
+        {"Adaptive", "Adaptable"},
+        {"Adaptive: the buttons change with what the game is doing. Traditional: an emulator's layout, the same always, with its own saved positions.", "Adaptable: los botones cambian según lo que hace el juego. Tradicional: la disposición de un emulador, siempre la misma, con sus propias posiciones guardadas."},
+        {"Advanced", "Avanzado"},
+        {"All Rooms", "Todas las salas"},
+        {"Azahar / Citra rooms, where Monster Hunter XX players are: the room browser, the room and its password.", "Salas de Azahar / Citra, donde están los jugadores de Monster Hunter XX: el explorador de salas, la sala y su contraseña."},
+        {"Eden / Suyu players join this device's address and port. With All Rooms, this is the way that lets them meet your LAN, hub and MHXX players too.", "Los jugadores de Eden / Suyu se unen a la dirección y el puerto de este dispositivo. Con Todas las salas, así también pueden encontrarse con tus jugadores de LAN, del servidor de salas y de MHXX."},
+        {"Eden, Suyu, Yuzu and Citron players' rooms: run one on this device, or join one.", "Salas de jugadores de Eden, Suyu, Yuzu y Citron: abre una en este dispositivo o únete a una."},
+        {"Hubs over the internet through a hub server: the server, the matchmaking key, and a check that it answers.", "Salas por internet a través de un servidor de salas: el servidor, la clave de emparejamiento y una prueba de que responde."},
+        {"In the hub", "En la partida"},
+        {"In the room", "En la sala"},
+        {"Internet hubs", "Salas por internet"},
+        {"Joining...", "Uniéndose..."},
+        {"Leave the room", "Salir de la sala"},
+        {"Leaves the Citra room and forgets it. The room browser finds it again.", "Sale de la sala de Citra y la olvida. El explorador de salas la vuelve a encontrar."},
+        {"Lists the public Azahar / Citra rooms, where Monster Hunter XX players are. Pick one to join it; most players never need the rows below.", "Muestra las salas públicas de Azahar / Citra, donde están los jugadores de Monster Hunter XX. Elige una para unirte; casi nadie necesita las filas de abajo."},
+        {"Lists the public Yuzu-family rooms (Eden, Suyu) from the Yuzu Web API. Pick one to join it.", "Muestra las salas públicas de la familia Yuzu (Eden, Suyu) de la API web de Yuzu. Elige una para unirte."},
+        {"Local play and hubs", "Juego local y salas"},
+        {"Or join one", "O únete a una"},
+        {"Play with console emulators: Ryujinx (RyuLdn servers), Yuzu-family rooms (Eden, Suyu, Yuzu, Citron), or both at once (Mixed); or Citra Room: Azahar / Citra rooms, to play with Monster Hunter XX on the 3DS. All Rooms: a hub you host is on the LAN / hub server, in the Yuzu room and in the Citra room at once, and this device passes everything between them. Small monster sync and HP scaling are off in those hubs.", "Juega con emuladores de consola: Ryujinx (servidores RyuLdn), salas de la familia Yuzu (Eden, Suyu, Yuzu, Citron) o ambos a la vez (Mixto); o Sala de Citra: salas de Azahar / Citra, para jugar con Monster Hunter XX en 3DS. Todas las salas: la sala que abres está a la vez en la LAN / el servidor de salas, en la sala de Yuzu y en la sala de Citra, y este dispositivo lo pasa todo entre ellas. La sincronización de monstruos pequeños y el escalado de vida están desactivados en esas salas."},
+        {"Room nickname", "Apodo en la sala"},
+        {"Run a room on this device", "Abrir una sala en este dispositivo"},
+        {"Run a server on this device", "Abrir un servidor en este dispositivo"},
+        {"Run with the stick", "Correr con el stick"},
+        {"Ryujinx (RyuLdn)", "Ryujinx (RyuLdn)"},
+        {"The RyuLdn servers Ryujinx players use, or one run on this device.", "Los servidores RyuLdn que usan los jugadores de Ryujinx, o uno abierto en este dispositivo."},
+        {"The stick pushed past its rim runs. Off: hold R to run, as with a controller.", "El stick empujado más allá del borde corre. Desactivado: mantén R para correr, como con un mando."},
+        {"This device", "Este dispositivo"},
+        {"This device, port %d", "Este dispositivo, puerto %d"},
+        {"Touch layout", "Disposición táctil"},
+        {"Traditional", "Tradicional"},
+        {"Your name in the room's member list, in Yuzu Rooms and in Citra Rooms (your hunter's name in the game doesn't change). 4 to 20 letters, digits, spaces, dots, dashes or underscores; if someone in the room has it already, a number is added for that room.", "Tu nombre en la lista de miembros de la sala, en las salas de Yuzu y de Citra (el nombre de tu cazador en el juego no cambia). De 4 a 20 letras, dígitos, espacios, puntos, guiones o guiones bajos; si alguien de la sala ya lo tiene, se le añade un número en esa sala."},
         {"Yuzu Room password", "Contraseña de la sala Yuzu"},
         {"Yuzu Web API URL", "URL de la API web de Yuzu"},
         {"Citra Room server", "Servidor de sala Citra"},

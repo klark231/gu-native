@@ -30,7 +30,7 @@
 
 namespace {
 enum class View { Main, Keyboard, CloseChanges, Exit, Restart, Reset, Move, Conflicts, KeyCapture, Keybinds, TouchButtons, ComboEdit,
-                  PadList, PadMap, RoomBrowser, CitraBrowser };
+                  PadList, PadMap, RoomBrowser, CitraBrowser, HubsMenu, RyuMenu, YuzuMenu, CitraMenu };
 enum class Command { None, Save };
 struct Row {
     std::string id, title, value;
@@ -406,6 +406,8 @@ bool equal(const Config &a, const Config &b) {
     SAME(mouse_sensitivity);
     SAME(touch_controls);
     SAME(touch_hud);
+    SAME(touch_scheme);
+    SAME(touch_auto_run);
     SAME(touch_camera);
     SAME(touch_opacity);
     SAME(aspect_ratio);
@@ -434,7 +436,7 @@ bool equal(const Config &a, const Config &b) {
 #undef SAME
     if (a.lock_on != b.lock_on)
         return false;
-    if (memcmp(a.touch_show, b.touch_show, sizeof a.touch_show) || memcmp(a.touch_combo, b.touch_combo, sizeof a.touch_combo) ||
+    if (memcmp(a.touch_show, b.touch_show, sizeof a.touch_show) || memcmp(a.touch_show_trad, b.touch_show_trad, sizeof a.touch_show_trad) || memcmp(a.touch_combo, b.touch_combo, sizeof a.touch_combo) ||
         memcmp(a.touch_combo_pad, b.touch_combo_pad, sizeof a.touch_combo_pad))
         return false;
     if (memcmp(a.binds, b.binds, sizeof a.binds))
@@ -488,6 +490,12 @@ float list_scroll() {
     auto *w = s.list ? ImGui::FindWindowByID(s.list) : ImGui::FindWindowByName("Settings##main");
     return w ? w->Scroll.y : 0;
 }
+// (the Network tab's submenus, further down)
+bool xp_uses(int xp, int family);
+std::string hubs_summary();
+std::string ryu_summary();
+std::string yuzu_summary();
+std::string citra_summary();
 void push(View view, const std::string &first) {
     s.dropdown.open = false;
     s.drag = {};
@@ -1388,9 +1396,16 @@ std::vector<Row> main_rows() {
         add_choice(r, "touch", "Touch controls", c.touch_controls, {tr("Auto"), tr("On"), tr("Off")},
                    [](int v) { c.touch_controls = v; }, ini("Controls"));
         add_bool(r, "touch.hud", "Move the HUD for touch", &c.touch_hud, ini("MoveHUD"));
+        add_choice(r, "touch.layout", "Touch layout", c.touch_scheme, {tr("Adaptive"), tr("Traditional")},
+                   [](int v) { c.touch_scheme = v; }, ini("Layout"));
+        r.back().help = tr("Adaptive: the buttons change with what the game is doing. Traditional: an emulator's layout, the same always, with its own saved positions.");
+        if (c.touch_scheme == TS_TRADITIONAL) {
+            add_bool(r, "touch.autorun", "Run with the stick", &c.touch_auto_run, ini("AutoRun"));
+            r.back().help = tr("The stick pushed past its rim runs. Off: hold R to run, as with a controller.");
+        }
         add_bool(r, "lock.on", "Lock-on", &c.lock_on, ini("LockOn"));
         r.back().help = tr("The target icon, or a controller's right stick click, keeps the camera on the monster as in the newer games, and bows and bowguns fire at it. Off: the icon turns the camera to it once, as in the original game.");
-        action(r, "touch.buttons", tr("Buttons on the screen"), []() { push(View::TouchButtons, "tb.0"); });
+        action(r, "touch.buttons", tr("Buttons on the screen"), []() { push(View::TouchButtons, s.draft.touch_scheme == TS_TRADITIONAL ? "tt.0" : "tb.0"); });
         r.back().help = tr("Choose which of the game's buttons show on the screen, and add buttons of your own that press several at once.");
         number(r, "touch.camera", tr("Touch camera speed"), &c.touch_camera, lo("CameraSpeed"), hi("CameraSpeed"), .05f, ini("CameraSpeed"));
         number(r, "touch.opacity", tr("Touch controls opacity"), &c.touch_opacity, lo("Opacity"), hi("Opacity"), .05f, ini("Opacity"));
@@ -1419,54 +1434,37 @@ std::vector<Row> main_rows() {
 #endif
         break;
     case 3:
+        header(r, "net.header", tr("Local play and hubs"));
         number(r, "port", "Host port (TCP / UDP)", &c.ldn_port, (int)lo("Port"), (int)hi("Port"), 1, ini("Port"));
         text(r, "hosts", "Search hosts", c.ldn_join, sizeof c.ldn_join, *c.ldn_join ? c.ldn_join : tr("LAN"), ini("Join"));
-        // (internet hubs through a hub server of the player's choice, server/: none is built in, LDN_DEFAULT_SERVER)
-        text(r, "server", "Hub server", c.ldn_server, sizeof c.ldn_server,
-             *c.ldn_server ? std::string(c.ldn_server)
-             : *LDN_DEFAULT_SERVER ? std::string(tr("Default")) + " (" LDN_DEFAULT_SERVER ")" : std::string(tr("None")),
-             ini("Server"));
-        text(r, "key", "Matchmaking key", c.ldn_key, sizeof c.ldn_key, *c.ldn_key ? c.ldn_key : tr("Public"), ini("Key"));
-        hub_check(r);
+        action(r, "hubs", tr("Internet hubs"), []() { push(View::HubsMenu, "server"); });
+        r.back().value = hubs_summary();
+        r.back().help = tr("Hubs over the internet through a hub server: the server, the matchmaking key, and a check that it answers.");
         header(r, "xp.header", tr("Crossplay"));
-        add_choice(r, "crossplay", "Crossplay", c.crossplay, {tr("Off"), tr("Ryujinx"), tr("Yuzu Room"), tr("Mixed"), tr("Citra Room")},
+        add_choice(r, "crossplay", "Crossplay", c.crossplay, {tr("Off"), tr("Ryujinx"), tr("Yuzu Room"), tr("Mixed"), tr("Citra Room"), tr("All Rooms")},
                    [](int v) { s.draft.crossplay = v; }, ini("Crossplay"));
-        r.back().help = tr("Play with console emulators: Ryujinx (RyuLdn servers), Yuzu-family rooms (Eden, Suyu, Yuzu, Citron), or both at once (Mixed); or Citra Room: Azahar / Citra rooms, to play with Monster Hunter XX on the 3DS. Small monster sync and HP scaling are off in those hubs.");
-        text(r, "ryu.servers", "RyuLdn servers", c.ryu_servers, sizeof c.ryu_servers,
-             *c.ryu_servers ? std::string(c.ryu_servers) : std::string(tr("None")), ini("RyuServers"));
-        add_bool(r, "ryu.host", "Run a RyuLdn server", &c.ryu_host, ini("RyuHost"));
-        number(r, "ryu.port", "RyuLdn port", &c.ryu_port, (int)lo("RyuPort"), (int)hi("RyuPort"), 1, ini("RyuPort"));
-        text(r, "ryu.password", "RyuLdn passphrase", c.ryu_password, sizeof c.ryu_password,
-             *c.ryu_password ? std::string("********") : std::string(tr("None")), ini("RyuPassword"));
-        text(r, "room.server", "Yuzu Room server", c.room_server, sizeof c.room_server,
-             *c.room_server ? std::string(c.room_server) : std::string(tr("None")), ini("RoomServer"));
-        add_bool(r, "room.host", "Run a Yuzu Room", &c.room_host, ini("RoomHost"));
-        number(r, "room.port", "Yuzu Room port", &c.room_port, (int)lo("RoomPort"), (int)hi("RoomPort"), 1, ini("RoomPort"));
-        text(r, "room.name", "Yuzu Room name", c.room_name, sizeof c.room_name, std::string(c.room_name), ini("RoomName"));
-        text(r, "room.password", "Yuzu Room password", c.room_password, sizeof c.room_password,
-             *c.room_password ? std::string("********") : std::string(tr("None")), ini("RoomPassword"));
-        text(r, "webapi", "Yuzu Web API URL", c.web_api_url, sizeof c.web_api_url,
-             *c.web_api_url ? std::string(c.web_api_url) : std::string(tr("None")), ini("WebApiUrl"));
-        action(r, "rooms", tr("Yuzu Room Browser"), []() {
-            webrooms_refresh(s.draft.web_api_url);
-            push(View::RoomBrowser, "rb.refresh");
-        });
-        r.back().help = tr("Lists the public Yuzu-family rooms (Eden, Suyu) from the Yuzu Web API above. Pick one to join it.");
-        text(r, "citra.server", "Citra Room server", c.citra_room_server, sizeof c.citra_room_server,
-             *c.citra_room_server ? std::string(c.citra_room_server) : std::string(tr("None")), ini("CitraRoomServer"));
-        text(r, "citra.password", "Citra Room password", c.citra_room_password, sizeof c.citra_room_password,
-             *c.citra_room_password ? std::string("********") : std::string(tr("None")), ini("CitraRoomPassword"));
-        text(r, "citra.webapi", "Citra Web API URL", c.citra_web_api_url, sizeof c.citra_web_api_url,
-             *c.citra_web_api_url ? std::string(c.citra_web_api_url) : std::string(tr("None")), ini("CitraWebApiUrl"));
-        text(r, "citra.webapi2", "Citra Web API URL 2", c.citra_web_api_url_2, sizeof c.citra_web_api_url_2,
-             *c.citra_web_api_url_2 ? std::string(c.citra_web_api_url_2) : std::string(tr("None")), ini("CitraWebApiUrl2"));
-        text(r, "citra.token", "Citra Token", c.citra_token, sizeof c.citra_token,
-             *c.citra_token ? std::string("********") : std::string(tr("None")), ini("CitraToken"));
-        action(r, "citra.rooms", tr("Citra Room Browser"), []() {
-            webrooms_refresh_kind(WEBROOMS_CITRA, s.draft.citra_web_api_url, s.draft.citra_web_api_url_2);
-            push(View::CitraBrowser, "rb.refresh");
-        });
-        r.back().help = tr("Lists the public Azahar / Citra rooms from the Citra Web APIs above, where Monster Hunter XX players are. Pick one to join it.");
+        r.back().help = tr("Play with console emulators: Ryujinx (RyuLdn servers), Yuzu-family rooms (Eden, Suyu, Yuzu, Citron), or both at once (Mixed); or Citra Room: Azahar / Citra rooms, to play with Monster Hunter XX on the 3DS. All Rooms: a hub you host is on the LAN / hub server, in the Yuzu room and in the Citra room at once, and this device passes everything between them. Small monster sync and HP scaling are off in those hubs.");
+        // (one row for each family of rooms the mode uses, its settings behind it)
+        if (xp_uses(c.crossplay, XP_ROOM) || xp_uses(c.crossplay, XP_CITRA)) {
+            text(r, "room.name", "Room nickname", c.room_name, sizeof c.room_name, std::string(c.room_name), ini("RoomName"));
+            r.back().help = tr("Your name in the room's member list, in Yuzu Rooms and in Citra Rooms (your hunter's name in the game doesn't change). 4 to 20 letters, digits, spaces, dots, dashes or underscores; if someone in the room has it already, a number is added for that room.");
+        }
+        if (xp_uses(c.crossplay, XP_RYU)) {
+            action(r, "ryu", tr("Ryujinx (RyuLdn)"), []() { push(View::RyuMenu, "ryu.servers"); });
+            r.back().value = ryu_summary();
+            r.back().help = tr("The RyuLdn servers Ryujinx players use, or one run on this device.");
+        }
+        if (xp_uses(c.crossplay, XP_ROOM)) {
+            action(r, "yuzu", tr("Yuzu Room"), []() { push(View::YuzuMenu, "room.host"); });
+            r.back().value = yuzu_summary();
+            r.back().help = tr("Eden, Suyu, Yuzu and Citron players' rooms: run one on this device, or join one.");
+        }
+        if (xp_uses(c.crossplay, XP_CITRA)) {
+            action(r, "citra", tr("Citra Room"), []() { push(View::CitraMenu, "citra.rooms"); });
+            r.back().value = citra_summary();
+            r.back().help = tr("Azahar / Citra rooms, where Monster Hunter XX players are: the room browser, the room and its password.");
+        }
+        header(r, "hub.header", tr("In the hub"));
         add_bool(r, "sync", "Sync small monsters", &c.sync_small_monsters, ini("SyncSmallMonsters"));
         add_bool(r, "village", "Village quests in Hub", &c.village_in_hub, ini("VillageQuestsInHub"));
 #ifndef __ANDROID__  // (Discord's Rich Presence is its desktop app's)
@@ -1550,7 +1548,7 @@ std::vector<Row> main_rows() {
         cheat_rows(r);
         break;
     case APP_PAGE:
-        add_choice(r, "language", "Language", c.language, {"English", "Español"},
+        add_choice(r, "language", "Language", c.language, {"English", "Español", "中文", tr("Auto (phone language)")},
                    [](int v) { c.language = v; }, ini("Language"));
 #ifndef __ANDROID__  // (a phone: not worth a row)
         add_choice(r, "theme", "Menu theme", c.menu_theme, {tr("Gold"), tr("Blue"), tr("Hunter")},
@@ -1641,6 +1639,113 @@ bool save() {
     s.error.clear();
     return true;
 }
+// ---- the Network tab's submenus: a family of rooms each (and the internet hubs)
+// Whether crossplay mode xp uses the rooms of family XP_RYU, XP_ROOM (Yuzu) or XP_CITRA.
+bool xp_uses(int xp, int family) {
+    switch (family) {
+    case XP_RYU: return xp == XP_RYU || xp == XP_MIXED;
+    case XP_ROOM: return xp == XP_ROOM || xp == XP_MIXED || xp == XP_ALL;
+    case XP_CITRA: return xp == XP_CITRA || xp == XP_ALL;
+    default: return false;
+    }
+}
+std::string room_state_text(int kind) {  // (what the saved settings are doing now, ldn_room_state)
+    switch (ldn_room_state(kind)) {
+    case ROOM_IN: return std::string(" · ") + tr("In the room");
+    case ROOM_JOINING: return std::string(" · ") + tr("Joining...");
+    default: return "";
+    }
+}
+std::string hubs_summary() {
+    const Config &c = s.draft;
+    std::string server = *c.ldn_server ? std::string(c.ldn_server) : *LDN_DEFAULT_SERVER ? std::string(LDN_DEFAULT_SERVER) : std::string(tr("None"));
+    return server + " · " + (*c.ldn_key ? std::string(c.ldn_key) : std::string(tr("Public")));
+}
+std::string ryu_summary() {
+    const Config &c = s.draft;
+    if (*c.ryu_servers) return c.ryu_servers;
+    return c.ryu_host ? fmt("This device, port %d", c.ryu_port) : std::string(tr("None"));
+}
+std::string yuzu_summary() {
+    const Config &c = s.draft;
+    std::string where = c.room_host ? fmt("This device, port %d", c.room_port) : *c.room_server ? std::string(c.room_server) : std::string(tr("None"));
+    return where + (c.room_host || *c.room_server ? room_state_text(ROOMS_YUZU) : "");
+}
+std::string citra_summary() {
+    const Config &c = s.draft;
+    if (!*c.citra_room_server) return tr("None");
+    return std::string(*c.last_citra_room_name && !strcmp(c.last_citra_room, c.citra_room_server) ? c.last_citra_room_name : c.citra_room_server) +
+           room_state_text(ROOMS_CITRA);
+}
+void hubs_rows(std::vector<Row> &r) {
+    Config &c = s.draft;
+    // (internet hubs through a hub server of the player's choice, server/: none is built in, LDN_DEFAULT_SERVER)
+    text(r, "server", "Hub server", c.ldn_server, sizeof c.ldn_server,
+         *c.ldn_server ? std::string(c.ldn_server)
+         : *LDN_DEFAULT_SERVER ? std::string(tr("Default")) + " (" LDN_DEFAULT_SERVER ")" : std::string(tr("None")),
+         ini("Server"));
+    text(r, "key", "Matchmaking key", c.ldn_key, sizeof c.ldn_key, *c.ldn_key ? c.ldn_key : tr("Public"), ini("Key"));
+    hub_check(r);
+}
+void ryu_rows(std::vector<Row> &r) {
+    Config &c = s.draft;
+    text(r, "ryu.servers", "RyuLdn servers", c.ryu_servers, sizeof c.ryu_servers,
+         *c.ryu_servers ? std::string(c.ryu_servers) : std::string(tr("None")), ini("RyuServers"));
+    text(r, "ryu.password", "RyuLdn passphrase", c.ryu_password, sizeof c.ryu_password,
+         *c.ryu_password ? std::string("********") : std::string(tr("None")), ini("RyuPassword"));
+    header(r, "ryu.here", tr("Run a server on this device"));
+    add_bool(r, "ryu.host", "Run a RyuLdn server", &c.ryu_host, ini("RyuHost"));
+    number(r, "ryu.port", "RyuLdn port", &c.ryu_port, (int)lo("RyuPort"), (int)hi("RyuPort"), 1, ini("RyuPort"));
+}
+void yuzu_rows(std::vector<Row> &r) {
+    Config &c = s.draft;
+    header(r, "room.here", tr("Run a room on this device"));
+    add_bool(r, "room.host", "Run a Yuzu Room", &c.room_host, ini("RoomHost"));
+    r.back().help = tr("Eden / Suyu players join this device's address and port. With All Rooms, this is the way that lets them meet your LAN, hub and MHXX players too.");
+    number(r, "room.port", "Yuzu Room port", &c.room_port, (int)lo("RoomPort"), (int)hi("RoomPort"), 1, ini("RoomPort"));
+    text(r, "room.password", "Yuzu Room password", c.room_password, sizeof c.room_password,
+         *c.room_password ? std::string("********") : std::string(tr("None")), ini("RoomPassword"));
+    header(r, "room.join", tr("Or join one"));
+    const bool here = c.room_host != 0;  // (a room runs here: joining another one does nothing, so those rows are dim)
+    action(r, "rooms", tr("Yuzu Room Browser"), []() {
+        webrooms_refresh(s.draft.web_api_url);
+        push(View::RoomBrowser, "rb.refresh");
+    }, !here);
+    r.back().help = tr("Lists the public Yuzu-family rooms (Eden, Suyu) from the Yuzu Web API. Pick one to join it.");
+    text(r, "room.server", "Yuzu Room server", c.room_server, sizeof c.room_server,
+         here ? std::string(tr("This device")) : *c.room_server ? std::string(c.room_server) : std::string(tr("None")), ini("RoomServer"));
+    if (here) r.back().enabled = false;
+    header(r, "room.adv", tr("Advanced"));
+    text(r, "webapi", "Yuzu Web API URL", c.web_api_url, sizeof c.web_api_url,
+         *c.web_api_url ? std::string(c.web_api_url) : std::string(tr("None")), ini("WebApiUrl"));
+}
+void citra_rows(std::vector<Row> &r) {
+    Config &c = s.draft;
+    action(r, "citra.rooms", tr("Citra Room Browser"), []() {
+        webrooms_refresh_kind(WEBROOMS_CITRA, s.draft.citra_web_api_url, s.draft.citra_web_api_url_2);
+        push(View::CitraBrowser, "rb.refresh");
+    });
+    r.back().help = tr("Lists the public Azahar / Citra rooms, where Monster Hunter XX players are. Pick one to join it; most players never need the rows below.");
+    text(r, "citra.server", "Citra Room server", c.citra_room_server, sizeof c.citra_room_server,
+         *c.citra_room_server ? std::string(c.citra_room_server) + room_state_text(ROOMS_CITRA) : std::string(tr("None")), ini("CitraRoomServer"));
+    text(r, "citra.password", "Citra Room password", c.citra_room_password, sizeof c.citra_room_password,
+         *c.citra_room_password ? std::string("********") : std::string(tr("None")), ini("CitraRoomPassword"));
+    if (*c.citra_room_server) {
+        action(r, "citra.leave", tr("Leave the room"), []() {
+            Config &d = s.draft;
+            d.citra_room_server[0] = 0;  // (saved at once, as joining one from the browser is)
+            s.command = Command::Save;
+        });
+        r.back().help = tr("Leaves the Citra room and forgets it. The room browser finds it again.");
+    }
+    header(r, "citra.adv", tr("Advanced"));
+    text(r, "citra.webapi", "Citra Web API URL", c.citra_web_api_url, sizeof c.citra_web_api_url,
+         *c.citra_web_api_url ? std::string(c.citra_web_api_url) : std::string(tr("None")), ini("CitraWebApiUrl"));
+    text(r, "citra.webapi2", "Citra Web API URL 2", c.citra_web_api_url_2, sizeof c.citra_web_api_url_2,
+         *c.citra_web_api_url_2 ? std::string(c.citra_web_api_url_2) : std::string(tr("None")), ini("CitraWebApiUrl2"));
+    text(r, "citra.token", "Citra Token", c.citra_token, sizeof c.citra_token,
+         *c.citra_token ? std::string("********") : std::string(tr("None")), ini("CitraToken"));
+}
 // Which of the game's buttons are on the screen, and the player's own
 const char *const TB_TITLES[TB_COUNT] = {"Attacks", "Dodge (B)", "Guard (R)", "Sheathe (Y)", "Game menu (+)", "Minus (-)", "D-pad",
                                          "L", "ZL", "ZR", "Left stick click (L3)", "Right stick click (R3)", "Movement stick",
@@ -1650,13 +1755,23 @@ const char *const TB_KEYS[TB_COUNT] = {"ShowAttacks", "ShowDodge", "ShowGuard", 
                                        "ShowL", "ShowZL", "ShowZR", "ShowL3", "ShowR3", "ShowStick", "ShowRanged", "ShowFire",
                                        "ShowSecond", "ShowAim", "ShowRangedSpecial", "ShowAmmo", "ShowItemArrows", "ShowMenuZL",
                                        "ShowMenuZR"};
+const char *const TB_TRAD_KEYS[TB_STICK + 1] = {"TradShowAttacks", "TradShowDodge", "TradShowGuard", "TradShowSheathe",
+                                               "TradShowPlus", "TradShowMinus", "TradShowDpad", "TradShowL", "TradShowZL",
+                                               "TradShowZR", "TradShowL3", "TradShowR3", "TradShowStick"};
 int s_combo;  // the combined button being edited
 void touch_button_rows(std::vector<Row> &r) {
     Config &c = s.draft;
     header(r, "tb.head", tr("Buttons on the screen"));
-    for (int i = 0; i < TB_COUNT; i++) {
-        add_bool(r, ("tb." + std::to_string(i)).c_str(), TB_TITLES[i], &c.touch_show[i], nullptr);
-        r.back().key = TB_KEYS[i];
+    if (c.touch_scheme == TS_TRADITIONAL) {  // (the Traditional layout has its own set: a controller's buttons, no ranged layout)
+        for (int i = 0; i <= TB_STICK; i++) {
+            add_bool(r, ("tt." + std::to_string(i)).c_str(), TB_TITLES[i], &c.touch_show_trad[i], nullptr);
+            r.back().key = TB_TRAD_KEYS[i];
+        }
+    } else {
+        for (int i = 0; i < TB_COUNT; i++) {
+            add_bool(r, ("tb." + std::to_string(i)).c_str(), TB_TITLES[i], &c.touch_show[i], nullptr);
+            r.back().key = TB_KEYS[i];
+        }
     }
     header(r, "tc.head", tr("Combined buttons"));
     for (int k = 0; k < TOUCH_COMBOS; k++) {
@@ -1779,7 +1894,7 @@ bool join_web_room(const WebRoom &w, const std::string &password, int kind) {
     if (kind == WEBROOMS_CITRA) {
         SDL_strlcpy(temp.citra_room_server, server, sizeof temp.citra_room_server);
         SDL_strlcpy(temp.citra_room_password, password.c_str(), sizeof temp.citra_room_password);
-        temp.crossplay = XP_CITRA;  // (one family of rooms at a time: the Yuzu room and the RyuLdn servers stay as set, unused)
+        if (temp.crossplay != XP_ALL) temp.crossplay = XP_CITRA;  // (All Rooms keeps the Yuzu room too; else one family at a time)
     } else {
         SDL_strlcpy(temp.room_server, server, sizeof temp.room_server);
         SDL_strlcpy(temp.room_password, password.c_str(), sizeof temp.room_password);
@@ -1894,6 +2009,10 @@ std::vector<Row> rows_for_view(bool *open) {
     if (s.view == View::PadMap) { pad_map_rows(r); return r; }
     if (s.view == View::RoomBrowser) { room_browser_rows(r, WEBROOMS_YUZU); return r; }
     if (s.view == View::CitraBrowser) { room_browser_rows(r, WEBROOMS_CITRA); return r; }
+    if (s.view == View::HubsMenu) { hubs_rows(r); return r; }
+    if (s.view == View::RyuMenu) { ryu_rows(r); return r; }
+    if (s.view == View::YuzuMenu) { yuzu_rows(r); return r; }
+    if (s.view == View::CitraMenu) { citra_rows(r); return r; }
     if (s.view == View::Keyboard) {
         std::string chars = "1234567890abcdefghijklmnopqrstuvwxyz.:,-_/@!$%&*+=?~()";
         if (s.keyboard.upper)
@@ -2076,7 +2195,8 @@ const PhoneHelp PHONE_HELP[] = {
      "En el Hub, L o R al elegir una misión muestra las de la aldea, para jugarlas con otros."},
     {"HubHP", "A Village quest played in the Hub first multiplies the monster's health by this.",
      "Una misión de la aldea jugada en el Hub primero multiplica la vida del monstruo por este valor."},
-    {"Language", "The language of this menu.", "El idioma de este menú."},
+    {"Language", "The language of this menu. Auto: the phone's language (English, Spanish or Chinese; English for any other).",
+     "El idioma de este menú. Automático: el del teléfono (inglés, español o chino; inglés para cualquier otro)."},
     {"MenuScale", "The size of this menu.", "El tamaño de este menú."},
     {"PauseInBackground", "The game stops while you are out of the app.", "El juego se detiene mientras estás fuera de la app."},
     {"BonusContent", "Copies the free downloadable content (event quests, item packs, Palicoes) to a save that has not received it yet.",
@@ -2088,7 +2208,10 @@ std::string help_text(const Row &r) {
         return r.help;
 #ifdef __ANDROID__
     for (const PhoneHelp &h : PHONE_HELP)
-        if (r.key == h.key) return s.draft.language == 1 ? h.es : h.en;
+        if (r.key == h.key) {
+            const int lang = settings_language(s.draft.language);
+            return lang == MENU_LANG_ES ? h.es : settings_text(lang, h.en);
+        }
 #endif
     static std::vector<std::pair<std::string, std::string>> cache;  // (key, help in English)
     auto at = std::find_if(cache.begin(), cache.end(), [&](const auto &e) { return e.first == r.key; });
@@ -2640,6 +2763,10 @@ std::string view_title() {
                     : s.view == View::PadMap     ? "Map a controller"
                     : s.view == View::RoomBrowser ? "Yuzu Room Browser"
                     : s.view == View::CitraBrowser ? "Citra Room Browser"
+                    : s.view == View::HubsMenu   ? "Internet hubs"
+                    : s.view == View::RyuMenu    ? "Ryujinx (RyuLdn)"
+                    : s.view == View::YuzuMenu   ? "Yuzu Room"
+                    : s.view == View::CitraMenu  ? "Citra Room"
                     : s.view == View::KeyCapture ? "Press the key for chat (Esc: cancel)"
                                                  : "Unsaved changes");
 }

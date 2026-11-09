@@ -100,7 +100,7 @@ public class SaveImportActivity extends Activity {
 
     private TextView text(String s, int size, int color, boolean bold) {
         TextView t = new TextView(this);
-        t.setText(s);
+        t.setText(Zh.t(s));
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, size);
         t.setTextColor(color);
         if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
@@ -117,7 +117,7 @@ public class SaveImportActivity extends Activity {
 
     private Button button(String s, boolean bold) {
         Button b = new Button(this);
-        b.setText(s);
+        b.setText(Zh.t(s));
         b.setAllCaps(false);
         b.setTextColor(bold ? GOLD : CREAM);
         b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
@@ -222,7 +222,7 @@ public class SaveImportActivity extends Activity {
 
     private void say(String s, boolean bad) {
         status.setTextColor(bad ? ALERT : GOLD);
-        status.setText(s);
+        status.setText(Zh.t(s));
         status.setVisibility(android.view.View.VISIBLE);
     }
 
@@ -258,13 +258,13 @@ public class SaveImportActivity extends Activity {
                 if (wrong != null) {
                     tmpFile().delete();
                     say(wrong, true);
-                    main.setText(es ? "Elegir archivo" : "Choose file");
+                    main.setText(Zh.t(es ? "Elegir archivo" : "Choose file"));
                     return;
                 }
                 ready = true;
                 say(es ? "Partida correcta. Al continuar reemplaza la de este dispositivo."
                        : "The save is good. Going on replaces the one on this device.", false);
-                main.setText(es ? "Importar y reiniciar" : "Import and restart");
+                main.setText(Zh.t(es ? "Importar y reiniciar" : "Import and restart"));
                 main.requestFocus();
             });
         }).start();
