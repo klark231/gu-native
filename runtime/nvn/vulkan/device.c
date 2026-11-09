@@ -1,11 +1,12 @@
 // Vulkan instance, device, swapchain and presentation (on the game window from runtime/ui.c).
 //   MHGU_VK_VALIDATION=1   Khronos validation layer (MSYS2 package vulkan-validation-layers)
-//   MHGU_GPU=<index>       which Vulkan device (default: the first discrete GPU)
+//   MHGU_GPU=<index>       which Vulkan device (default: [Display] GPU, a device's name; Auto: the first discrete GPU)
 //   MHGU_VSYNC=0|1         0: no vsync (tearing possible, lowest latency), 1: classic vsync (FIFO). Default: the
 //                          settings' VSync - On: mailbox (no tearing; the game paces itself), FIFO where there is
 //                          none (the R9's driver), Off: immediate. MHGU_VK_PRESENT=fifo|mailbox|immediate picks the present mode directly.
 //   MHGU_SHOT_AT=<frame>[,<frame>...]   save the window image at those presented frames as shots/frame_N.png
 //   MHGU_FPS=1             frames per second in the log every 2 s
+//   MHGU_VK_RESERVE_MB=<n> desktop: device memory set aside at start-up (default 1024; 0 none: see mem_reserve)
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <math.h>
@@ -18,7 +19,12 @@
 #include "fsr.h"
 #include "fsr4.h"
 #include "vk.h"
+#include "xess.h"
 #include "../../touch.h"
+#ifndef __ANDROID__
+#include "../../hle/mousemenu.h"
+#endif
+#include "../../settings_locale.h"
 void vk_wait_site(int site);  // (exec.c: the next GPU wait's site, for MHGU_VK_STATS)
 
 VkG g_vk;
@@ -43,7 +49,8 @@ static pthread_t vk_exit_thread;  // the thread running exit(): it may still ent
 bool vk_exiting(void) { return exiting; }
 
 void vk_lock(void) {
-    pthread_mutex_lock(&g_vk_mutex);
+    if (HITCH_ON) hitch_mutex_lock(&g_vk_mutex, HC_VKLOCK);  // ((debug) MHGU_HITCHLOG: its waits timed)
+    else pthread_mutex_lock(&g_vk_mutex);
     if (exiting && pthread_self() != vk_exit_thread) {  // a late guest thread: park it away from the driver
         pthread_mutex_unlock(&g_vk_mutex);
         for (;;) sleep(3600);  // (not pause(): mingw-w64 has no pause, sleep is in both unistd.h)
@@ -85,17 +92,37 @@ void gpu_driver_check(void);  // (the device made: the player's driver is the on
 #define make_surface() SDL_Vulkan_CreateSurface(ui_window(), g_vk.inst, NULL, &g_vk.surface)
 #endif
 
+// (a desktop) No Vulkan driver the game can use: the player is told what to do before the fatal line (whose own box then
+// shows no second one: runtime/platform/windows.c). Windows has no Vulkan driver for the graphics of before about 2015.
+void vk_no_driver_box(const char *detail) {
+#ifndef __ANDROID__
+    LOG("[vk] no usable Vulkan driver: %s\n", detail);
+    plat_error_box(settings_text(config_language(),
+                                 "This PC's graphics has no Vulkan driver, which the game needs. Update the graphics driver from "
+                                 "the maker of the graphics card. Older graphics have none for Windows: Intel HD Graphics from "
+                                 "before 2015 (HD 2000 to HD 6000), NVIDIA GeForce 500 or older, AMD Radeon HD 6000 or older."));
+#else
+    (void)detail;
+#endif
+}
+
 static void create_instance(void) {
 #ifdef __ANDROID__
     PFN_vkGetInstanceProcAddr loader = gpu_driver_loader();
     if (!loader) FATAL("no vkGetInstanceProcAddr: is there a Vulkan driver?\n");
+    volkInitializeCustom(loader);
+#elif defined(VOLK_H_)
+    // (a desktop: the Vulkan loader SDL opened for the window, so the instance and SDL's surface come from the same one,
+    // whatever SDL_VULKAN_LIBRARY says)
+    PFN_vkGetInstanceProcAddr loader = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
+    if (!loader) vk_no_driver_box("no loader"), FATAL("no Vulkan loader (%s): is the GPU's driver installed?\n", SDL_GetError());
     volkInitializeCustom(loader);
 #endif
     disable_overwolf_layers();
     Uint32 n_sdl = 0;
     const char *const *sdl_ext = SDL_Vulkan_GetInstanceExtensions(&n_sdl);
     if (!sdl_ext) FATAL("SDL_Vulkan_GetInstanceExtensions: %s (is the window a Vulkan window?)\n", SDL_GetError());
-    const char *ext[16];
+    const char *ext[32];
     uint32_t n_ext = 0;
     for (Uint32 i = 0; i < n_sdl && n_ext < 13; i++) ext[n_ext++] = sdl_ext[i];
     uint32_t ni = 0;  // VK_EXT_full_screen_exclusive (create_device) needs this one
@@ -106,18 +133,37 @@ static void create_instance(void) {
         if (!strcmp(ip[i].extensionName, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME)) surface_caps2 = true;
     free(ip);
     if (surface_caps2) ext[n_ext++] = VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME;
-    bool validate = getenv("MHGU_VK_VALIDATION") != NULL;
-    if (validate) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
-    const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
     // MHGU_VK11=1: work as Vulkan 1.1 on a newer driver (tests what a 1.1 driver gets)
     instance_api = getenv("MHGU_VK11") ? VK_API_VERSION_1_1
                    : g_config.fsr && g_config.fsr_upscaler == FSR_UP_4 ? VK_API_VERSION_1_3 : VK_API_VERSION_1_2;  // (FSR 4's shaders use SPIR-V 1.6)
+    // XeSS-SR (only when it is the upscaler): libxess.dll loaded, its instance extensions and Vulkan version (xess.c)
+    uint32_t n_base = n_ext, base_api = instance_api;
+    bool xess = !getenv("MHGU_VK11") && g_config.fsr && g_config.fsr_upscaler == FSR_UP_XESS &&
+                vk_xess_instance_exts(ext, &n_ext, 31, &instance_api);
+    bool validate = getenv("MHGU_VK_VALIDATION") != NULL;
+    if (validate) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+    const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "MHGURecomp",
                              .pEngineName = "MHGURecomp", .apiVersion = instance_api};
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
                                .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext,
                                .enabledLayerCount = validate ? 1 : 0, .ppEnabledLayerNames = layers};
     VkResult r = vkCreateInstance(&ci, NULL, &g_vk.inst);
+    if (r == VK_ERROR_LAYER_NOT_PRESENT && validate) {  // (first: a missing validation layer is nobody else's doing)
+        LOG("[vk] validation layer unavailable (%d); continuing without\n", r);
+        ci.enabledLayerCount = 0;
+        ci.enabledExtensionCount--;  // (VK_EXT_debug_utils, the last one)
+        validate = false;
+        r = vkCreateInstance(&ci, NULL, &g_vk.inst);
+    }
+    if (r != VK_SUCCESS && xess) {  // (XeSS-SR's extensions or version refused: made as without it, and FSR 3.1 runs)
+        vk_xess_creation_failed("vkCreateInstance", r);
+        n_ext = n_base;
+        if (validate) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+        ci.enabledExtensionCount = n_ext;
+        app.apiVersion = instance_api = base_api;
+        r = vkCreateInstance(&ci, NULL, &g_vk.inst);
+    }
     if (r != VK_SUCCESS && validate) {
         LOG("[vk] validation layer unavailable (%d); continuing without\n", r);
         ci.enabledLayerCount = 0;
@@ -125,8 +171,8 @@ static void create_instance(void) {
         validate = false;
         r = vkCreateInstance(&ci, NULL, &g_vk.inst);
     }
-    if (r != VK_SUCCESS) FATAL("vkCreateInstance: %d (is a Vulkan 1.1 driver installed?)\n", r);
-#ifdef __ANDROID__
+    if (r != VK_SUCCESS) vk_no_driver_box("vkCreateInstance"), FATAL("vkCreateInstance: %d (is a Vulkan 1.1 driver installed?)\n", r);
+#ifdef VOLK_H_
     volkLoadInstance(g_vk.inst);  // (through the instance, as the library's own exports go; the device's are not bypassed)
 #endif
     if (validate) {
@@ -146,44 +192,306 @@ static bool has_ext(VkExtensionProperties *e, uint32_t n, const char *name) {
     return false;
 }
 
-// Discrete GPU first (MHGU_GPU=<index> picks one); needs Vulkan 1.1 and a queue that can draw, compute and present.
-// A Vulkan 1.1 driver (older phones) has no timeline semaphores (exec.c: fences), gets SPIR-V 1.3 (shaders.c) and no FSR.
+// The devices that can run the game, one per name in the driver's order, and the one picked: the settings' GPU row
+#define GPUS_MAX 16
+static char gpu_names[GPUS_MAX][VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
+static int gpu_count, gpu_used = -1;  // (gpu_count is stored last: the menu reads them from another thread)
+int vk_gpu_list(const char **names, int max, int *in_use) {
+    int n = __atomic_load_n(&gpu_count, __ATOMIC_ACQUIRE);
+    if (n > max) n = max;
+    for (int i = 0; i < n; i++) names[i] = gpu_names[i];
+    if (in_use) *in_use = n ? gpu_used : -1;
+    return n;
+}
+
+#ifdef _WIN32
+// The picked device's LUID (VkPhysicalDeviceIDProperties): the name Windows' own GPU figures go by, for the performance
+// readout (platform/win_stats.c reads it from its own thread). false: no device yet, or its driver gives none
+static uint8_t dev_luid[VK_LUID_SIZE];
+static int dev_luid_ok;  // (stored last)
+static void device_luid(void) {
+    VkPhysicalDeviceIDProperties idp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+    VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &idp};
+    vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+    if (!idp.deviceLUIDValid) return;
+    memcpy(dev_luid, idp.deviceLUID, sizeof dev_luid);
+    __atomic_store_n(&dev_luid_ok, 1, __ATOMIC_RELEASE);
+}
+bool vk_device_luid(uint8_t luid[8]) {
+    if (!__atomic_load_n(&dev_luid_ok, __ATOMIC_ACQUIRE)) return false;
+    memcpy(luid, dev_luid, sizeof dev_luid);
+    return true;
+}
+#endif
+
+// A queue family of d that can draw, compute and present to the window; UINT32_MAX: none
+static uint32_t draw_queue(VkPhysicalDevice d) {
+    uint32_t nq = 0, found = UINT32_MAX;
+    vkGetPhysicalDeviceQueueFamilyProperties(d, &nq, NULL);
+    VkQueueFamilyProperties *qp = calloc(nq ? nq : 1, sizeof *qp);
+    vkGetPhysicalDeviceQueueFamilyProperties(d, &nq, qp);
+    for (uint32_t i = 0; i < nq && found == UINT32_MAX; i++) {
+        VkBool32 present = VK_FALSE;
+        vkGetPhysicalDeviceSurfaceSupportKHR(d, i, g_vk.surface, &present);
+        if ((qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && (qp[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && present) found = i;
+    }
+    free(qp);
+    return found;
+}
+
+// Discrete GPU first (MHGU_GPU=<index> picks one; else [Display] GPU, a device's name); needs Vulkan 1.1 and a queue that
+// can draw, compute and present (one picked without it gives way to the next best). A Vulkan 1.1 driver (older phones)
+// has no timeline semaphores (exec.c: fences), gets SPIR-V 1.3 (shaders.c) and no FSR.
 static void pick_device(void) {
     uint32_t n = 0;
     vkEnumeratePhysicalDevices(g_vk.inst, &n, NULL);
-    if (!n) FATAL("no Vulkan device\n");
+    if (!n) vk_no_driver_box("no device"), FATAL("no Vulkan device\n");
     VkPhysicalDevice *pd = calloc(n, sizeof *pd);
+    int *score = calloc(n, sizeof *score);  // (-1: can't run the game)
     vkEnumeratePhysicalDevices(g_vk.inst, &n, pd);
-    int want = getenv("MHGU_GPU") ? atoi(getenv("MHGU_GPU")) : -1, best = -1, best_score = -1;
+    const char *env = getenv("MHGU_GPU"), *name = env ? "" : g_config.gpu;
+    bool by_name = *name && SDL_strcasecmp(name, "Auto"), named = false, any = false;
+    int want = env ? atoi(env) : -1, listed = 0;
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(pd[i], &p);
         LOG("[vk] gpu %u: %s (api %u.%u.%u)\n", i, p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
             VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion));
+        score[i] = -1;
         if (p.apiVersion < VK_API_VERSION_1_1) continue;
-        int score = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3 : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
-        if (p.apiVersion >= VK_API_VERSION_1_2) score += 10;
-        if ((int)i == want) score = 100;
-        if (score > best_score) { best_score = score; best = (int)i; }
+        bool seen = false;  // (two of the same card: one name, the first; MHGU_GPU picks the other)
+        for (int k = 0; k < listed; k++) seen |= !strcmp(gpu_names[k], p.deviceName);
+        if (!seen && listed < GPUS_MAX) snprintf(gpu_names[listed++], sizeof gpu_names[0], "%s", p.deviceName);
+        score[i] = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3 : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
+        if (p.apiVersion >= VK_API_VERSION_1_2) score[i] += 10;
+        if ((int)i == want) score[i] = 100;
+        if (by_name && !named && !SDL_strcasecmp(p.deviceName, name)) score[i] = 100, named = true;
+        any = true;
     }
-    if (best < 0) FATAL("no Vulkan 1.1 device\n");
-    g_vk.phys = pd[best];
-    free(pd);
-    vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
-    g_vk.api12 = g_vk.props.apiVersion >= VK_API_VERSION_1_2 && instance_api >= VK_API_VERSION_1_2;
-    uint32_t nq = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, NULL);
-    VkQueueFamilyProperties *qp = calloc(nq, sizeof *qp);
-    vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, qp);
+    if (by_name && !named) LOG("[vk] the settings' GPU \"%s\" is not here: the automatic choice\n", name);
+    if (!any) vk_no_driver_box("no 1.1 device"), FATAL("no Vulkan 1.1 device\n");
     g_vk.qfam = UINT32_MAX;
-    for (uint32_t i = 0; i < nq; i++) {
-        VkBool32 present = VK_FALSE;
-        vkGetPhysicalDeviceSurfaceSupportKHR(g_vk.phys, i, g_vk.surface, &present);
-        if ((qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && (qp[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && present) { g_vk.qfam = i; break; }
+    for (;;) {  // (the best first; the first of equals)
+        int best = -1;
+        for (uint32_t i = 0; i < n; i++)
+            if (score[i] >= 0 && (best < 0 || score[i] > score[best])) best = (int)i;
+        if (best < 0) vk_no_driver_box("no queue"), FATAL("no graphics+present queue\n");
+        if ((g_vk.qfam = draw_queue(pd[best])) != UINT32_MAX) {
+            g_vk.phys = pd[best];
+            break;
+        }
+        LOG("[vk] gpu %d has no queue that draws in the window: the next one\n", best);
+        score[best] = -1;
     }
-    free(qp);
-    if (g_vk.qfam == UINT32_MAX) FATAL("no graphics+present queue\n");
+    free(pd);
+    free(score);
+    vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
+    for (int k = 0; k < listed; k++)
+        if (!strcmp(gpu_names[k], g_vk.props.deviceName)) gpu_used = k;
+    __atomic_store_n(&gpu_count, listed, __ATOMIC_RELEASE);
+#ifdef _WIN32
+    device_luid();
+#endif
+    g_vk.api12 = g_vk.props.apiVersion >= VK_API_VERSION_1_2 && instance_api >= VK_API_VERSION_1_2;
     LOG("[vk] using %s, driver %#x\n", g_vk.props.deviceName, g_vk.props.driverVersion);
+}
+
+// ((debug) MHGU_HITCHLOG) VMA's device memory allocations, timed: its blocks and dedicated allocations
+static VKAPI_ATTR VkResult VKAPI_CALL timed_allocate(VkDevice d, const VkMemoryAllocateInfo *ai, const VkAllocationCallbacks *cb,
+                                                     VkDeviceMemory *m) {
+    uint64_t t0 = plat_now_ns();
+    VkResult r = vkAllocateMemory(d, ai, cb, m);
+    hitch_add(HC_VKALLOC, plat_now_ns() - t0, ai->allocationSize);
+    return r;
+}
+static VKAPI_ATTR void VKAPI_CALL timed_free(VkDevice d, VkDeviceMemory m, const VkAllocationCallbacks *cb) {
+    uint64_t t0 = plat_now_ns();
+    vkFreeMemory(d, m, cb);
+    hitch_add(HC_VKFREE, plat_now_ns() - t0, 0);
+}
+
+#ifndef __ANDROID__
+// ---- device memory set aside at start-up (desktop)
+// VMA takes device memory from the driver as the game's textures, render targets and vertex cache outgrow the blocks
+// it has: a new block (256 MB; 32, 64 and 128 MB first) by vkAllocateMemory on the render thread with vk_lock held,
+// 13-16 ms each on an RX 6800 XT (MHGU_HITCHLOG's vkalloc), and a hunt had taken 0.74 GB of blocks. So that memory is
+// taken here, before the game runs: a VMA pool of fixed-size blocks for the memory type those resources get, made with
+// its blocks (minBlockCount: kept for good), which never gives one image an allocation of its own either (VMA's
+// default pools do for a big one, or for one the driver says it prefers alone). vk_create_image / vk_create_buffer
+// place a resource there when it is of the pool's type and fits a block; anything else, or once the pool can't grow,
+// goes to VMA's own blocks as before. A quarter of the heap's budget at most: VK_EXT_memory_budget's figure (what this
+// process may use beside the others) where the driver has it, else 80% of the heap.
+//   MHGU_VK_RESERVE_MB=<n>   how much (default 1024); 0: none, VMA's blocks grow in play as before
+#define RESERVE_MB 1024
+static bool mem_budget_ext;  // VK_EXT_memory_budget enabled
+static VmaPool res_pool[2];
+static uint32_t res_type[2], res_blocks[2], res_n;
+static VkDeviceSize res_block;    // the pools' block size
+static VkDeviceSize res_peak[2];  // the most each pool has held (logged at exit: what the reserve should be)
+
+// The memory type VMA picks for a resource only the GPU uses (VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE without host
+// access: device-local preferred, AMD's uncached types avoided) among those its requirements allow
+static uint32_t gpu_mem_type(uint32_t bits) {
+    VmaAllocationCreateInfo ai = {.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
+    uint32_t t;
+    return vmaFindMemoryTypeIndex(g_vk.vma, bits, &ai, &t) == VK_SUCCESS ? t : UINT32_MAX;
+}
+
+// The type a texture (RGBA8, sampled and rendered to) or a vertex cache buffer gets here
+static uint32_t probe_type(bool image) {
+    VkMemoryRequirements r = {0};
+    if (image) {
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT,
+                                .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {256, 256, 1},
+                                .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+        VkImage im;
+        if (vkCreateImage(g_vk.dev, &ci, NULL, &im) != VK_SUCCESS) return UINT32_MAX;
+        vkGetImageMemoryRequirements(g_vk.dev, im, &r);
+        vkDestroyImage(g_vk.dev, im, NULL);
+    } else {
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 65536,
+                                 .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                          VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+        VkBuffer b;
+        if (vkCreateBuffer(g_vk.dev, &bi, NULL, &b) != VK_SUCCESS) return UINT32_MAX;
+        vkGetBufferMemoryRequirements(g_vk.dev, b, &r);
+        vkDestroyBuffer(g_vk.dev, b, NULL);
+    }
+    return r.memoryTypeBits ? gpu_mem_type(r.memoryTypeBits) : UINT32_MAX;
+}
+
+// A pool of `blocks` blocks of memory type `type`, half as many each time the driver refuses: the blocks made, 0 none
+static uint32_t reserve_pool(uint32_t type, uint32_t blocks) {
+    for (; blocks; blocks /= 2) {
+        VmaPoolCreateInfo pi = {.memoryTypeIndex = type, .blockSize = res_block, .minBlockCount = blocks};
+        if (vmaCreatePool(g_vk.vma, &pi, &res_pool[res_n]) == VK_SUCCESS) {
+            res_type[res_n] = type, res_blocks[res_n++] = blocks;
+            return blocks;
+        }
+    }
+    return 0;
+}
+
+static void mem_reserve(void) {
+    const char *e = getenv("MHGU_VK_RESERVE_MB");
+    long mb = e ? atol(e) : RESERVE_MB;
+    if (mb <= 0) { LOG("[vk] device memory: none set aside (MHGU_VK_RESERVE_MB)\n"); return; }
+    uint32_t ti = probe_type(true), tb = probe_type(false);
+    if (ti == UINT32_MAX) return;
+    const VkPhysicalDeviceMemoryProperties *mp;
+    vmaGetMemoryProperties(g_vk.vma, &mp);
+    uint32_t heap = mp->memoryTypes[ti].heapIndex;
+    VmaBudget bud[VK_MAX_MEMORY_HEAPS];
+    vmaGetHeapBudgets(g_vk.vma, bud);
+    VkDeviceSize avail = bud[heap].budget > bud[heap].usage ? bud[heap].budget - bud[heap].usage : 0;
+    VkDeviceSize want = (VkDeviceSize)mb << 20;
+    if (want > avail / 4) want = avail / 4;
+    res_block = want >= 512ull << 20 ? 256ull << 20 : 128ull << 20;
+    uint32_t blocks = (uint32_t)(want / res_block);
+    // (a driver that gives buffers a type of their own: a third of the blocks for the vertex cache's)
+    uint32_t nb = tb != ti && tb != UINT32_MAX && blocks >= 2 ? (blocks / 3 ? blocks / 3 : 1) : 0;
+    uint32_t got = blocks > nb ? reserve_pool(ti, blocks - nb) : 0, got_b = nb ? reserve_pool(tb, nb) : 0;
+    char vc[64] = "";
+    if (got_b) snprintf(vc, sizeof vc, ", %u MB of type %u for the vertex cache", got_b * (uint32_t)(res_block >> 20), tb);
+    if (got || got_b)
+        LOG("[vk] device memory set aside: %u MB in blocks of %u MB (type %u; heap %u: %llu MB, budget %llu MB%s)%s\n",
+            got * (uint32_t)(res_block >> 20), (uint32_t)(res_block >> 20), ti, heap,
+            (unsigned long long)(mp->memoryHeaps[heap].size >> 20), (unsigned long long)(bud[heap].budget >> 20),
+            mem_budget_ext ? "" : ", estimated", vc);
+    else
+        LOG("[vk] device memory: none set aside (heap %u: %llu MB, budget %llu MB%s)\n", heap,
+            (unsigned long long)(mp->memoryHeaps[heap].size >> 20), (unsigned long long)(bud[heap].budget >> 20),
+            mem_budget_ext ? "" : ", estimated");
+}
+
+// The reserve's pool for a resource of these requirements: of the type VMA would pick for it, and no bigger than a
+// block (NULL: VMA's own blocks)
+static VmaPool reserve_for(const VkMemoryRequirements *r, VkBool32 dedicated_only) {
+    if (!res_n || dedicated_only || r->size > res_block) return VK_NULL_HANDLE;
+    uint32_t t = gpu_mem_type(r->memoryTypeBits);
+    for (uint32_t i = 0; i < res_n; i++)
+        if (res_type[i] == t) return res_pool[i];
+    return VK_NULL_HANDLE;
+}
+
+static void reserve_used(VmaPool p) {  // (an allocation was just made there: its peak use)
+    for (uint32_t i = 0; i < res_n; i++)
+        if (res_pool[i] == p) {
+            VmaStatistics st;
+            vmaGetPoolStatistics(g_vk.vma, p, &st);
+            if (st.allocationBytes > res_peak[i]) res_peak[i] = st.allocationBytes;
+        }
+}
+
+// What VMA takes from the driver (its blocks, allocations of their own), per heap. Once start-up is over each new one
+// is logged, the first 20: the reserve or the staging chunks fell short, or a resource didn't fit a block
+static uint64_t dm_bytes[VK_MAX_MEMORY_HEAPS];
+static uint32_t dm_heap[VK_MAX_MEMORY_TYPES];
+static bool dm_started;
+static void VKAPI_PTR dm_allocated(VmaAllocator a, uint32_t type, VkDeviceMemory m, VkDeviceSize size, void *user) {
+    (void)a, (void)m, (void)user;
+    uint32_t h = dm_heap[type];
+    uint64_t total = __atomic_add_fetch(&dm_bytes[h], size, __ATOMIC_RELAXED);
+    static int n;
+    if (__atomic_load_n(&dm_started, __ATOMIC_RELAXED) && __atomic_fetch_add(&n, 1, __ATOMIC_RELAXED) < 20)
+        LOG("[vk] device memory taken after start-up: %.1f MB (type %u), heap %u now %llu MB\n", size / 1048576.0, type, h,
+            (unsigned long long)(total >> 20));
+}
+static void VKAPI_PTR dm_freed(VmaAllocator a, uint32_t type, VkDeviceMemory m, VkDeviceSize size, void *user) {
+    (void)a, (void)m, (void)user;
+    __atomic_sub_fetch(&dm_bytes[dm_heap[type]], size, __ATOMIC_RELAXED);
+}
+#endif
+
+VkResult vk_create_image(const VkImageCreateInfo *ci, VkImage *img, VmaAllocation *mem) {
+#ifndef __ANDROID__
+    VkImage im;
+    if (res_n && vkCreateImage(g_vk.dev, ci, NULL, &im) == VK_SUCCESS) {
+        VkMemoryDedicatedRequirements dr = {.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
+        VkMemoryRequirements2 r = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dr};
+        VkImageMemoryRequirementsInfo2 ri = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2, .image = im};
+        vkGetImageMemoryRequirements2(g_vk.dev, &ri, &r);
+        VmaAllocationCreateInfo ai = {.pool = reserve_for(&r.memoryRequirements, dr.requiresDedicatedAllocation)};
+        VmaAllocation a;
+        if (ai.pool && vmaAllocateMemoryForImage(g_vk.vma, im, &ai, &a, NULL) == VK_SUCCESS) {
+            if (vmaBindImageMemory(g_vk.vma, a, im) == VK_SUCCESS) {
+                reserve_used(ai.pool);
+                return *img = im, *mem = a, VK_SUCCESS;
+            }
+            vmaFreeMemory(g_vk.vma, a);
+        }
+        vkDestroyImage(g_vk.dev, im, NULL);  // (no room there: made again below, in VMA's own blocks)
+    }
+#endif
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    return vmaCreateImage(g_vk.vma, ci, &ai, img, mem, NULL);
+}
+
+VkResult vk_create_buffer(const VkBufferCreateInfo *bi, VkBuffer *buf, VmaAllocation *mem) {
+#ifndef __ANDROID__
+    VkBuffer b;
+    if (res_n && vkCreateBuffer(g_vk.dev, bi, NULL, &b) == VK_SUCCESS) {
+        VkMemoryDedicatedRequirements dr = {.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
+        VkMemoryRequirements2 r = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dr};
+        VkBufferMemoryRequirementsInfo2 ri = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2, .buffer = b};
+        vkGetBufferMemoryRequirements2(g_vk.dev, &ri, &r);
+        VmaAllocationCreateInfo ai = {.pool = reserve_for(&r.memoryRequirements, dr.requiresDedicatedAllocation)};
+        VmaAllocation a;
+        if (ai.pool && vmaAllocateMemoryForBuffer(g_vk.vma, b, &ai, &a, NULL) == VK_SUCCESS) {
+            if (vmaBindBufferMemory(g_vk.vma, a, b) == VK_SUCCESS) {
+                reserve_used(ai.pool);
+                return *buf = b, *mem = a, VK_SUCCESS;
+            }
+            vmaFreeMemory(g_vk.vma, a);
+        }
+        vkDestroyBuffer(g_vk.dev, b, NULL);
+    }
+#endif
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    return vmaCreateBuffer(g_vk.vma, bi, &ai, buf, mem, NULL);
 }
 
 static void create_device(void) {
@@ -191,7 +499,7 @@ static void create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[16];
+    const char *ext[32];
     uint32_t n_ext = 0;
     if (!g_vk.api12 && g_config.fsr) {
         LOG("[vk] FSR needs Vulkan 1.2: off\n");
@@ -208,7 +516,13 @@ static void create_device(void) {
     if (g_vk.stencil_export) ext[n_ext++] = VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME;
     no_exclusive = surface_caps2 && has_ext(ep, ne, "VK_EXT_full_screen_exclusive") && !getenv("MHGU_VK_EXCLUSIVE");
     if (no_exclusive) ext[n_ext++] = "VK_EXT_full_screen_exclusive";
+#ifndef __ANDROID__
+    mem_budget_ext = has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);  // (how much mem_reserve may set aside)
+    if (mem_budget_ext) ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+#endif
     bool fsr4 = g_config.fsr && g_config.fsr_upscaler == FSR_UP_4 && vk_fsr4_device_exts(ep, ne, ext, &n_ext);  // FSR 4: its extensions
+    uint32_t n_ext_base = n_ext;  // XeSS-SR: its extensions (only when it is the upscaler; xess.c)
+    bool xess = g_config.fsr && g_config.fsr_upscaler == FSR_UP_XESS && vk_xess_device_exts(ep, ne, ext, &n_ext, 32);
     free(ep);
 
     // optional features: whatever the GPU has of what the backend can use
@@ -279,13 +593,35 @@ static void create_device(void) {
         f12.shaderFloat16 = b->shaderInt16 = g_vk.fsr_fp16 = f12_have.shaderFloat16 && h->shaderInt16;  // (both, or neither)
     }
     if (fsr4) vk_fsr4_device_features(&f11, &f12, b);  // FSR 4: cooperative matrix, float8... (only when asked for)
+    // XeSS-SR: its features merged into the chain by hand (only when it is the upscaler). The chain as it was is kept, for
+    // a device made without it if vkCreateDevice refuses them
+    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceFeatures2 f_keep = f;
+    VkPhysicalDeviceVulkan11Features f11_keep = f11;
+    VkPhysicalDeviceVulkan12Features f12_keep = f12;
+    xess = xess && vk_xess_device_features(&f, &f11, &f12, &f13, instance_api >= VK_API_VERSION_1_3 &&
+                                                                     g_vk.props.apiVersion >= VK_API_VERSION_1_3);
+    if (!xess) n_ext = n_ext_base;
     if (maxwell_no_int64) LOG("[vk] no shaderInt64: the shaders do their 64-bit math in 32 bits\n");
     float prio = 1.0f;
-    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
-                                  .queueCount = 1, .pQueuePriorities = &prio};
-    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
-                             .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
-    VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
+    VkDeviceQueueCreateInfo qi[2] = {{.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
+                                      .queueCount = 1, .pQueuePriorities = &prio}};
+    uint32_t nq = xess ? vk_xess_device_queues(qi, 1, 2) : 1;  // (XeSS-SR: a compute queue too, xess.c)
+    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = nq,
+                             .pQueueCreateInfos = qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
+    if (!xess) {
+        VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
+    } else {
+        VkResult dr = vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev);
+        vk_xess_device_done();
+        if (dr != VK_SUCCESS) {  // (XeSS-SR's additions refused: the device as without it, and FSR 3.1 runs)
+            vk_xess_creation_failed("vkCreateDevice", dr);
+            f = f_keep, f11 = f11_keep, f12 = f12_keep;
+            di.enabledExtensionCount = n_ext = n_ext_base;
+            di.queueCreateInfoCount = 1;
+            VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
+        }
+    }
 #ifdef __ANDROID__
     gpu_driver_check();
     {   // (Vulkan 1.2's, and only by the device: the libvulkan of an older Android doesn't know them)
@@ -314,7 +650,10 @@ static void create_device(void) {
     g_vk.msaa = msaa_floor(g_vk.msaa);
 
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.dev, .instance = g_vk.inst,
-                                 .vulkanApiVersion = g_vk.api12 ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1};
+                                 .vulkanApiVersion = g_vk.api12 ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1,
+                                 // (blocks of 32 MB, not VMA's 256: a phone holds a block whole however little of it is
+                                 // used; 7 blocks, 928 MB, and vkQueueSubmit out of device memory on a 2.7 GB phone)
+                                 .preferredLargeHeapBlockSize = 32ull << 20};
     // PowerVR (BXM-8-256, Dimensity 7020 to 7300): games closed after 5 to 15 minutes, out of the process's memory map
     // entries (mprotect: "out of memory" on a phone with 11 GB; pipelines failing with OUT_OF_HOST_MEMORY), while the
     // write tracking had armed only 16 runs. A driver that prefers an allocation of its own for each image gets one
@@ -324,7 +663,20 @@ static void create_device(void) {
         ai.vulkanApiVersion = VK_API_VERSION_1_0;
         LOG("[vk] PowerVR: images share VMA's memory blocks (no allocation of their own)\n");
     }
+    static VmaVulkanFunctions timed = {.vkAllocateMemory = timed_allocate, .vkFreeMemory = timed_free};
+    if (HITCH_ON) ai.pVulkanFunctions = &timed;  // (the others: VMA's own, as without it)
+#ifndef __ANDROID__
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+    for (uint32_t i = 0; i < mp.memoryTypeCount; i++) dm_heap[i] = mp.memoryTypes[i].heapIndex;
+    static const VmaDeviceMemoryCallbacks dm = {.pfnAllocate = dm_allocated, .pfnFree = dm_freed};
+    ai.pDeviceMemoryCallbacks = &dm;
+    if (mem_budget_ext) ai.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+#endif
     VK_CHECK(vmaCreateAllocator(&ai, &g_vk.vma));
+#ifndef __ANDROID__
+    mem_reserve();
+#endif
 
     if (g_vk.has_timeline) {
         VkSemaphoreTypeCreateInfo st = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
@@ -410,9 +762,23 @@ void vk_mem_summary(char *out, size_t size) {
              t.total.statistics.allocationCount, (unsigned long long)(t.total.statistics.blockBytes >> 20));
 }
 
+// MSAA can't change while FSR runs (it does the anti-aliasing) or with Low-end mode (it has none). A desktop's plain
+// scaling below 100% without either (fsr.c: g_fsr_on, no FSR) keeps the player's MSAA, as it is at 100%. A desktop's
+// Low-end mode locks it whether or not it scales (at 720 lines or fewer its RenderScale stays 100: no plain scaling)
+static bool msaa_locked(void) {
+#ifdef __ANDROID__
+    if (g_fsr_on) LOG("[vk] MSAA stays off while FSR is on\n");
+    return g_fsr_on;
+#else
+    bool locked = g_config.low_end || (g_fsr_on && g_config.fsr);
+    if (locked) LOG("[vk] MSAA stays off while %s is on\n", g_config.low_end ? "Low-end mode" : "FSR");
+    return locked;
+#endif
+}
+
 // F7 (host_input.c): MSAA off -> 2x -> 4x -> 8x (those the GPU has) -> off, from the next pass on.
 void vk_cycle_msaa(void) {
-    if (g_fsr_on) { LOG("[vk] MSAA stays off while FSR is on\n"); return; }
+    if (msaa_locked()) return;
     uint32_t s = g_vk.msaa;
     do s = s >= 8 ? 1 : s * 2; while (s > 1 && !(g_vk.msaa_counts & s));
     g_vk.msaa = s;
@@ -421,7 +787,7 @@ void vk_cycle_msaa(void) {
 
 // MHGU_CONTROL "msaa <n>": as many samples as the GPU allows up to n (test runs).
 void vk_set_msaa(uint32_t n) {
-    if (g_fsr_on) { LOG("[vk] MSAA stays off while FSR is on\n"); return; }
+    if (msaa_locked()) return;
     uint32_t s = 1;
     for (uint32_t c = 2; c <= 8; c *= 2) if (c <= n && (g_vk.msaa_counts & c)) s = c;
     g_vk.msaa = s = msaa_floor(s);
@@ -575,9 +941,11 @@ static void create_swapchain(void) {
 }
 
 static void recreate_swapchain(void) {
+    uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
     vk_wait_seq(vk_pending_seq() - 1);
     vkDeviceWaitIdle(g_vk.dev);
     create_swapchain();
+    if (HITCH_ON) hitch_add(HC_SWAPCHAIN, plat_now_ns() - t0, 0);
 }
 
 VkRenderPass vk_window_pass(void) { return sc_pass; }
@@ -668,7 +1036,9 @@ static bool frame_begin(void) {
     if (!acquire_sem[slot]) acquire_sem[slot] = binary_semaphore();
     vk_wait_site(5);  // (exec.c W_PRESENT)
     vk_wait_seq(slot_seq[slot]);
+    uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
     VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+    if (HITCH_ON) hitch_add(HC_ACQUIRE, plat_now_ns() - t0, 0);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreate_swapchain();
         r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
@@ -738,7 +1108,9 @@ static void frame_end(const char *shot_path) {
     vk_submit_extra(cur_frame.acquired, done_sem[img]);
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &done_sem[img],
                            .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
+    uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
     VkResult r = vkQueuePresentKHR(g_vk.queue, &pi);
+    if (HITCH_ON) hitch_add(HC_PRESENT, plat_now_ns() - t0, 0);
 #ifdef __ANDROID__
     // (Android says SUBOPTIMAL every frame while the picture is not pre-rotated for the panel (identity transform on a
     // portrait panel held sideways): the compositor turns it, which is fine; remaking the swapchain for it drained the
@@ -793,8 +1165,8 @@ static bool shot_frame(uint64_t f) {
 }
 
 void backend_present(NvnTexture *t) {
-    extern void vi_apply_framerate(void);
-    vi_apply_framerate();
+    extern void vi_frame_presented(void);
+    vi_frame_presented();  // (the frame rate target back in place; MHGU_STEPLOG's count: runtime/hle/vi.c)
     vk_lock();
     if (g_fsr_on) t = vk_fsr_present(t);  // FSR: its output-size picture with the HUD (fsr.c)
     TexBackend *b = vk_tex(t, true);
@@ -802,9 +1174,17 @@ void backend_present(NvnTexture *t) {
     vk_end_pass();
     vk_ms_resolve(b);
     if (frame_begin()) {
-        // the game's image, as large as fits with its aspect ratio, centred
-        double ww = g_vk.sc_extent.width, wh = g_vk.sc_extent.height, s = fmin(ww / t->width, wh / t->height);
-        double vw = t->width * s, vh = t->height * s;
+        // the game's image, as large as fits in the picture's shape, centred: g_render_aspect, the image's own shape
+        // unless the window has changed shape since the start (a desktop: config.c config_window_shape), when the image
+        // made at the start is stretched to it, its 3D drawn for that shape
+        double ww = g_vk.sc_extent.width, wh = g_vk.sc_extent.height;
+#ifdef __ANDROID__
+        double a = (double)t->width / t->height;
+#else
+        double a = g_render_aspect > 0 ? g_render_aspect : (double)t->width / t->height;
+#endif
+        double vw = ww, vh = ww / a;
+        if (vh > wh) vh = wh, vw = wh * a;
         vk_present_draw(vk_cmd(), b, (float)((ww - vw) / 2), (float)((wh - vh) / 2), (float)vw, (float)vh);
         OverlayTarget ot = {g_vk.inst, g_vk.phys, g_vk.dev, g_vk.qfam, g_vk.queue, g_vk.pcache, sc_pass,
                             g_vk.sc_extent.width, g_vk.sc_extent.height};
@@ -833,6 +1213,9 @@ void backend_present(NvnTexture *t) {
     if (g_frames == 120) gpu_driver_good();  // (a driver of the player's own has drawn: it stays)
 #endif
     touch_hud_frame();  // (the touch controls: where this frame's HUD parts were, runtime/touch.cpp)
+#ifndef __ANDROID__
+    mousemenu_frame();  // (and the mouse in the game's menus: where this frame's menu pieces were, runtime/hle/mousemenu.c)
+#endif
     {   // (debug) MHGU_CONTROL "dump": the next whole frame's passes (exec.c dump_pass)
         extern volatile int g_dump_active, g_dump_request;
         extern int g_dump_no, g_dump_frame;
@@ -850,8 +1233,9 @@ void backend_present(NvnTexture *t) {
     }
     { void vk_gpuprof_frame(void); vk_gpuprof_frame(); }  // (debug) MHGU_CONTROL "gpuprof"
     vk_unlock();
-#ifdef __ANDROID__
-    perf_hint_frame();  // (this frame's work to the performance hint session, outside the lock: runtime/platform/android_perf.c)
+#if defined(__ANDROID__) || defined(_WIN32)
+    perf_hint_frame();  // (this frame's work to the performance hint session, outside the lock: runtime/platform/android_perf.c;
+                        // Windows: the readout's render thread, platform/win_stats.c)
 #endif
     static int fps = -1;
     if (fps < 0) fps = getenv("MHGU_FPS") != NULL;
@@ -862,6 +1246,7 @@ void backend_present(NvnTexture *t) {
         if (fps) LOG("[vk] %.1f fps (frame %llu)\n", (g_frames - n0) * 1e9 / (double)(now - t0), (unsigned long long)g_frames);
         t0 = now, n0 = g_frames;
     }
+    if (HITCH_ON) hitch_frame(HT_RENDER, 0);  // ((debug) MHGU_HITCHLOG: present to present, runtime/hitchlog.c)
     // (the app in the background, [Application] PauseInBackground: the presenting thread stops here, outside the
     // Vulkan lock, until it is back; the next frame then makes the window's surface again: frame_begin)
     extern void vi_pause_wait(void);
@@ -887,8 +1272,13 @@ static void exit_handler(void) {
         vkDeviceWaitIdle(g_vk.dev);
         pipeline_cache_save();
     }
+#ifndef __ANDROID__
+    for (uint32_t i = 0; i < res_n; i++)
+        LOG("[vk] device memory set aside (type %u): at most %llu of its %llu MB held\n", res_type[i],
+            (unsigned long long)(res_peak[i] >> 20), (unsigned long long)(res_blocks[i] * res_block >> 20));
+#endif
     fflush(stdout);
-    fflush(stderr);
+    rt_log_flush();  // (Windows: the log's queued lines, runtime/logwriter.c; elsewhere fflush(stderr))
     _exit(0);
 }
 
@@ -906,4 +1296,7 @@ void backend_init(void) {
     vk_fsr_init();  // ([Upscaler] FSR: fsr.c)
     create_swapchain();
     atexit(exit_handler);
+#ifndef __ANDROID__
+    __atomic_store_n(&dm_started, true, __ATOMIC_RELAXED);  // (device memory taken from here on is logged)
+#endif
 }

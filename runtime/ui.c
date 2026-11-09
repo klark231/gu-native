@@ -25,14 +25,14 @@ static SDL_AtomicInt requested_action, action_failed;
 void ui_capture_launch_args(int argc, char **argv) { launch_argc = argc; launch_argv = argv; }
 void ui_request_action(bool restart) { SDL_SetAtomicInt(&requested_action, restart ? 2 : 1); }
 bool ui_action_failed(void) { return SDL_SetAtomicInt(&action_failed, 0) != 0; }
-#ifdef __ANDROID__
 void ui_request_licenses(void) { SDL_SetAtomicInt(&requested_action, 3); }
 void ui_request_game_folder(void) { SDL_SetAtomicInt(&requested_action, 4); }
 void ui_request_save_import(void) { SDL_SetAtomicInt(&requested_action, 5); }
 void ui_request_share_log(void) { SDL_SetAtomicInt(&requested_action, 6); }
 void ui_request_save_export(void) { SDL_SetAtomicInt(&requested_action, 7); }
-void ui_request_gpu_driver(void) { SDL_SetAtomicInt(&requested_action, 8); }
 void ui_request_import(int kind) { SDL_SetAtomicInt(&requested_action, 9 + kind); }  // (0 cheats, 1 a mod, 2 DLC)
+#ifdef __ANDROID__
+void ui_request_gpu_driver(void) { SDL_SetAtomicInt(&requested_action, 8); }
 static void activity_call(const char *method) {  // (a static void method of GameActivity: as restart_application)
     JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
     jobject act = env ? (jobject)SDL_GetAndroidActivity() : NULL;
@@ -184,11 +184,11 @@ static bool android_lifecycle(void *ud, SDL_Event *e) {
 #endif
 
 void ui_init(void) {
-#ifdef __ANDROID__
-    // Touches are not mouse clicks here (a click is X / A and the mouse turns the camera: host_input.c), and the
-    // window is the screen, in landscape.
+    // Touches are not mouse clicks (a click is X / A and the mouse turns the camera: host_input.c; on a PC with a touch
+    // screen every touch was an attack too): the fingers are the touch controls' and the menus' (runtime/touch.cpp)
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
-    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+#ifdef __ANDROID__
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");  // (the window is the screen, in landscape)
 #endif
     if (!SDL_Init(SDL_INIT_VIDEO)) FATAL("SDL_Init: %s\n", SDL_GetError());
     int sdl = SDL_GetVersion();
@@ -215,7 +215,11 @@ void ui_init(void) {
 #endif
     if (getenv("MHGU_HIDDEN")) flags |= SDL_WINDOW_HIDDEN;
     window = SDL_CreateWindow("Monster Hunter Generations Ultimate", win_w, win_h, flags);
-    if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
+    if (!window) {
+        void vk_no_driver_box(const char *detail);  // (nvn/vulkan/device.c: a Vulkan window needs the Vulkan loader)
+        if (SDL_strcasestr(SDL_GetError(), "vulkan")) vk_no_driver_box(SDL_GetError());
+        FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
+    }
     if (g_config.display_mode != DISPLAY_WINDOWED) set_fullscreen(true);
 #ifdef __ANDROID__
     SDL_AddEventWatch(android_lifecycle, NULL);
@@ -230,6 +234,7 @@ void ui_toggle_fullscreen(void) {
 int ui_run(void) {
     int background = config_live_background_input();
     for (;;) {
+        if (HITCH_ON) hitch_frame(HT_INPUT, 0);  // ((debug) MHGU_HITCHLOG: one pass, runtime/hitchlog.c)
         int wanted_background = config_live_background_input();
         if (wanted_background != background) {
             SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, wanted_background ? "1" : "0");
@@ -270,6 +275,14 @@ int ui_run(void) {
         static float screen_for = -1;  // (the screen's refresh rate follows the FPS limit: GameActivity.setFrameCap)
         float fps_now = config_live_fps();
         if (fps_now != screen_for) screen_for = fps_now, frame_cap_to_activity(fps_now);
+#else
+        // (a desktop: the system's dialogs, runtime/pc_actions.c; the licenses are a page of the menu itself)
+        if (action == 4) pc_choose_game_folder();
+        if (action == 5) pc_import_save();
+        if (action == 6) pc_open_log_folder();
+        if (action == 7) pc_export_save();
+        if (action == 9) pc_import_cheats();
+        if (action == 10) pc_import_mod();
 #endif
         if (action == 2) {
             if (restart_application()) exit(0);
@@ -277,6 +290,6 @@ int ui_run(void) {
         }
         host_input_update();
         cheats_frame();
-        perfstats_poll();  // ([Performance] ShowStats: the phone's temperature, every 2 s at most)
+        perfstats_poll();  // ([Performance] ShowStats: the phone's temperature, every 2 s at most; a PC's sampler level)
     }
 }

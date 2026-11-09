@@ -1,21 +1,44 @@
-MIT License
+MHGU for Android License
 
-Copyright (c) 2026 Rokk
+Copyright (c) 2026 khorne-hub. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This license applies to MHGU for Android version 0.1.7 and every later version: the source code in this
+repository, except the parts that THIRD_PARTY_NOTICES lists as third-party software, and the APK files
+published on this repository's Releases page. Versions 0.1.6 and earlier remain under the MIT License they
+were published with.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. What you may do without asking
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+   - Download the APK from this repository's Releases page and install it on your own devices.
+   - Read the source code and build it for your own personal use.
+   - Report problems and send changes to this project as issues or pull requests on GitHub, and fork this
+     repository on GitHub to prepare them, as GitHub's Terms of Service allow.
+
+2. What needs the author's prior written permission
+
+   - Redistributing the app or its source code, whole or in part, modified or not, by any means: other
+     websites, app stores, file hosts, mirrors, archives, bundles or preinstalled system images.
+   - Publishing builds of it, or works based on it, under this or any other name.
+   - Any commercial use.
+
+   To ask for permission, open an issue at https://github.com/khorne-hub/gu-native/issues. Permission is
+   given only in writing by the author, for the use it names.
+
+3. Third-party software
+
+   Parts of this project come from other projects, MHGURecomp among them. THIRD_PARTY_NOTICES lists them with
+   their licenses. Those parts remain under their own licenses, and nothing in this license restricts what
+   those licenses allow for them.
+
+4. No game content
+
+   This project contains no game code, game data, ROMs or keys. The app is meant only for use with a copy of
+   the game you own. Trademarks belong to their owners.
+
+5. No warranty
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+   LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO
+   EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+   CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   DEALINGS IN THE SOFTWARE.

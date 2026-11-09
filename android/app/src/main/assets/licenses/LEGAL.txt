@@ -1,0 +1,23 @@
+Legal notice / Aviso legal
+
+MHGU for Android contains no game code, game data, ROMs or keys, and its project distributes none: not in the app,
+not in its releases and not in its source code. Each player uses their own copy of the game, and builds their own code
+library from it (libmhgugame.so) with the project's tool, on their own computer. Use it only with a copy of the game you own.
+Don't share game files or code libraries made from them.
+
+This project is not affiliated with, endorsed by or sponsored by the Great C or the Great N. Monster Hunter is a trademark
+of the Great C. Switch is a trademark of the Great N. Other names belong to their owners.
+
+Rights holders: please open an issue on the project's page to get in touch.
+
+----------------------------------------------------------------------------------------------------------------------
+
+MHGU para Android no contiene código del juego, datos del juego, ROMs ni claves, y su proyecto no distribuye nada de
+eso: ni en la app, ni en sus versiones publicadas, ni en su código fuente. Cada jugador usa su propia copia del juego y
+arma con ella su propia librería de código (libmhgugame.so) con la herramienta del proyecto, en su propia computadora. Úsalo
+solo con una copia del juego que te pertenezca. No compartas archivos del juego ni librerías hechas con ellos.
+
+Este proyecto no está afiliado, respaldado ni patrocinado por la Gran C ni la Gran N. Monster Hunter es una marca de la
+Gran C. Switch es una marca de la Gran N. Los demás nombres pertenecen a sus dueños.
+
+Titulares de derechos: abran un issue en la página del proyecto para ponerse en contacto.

@@ -85,3 +85,16 @@ unsigned weapon_action(uint32_t h) { return h ? (unsigned)LD16(h + PL_ACT_ST) <<
 
 // the hunter is in a move of the weapon's own (a shot, a reload), not a roll or a stagger
 bool weapon_moving(uint32_t h) { return h && (LD16(h + PL_ACT_ST) & 0x7fff) == 0x10; }
+
+// The local player's place in the world, x and z (its slot's object, as the control file's plpos: a town's walker too,
+// which is no hunter of weapon_hunter's), false if there is none
+bool player_place(float *x, float *z) {
+    uint32_t gc = LD32(G_GAMECONTROL), sp = LD32(G_SPLAYER);
+    if (!sane(gc) || !sane(sp)) return false;
+    uint32_t slot = LD32(gc + 0x30), pl = slot <= 3 ? LD32(sp + 0x1c + 4u * slot) : 0;
+    if (!sane(pl)) return false;
+    float px = LDF(pl + 0xa0), pz = LDF(pl + 0xa8);
+    if (!(px > -1e7f && px < 1e7f && pz > -1e7f && pz < 1e7f)) return false;  // (not a number either)
+    *x = px, *z = pz;
+    return true;
+}

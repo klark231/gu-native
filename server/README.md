@@ -68,7 +68,7 @@ then `systemctl enable --now mhgurecomp-hubserver`.
 ## Using it in the game
 
 `[Multiplayer] Server = your.host.name` (or `host:port` for another port) in `mhgurecomp.ini`, or "Hub server" in the
-settings menu (Multiplayer page). Empty means the default server built into the game, `Off` no internet hubs.
+settings menu (Network page). Empty means none: no internet hubs until you enter a server (`Off` is the same).
 Everyone who wants to see each other's hubs must use the same server.
 
 ## Protocol

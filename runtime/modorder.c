@@ -78,14 +78,52 @@ bool mods_romfs_of(const char *name, char *out, size_t n) {
 // ------------------------------------------------------------------ load order
 static int cmp_names(const void *a, const void *b) { return strcasecmp(((const ModEntry *)a)->name, ((const ModEntry *)b)->name); }
 
+#ifndef __ANDROID__
+// The mods a desktop's settings menu removed (runtime/pc_actions.c): mods/_remove.txt, a folder's name per line, read
+// whole (NULL: none). Left out until their folders are gone, which may wait for the next start.
+static char *removed_list(void) {
+    char path[1100];
+    snprintf(path, sizeof path, "%s/_remove.txt", mods_dir());
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *s = len >= 0 ? malloc((size_t)len + 1) : NULL;
+    size_t got = s ? fread(s, 1, (size_t)len, f) : 0;
+    fclose(f);
+    if (s) s[got] = 0;
+    return s;
+}
+
+static bool removed(const char *list, const char *name) {
+    size_t n = strlen(name);
+    for (const char *p = list; p && *p;) {
+        const char *e = strchr(p, '\n'), *s = p;
+        size_t l = e ? (size_t)(e - p) : strlen(p);
+        while (l && (*s == ' ' || *s == '\t')) s++, l--;
+        while (l && s[l - 1] == '\r') l--;
+        if (l == n && !memcmp(s, name, n)) return true;
+        p = e ? e + 1 : NULL;
+    }
+    return false;
+}
+#endif
+
 int mods_installed(ModEntry *out, int max) {
     int n = 0;
+#ifndef __ANDROID__
+    char *gone = removed_list();
+#endif
     DIR *d = opendir(mods_dir());
     if (d) {
         struct dirent *e;
         while (n < max && (e = readdir(d))) {
             char path[1100];
             if (e->d_name[0] == '.' || strlen(e->d_name) >= sizeof out->name) continue;
+#ifndef __ANDROID__
+            if (removed(gone, e->d_name)) continue;
+#endif
             snprintf(path, sizeof path, "%s/%s", mods_dir(), e->d_name);
             if (!is_dir(path)) continue;
             snprintf(out[n].name, sizeof out[n].name, "%s", e->d_name);
@@ -93,6 +131,9 @@ int mods_installed(ModEntry *out, int max) {
         }
         closedir(d);
     }
+#ifndef __ANDROID__
+    free(gone);
+#endif
     qsort(out, (size_t)n, sizeof *out, cmp_names);
 
     char path[1100];

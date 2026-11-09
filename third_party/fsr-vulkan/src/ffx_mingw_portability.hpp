@@ -13,6 +13,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cwchar>
+#include <mutex>  // (std::lock_guard in ffx_vk.cpp: llvm-mingw's libc++ doesn't pull it in through other headers)
 #include <new>
 
 using std::floor;

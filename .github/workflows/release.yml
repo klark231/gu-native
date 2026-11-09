@@ -1,7 +1,8 @@
 name: Release APK
 
 # Builds the public APKs (no game code in them) and publishes them as a GitHub Release, signed with your key.
-# Three APKs of the same app: standard (com.mhgu.recomp), antutu (com.antutu.ABenchMark), ludashi (com.ludashi.benchmark).
+# Four APKs of the same app: standard (com.mhgu.recomp), antutu (com.antutu.ABenchMark), ludashi (com.ludashi.benchmark),
+# alt (com.mhgu.recomp.alt, "MHGU Alt").
 # Run it by pushing a tag (git tag v0.1.6-fork.1 && git push origin v0.1.6-fork.1) or from the Actions tab (Run workflow).
 #
 # Secrets (Settings > Secrets and variables > Actions, or `gh secret set`):
@@ -86,18 +87,18 @@ jobs:
             echo "keyPassword=$KP"
           } > android/keystore.properties
 
-      - name: APKs (standard, antutu, ludashi)
+      - name: APKs (standard, antutu, ludashi, alt)
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleStandardRelease assembleAntutuRelease assembleLudashiRelease
+          ./gradlew --no-daemon assembleStandardRelease assembleAntutuRelease assembleLudashiRelease assembleAltRelease
 
       - name: Name and verify the APKs
         id: apk
         run: |
           VERSION=$(cat VERSION)
           mkdir -p dist
-          for f in standard antutu ludashi; do
+          for f in standard antutu ludashi alt; do
             if [ "$f" = standard ]; then APK="dist/MHGU-$VERSION.apk"; else APK="dist/MHGU-$VERSION-$f.apk"; fi
             cp "android/app/build/outputs/apk/$f/release/app-$f-release.apk" "$APK"
             "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify --print-certs "$APK"
@@ -118,8 +119,9 @@ jobs:
           `libmhgugame.so`, made with `tools/build_game.py` (see the README). A different signing key than the original
           project's: it can't update over an install of the original app.
 
-          Three builds of the same app: `MHGU-<version>.apk` (com.mhgu.recomp), `-antutu` (com.antutu.ABenchMark) and `-ludashi`
-          (com.ludashi.benchmark). Install only one of the antutu/ludashi ones if the real benchmark app is installed (same package).
+          Four builds of the same app: `MHGU-<version>.apk` (com.mhgu.recomp), `-antutu` (com.antutu.ABenchMark), `-ludashi`
+          (com.ludashi.benchmark) and `-alt` (com.mhgu.recomp.alt, "MHGU Alt", to keep a second install beside the standard one).
+          Install only one of the antutu/ludashi ones if the real benchmark app is installed (same package).
           Each package has its own data folder in Android/data.
           NOTES
           if gh release view "$TAG" >/dev/null 2>&1; then

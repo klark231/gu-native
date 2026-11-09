@@ -21,7 +21,7 @@ uint32_t g_native_window;
 // monitor's refresh rate the settings' VSync must be Off (immediate present): FIFO / mailbox wait for the display.
 #define FPS_OBJ_GLOBAL 0x2326764u
 static float framerate(void) { return config_live_fps(); }
-void vi_apply_framerate(void) {  // (also called per presented frame: runtime/nvn/vulkan/device.c)
+void vi_apply_framerate(void) {  // (also per presented frame: vi_frame_presented, below)
     float want = framerate();
     uint32_t obj = LD32(FPS_OBJ_GLOBAL);
     if (obj < HEAP_BASE || obj >= HEAP_BASE + HEAP_MAX) return;  // (not created yet)
@@ -97,8 +97,9 @@ void vi_pause_wait(void) {
 // The game's update thread, once a frame (runtime/overlay.cpp overlay_frame): wait here while the app is in the
 // background, the guest's clock held meanwhile.
 void vi_pause_game(void) {
-#ifdef __ANDROID__
-    perf_hint_thread(PERF_GAME);  // (the update thread, for the performance hint session: runtime/platform/android_perf.c)
+#if defined(__ANDROID__) || defined(_WIN32)
+    perf_hint_thread(PERF_GAME);  // (the update thread, for the performance hint session: runtime/platform/android_perf.c;
+                                  // Windows: the readout's game thread, platform/win_stats.c)
 #endif
     if (!__atomic_load_n(&pause_wanted, __ATOMIC_ACQUIRE)) return;
 #if defined(__ANDROID__) && !defined(MHGU_NULL_BACKEND)
@@ -121,9 +122,41 @@ void vi_pause_game(void) {
     LOG("[app] game clock held %.1f s\n", (t1 - t0) / 1e9);
 }
 
+// (debug) MHGU_STEPLOG=1: every 5 s, the frames presented a second and the game's frame steps (+0x68 of the frame rate
+// object, in 60 fps frames) added up over them: the game keeps real time while that is 60 a second ("game time 1.00x"),
+// at any frame rate. For checking that a frame rate above 240 ("Unlimited" on a desktop) runs the game no faster.
+static void step_log(void) {
+    static int on = -1;
+    static uint64_t t0;
+    static double sum;
+    static unsigned frames;
+    if (on < 0) {
+        const char *e = getenv("MHGU_STEPLOG");
+        on = e && *e == '1';
+    }
+    if (!on) return;
+    uint32_t obj = LD32(FPS_OBJ_GLOBAL);
+    if (obj < HEAP_BASE || obj >= HEAP_BASE + HEAP_MAX) return;
+    uint64_t now = plat_now_ns();
+    if (!t0 || vi_paused()) { t0 = now, sum = 0, frames = 0; return; }
+    sum += LDF(obj + 0x68), frames++;
+    if (now - t0 >= 5000000000ull) {
+        double s = (now - t0) / 1e9;
+        LOG("[fps] %.0f fps (limit %.0f), game time %.2fx real (%.1f frame steps a second)\n", frames / s,
+            (double)framerate(), sum / s / 60.0, sum / s);
+        t0 = now, sum = 0, frames = 0;
+    }
+}
+
+void vi_frame_presented(void) {  // (runtime/nvn/vulkan/device.c, per presented frame)
+    vi_apply_framerate();
+    step_log();
+}
+
 // The display's vsync event: 60 Hz, or the frame rate target when that is higher (the game waits for it per frame).
 static void *vsync_thread(void *arg) {
     (void)arg;
+    plat_thread_priority(PLAT_PRIO_HIGH);  // (Windows: above normal, a tick late is the game's frame late)
     uint64_t next = plat_now_ns();
     for (;;) {
         if (vi_paused()) {  // (the app in the background: no frames to pace; then on from now, no burst)
@@ -135,6 +168,7 @@ static void *vsync_thread(void *arg) {
         next += period;
         plat_sleep_until_ns(next);
         uint64_t now = plat_now_ns();
+        if (HITCH_ON && now - next > 1000000) hitch_add(HC_VSYNC_LATE, now - next, 0);  // ((debug) MHGU_HITCHLOG)
         if (now > next + period * 3) next = now;  // don't burst-signal to catch up
         vi_apply_framerate();
         __atomic_add_fetch(&g_vsync_count, 1, __ATOMIC_RELAXED);

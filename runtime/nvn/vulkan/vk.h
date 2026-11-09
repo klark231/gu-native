@@ -89,6 +89,9 @@ void vk_end_pass(void);
      VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT |                       \
      VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_INPUT_ATTACHMENT_READ_BIT)
 void vk_submit_extra(VkSemaphore wait, VkSemaphore signal);  // submit (with binary semaphores for presentation)
+void vk_upload_jobs_finish(void);  // (textures.c) the texture upload workers' staging writes done: before a submission
+// (textures.c) the CPU about to write guest memory mid-list: the texture bands still to read any of it done first
+void vk_upload_jobs_guard(uint64_t addr, uint64_t size, const char *what);
 
 // Transient GPU-visible memory that lives until the submission it was allocated for completes.
 typedef struct { VkBuffer buf; uint64_t off; void *ptr; } VkSpan;
@@ -130,6 +133,9 @@ typedef struct TexBackend {
     bool wide;              // RGBA16 UNORM standing in for the game's RGBA8 render target (textures.c vk_rt_widen)
     uint64_t ms_models;     // (colour) the frame 3D models (depth-writing draws) were last drawn into this image, once
                             // a pass without MSAA did (g_present_count; menus: exec.c ms_expand), 0 none lately
+    uint64_t up_last;       // the frame its contents last changed and were uploaded again
+    uint32_t up_run;        // how many frames in a row they did (textures.c say_every_frame)
+    bool up_said;
 } TexBackend;
 
 bool vk_wide_rt_on(void);  // (textures.c) RGBA8 render targets as RGBA16 UNORM ([Graphics] SmoothGradients)
@@ -169,4 +175,17 @@ VkShaderModule vk_compile_glsl(const char *src, int stage, const char *name);  /
 VkShaderModule vk_builtin_shader(const char *name);  // internal shaders (clear, present)
 
 // ---- device / window (device.c)
+// Images and buffers only the GPU uses (textures, render targets, the vertex cache): vmaCreateImage / vmaCreateBuffer
+// in device memory (VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE), from the memory set aside at start-up when they fit there
+// (desktop). Freed with vmaDestroyImage / vmaDestroyBuffer as before.
+VkResult vk_create_image(const VkImageCreateInfo *ci, VkImage *img, VmaAllocation *mem);
+VkResult vk_create_buffer(const VkBufferCreateInfo *bi, VkBuffer *buf, VmaAllocation *mem);
 void vk_save_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h);
+// The devices that can run the game (Vulkan 1.1; one per name, in the driver's order) and which of them runs it (-1:
+// none yet), for the settings' GPU row ([Display] GPU, settings_panel.cpp): their count, 0 before the device is made
+int vk_gpu_list(const char **names, int max, int *in_use);
+#ifdef _WIN32
+// The picked device's LUID, which Windows' own GPU figures go by (the performance readout: platform/win_stats.c, any
+// thread); false: no device yet, or its driver gives none
+bool vk_device_luid(uint8_t luid[8]);
+#endif

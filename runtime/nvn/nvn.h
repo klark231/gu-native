@@ -62,6 +62,7 @@ typedef struct NvnTexture {
     uint64_t debug_id;
     char label[64];
     bool screenshot;  // a buffer of the game's sScreenShot (made while g_nvn_making_screenshot was set)
+    uint32_t texel_writes;  // nvnTextureWriteTexels into it (a log line names who writes a texture that changes each frame)
 } NvnTexture;
 // Set by runtime/hle/camera_jitter.c on the thread making the game's screenshot buffers, while it does
 extern _Thread_local bool g_nvn_making_screenshot;

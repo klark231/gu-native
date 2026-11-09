@@ -18,13 +18,13 @@
 #endif
 
 static Config saved, startup;
-static bool have_saved, runtime_ready, runtime_fsr;
+static bool have_saved, runtime_ready, runtime_no_msaa, runtime_no_fxaa;
 static SDL_AtomicInt volume = {100}, confirm_exit = {1}, language = {MENU_LANG_AUTO}, mute_in_background, window_focused = {1};
 static SDL_AtomicInt live_fps, live_fov, live_mouse, live_draw = {0x3f800000}, live_fxaa = {1}, live_msaa = {1},
                      live_vsync = {1}, live_face, live_menu_confirm, live_background = {1}, live_combo, live_chat_key,
                      live_fxaa_mode, live_smooth, live_discord, live_discord_hunter, live_binds[BINDS][BIND_KEYS],
-                     live_touch, live_touch_hud, live_touch_show[TB_COUNT], live_touch_show_trad[TB_COUNT], live_touch_scheme, live_touch_auto_run = {1}, live_touch_combo[TOUCH_COMBOS], live_touch_combo_pad[TOUCH_COMBOS], live_touch_cam, live_touch_opacity, live_lock_on = {1},
-                     live_touch_vibration = {1}, live_phone_rumble = {1}, live_show_stats, live_pause_bg = {1},
+                     live_touch, live_touch_scheme, live_touch_hud, live_auto_run, live_touch_show[TB_COUNT], live_touch_show_trad[TB_COUNT], live_touch_combo[TOUCH_COMBOS], live_touch_combo_pad[TOUCH_COMBOS], live_touch_cam, live_touch_opacity, live_lock_on = {1}, live_mouse_menus = {1},
+                     live_touch_vibration = {1}, live_phone_rumble = {1}, live_show_stats, live_pause_bg = {1}, live_hub_full = {1},
                      live_shadows = {1}, live_bloom = {1}, live_reverb = {1};
 static void set_float(SDL_AtomicInt *slot, float value) {
     int bits; _Static_assert(sizeof bits == sizeof value, "32-bit float settings");
@@ -57,21 +57,23 @@ static void publish_live(const Config *c, bool all) {
     if (all || c->discord != saved.discord) SDL_SetAtomicInt(&live_discord, c->discord);
     if (all || c->discord_hunter != saved.discord_hunter) SDL_SetAtomicInt(&live_discord_hunter, c->discord_hunter);
     if (all || c->touch_controls != saved.touch_controls) SDL_SetAtomicInt(&live_touch, c->touch_controls);
+    if (all || c->touch_scheme != saved.touch_scheme) SDL_SetAtomicInt(&live_touch_scheme, c->touch_scheme);
     if (all || c->touch_hud != saved.touch_hud) SDL_SetAtomicInt(&live_touch_hud, c->touch_hud);
+    if (all || c->touch_auto_run != saved.touch_auto_run) SDL_SetAtomicInt(&live_auto_run, c->touch_auto_run);
     for (int i = 0; i < TB_COUNT; i++) SDL_SetAtomicInt(&live_touch_show[i], c->touch_show[i]);
     for (int i = 0; i < TB_COUNT; i++) SDL_SetAtomicInt(&live_touch_show_trad[i], c->touch_show_trad[i]);
-    if (all || c->touch_scheme != saved.touch_scheme) SDL_SetAtomicInt(&live_touch_scheme, c->touch_scheme);
-    if (all || c->touch_auto_run != saved.touch_auto_run) SDL_SetAtomicInt(&live_touch_auto_run, c->touch_auto_run);
     for (int i = 0; i < TOUCH_COMBOS; i++) {
         SDL_SetAtomicInt(&live_touch_combo[i], (int)config_combo_mask(c->touch_combo[i]));
         SDL_SetAtomicInt(&live_touch_combo_pad[i], c->touch_combo_pad[i]);
     }
     if (all || c->lock_on != saved.lock_on) SDL_SetAtomicInt(&live_lock_on, c->lock_on);
+    if (all || c->mouse_menus != saved.mouse_menus) SDL_SetAtomicInt(&live_mouse_menus, c->mouse_menus);
     if (all || c->touch_camera != saved.touch_camera) set_float(&live_touch_cam, c->touch_camera);
     if (all || c->touch_opacity != saved.touch_opacity) set_float(&live_touch_opacity, c->touch_opacity);
     if (all || c->touch_vibration != saved.touch_vibration) SDL_SetAtomicInt(&live_touch_vibration, c->touch_vibration);
     if (all || c->phone_rumble != saved.phone_rumble) SDL_SetAtomicInt(&live_phone_rumble, c->phone_rumble);
     if (all || c->show_stats != saved.show_stats) SDL_SetAtomicInt(&live_show_stats, c->show_stats);
+    if (all || c->hub_full_list != saved.hub_full_list) SDL_SetAtomicInt(&live_hub_full, c->hub_full_list);
     if (all || c->pause_background != saved.pause_background) SDL_SetAtomicInt(&live_pause_bg, c->pause_background);
     if (all || c->shadows != saved.shadows) SDL_SetAtomicInt(&live_shadows, c->shadows);
     if (all || c->bloom != saved.bloom) SDL_SetAtomicInt(&live_bloom, c->bloom);
@@ -110,13 +112,21 @@ void config_store_loaded(const Config *c) {
     SDL_SetAtomicInt(&confirm_exit, c->confirm_exit);
 }
 void config_runtime_init(const Config *effective) {
-    startup = saved; runtime_ready = true; runtime_fsr = effective->fsr != 0 || effective->low_end;  // (no FXAA, no MSAA)
+    startup = saved; runtime_ready = true;
+    // (FSR does the anti-aliasing, and Low-end mode has neither MSAA nor FXAA; a desktop's Low-end mode keeps FXAA, only
+    // Toaster leaves it out: config.c)
+    runtime_no_msaa = effective->fsr != 0 || effective->low_end;
+#ifdef __ANDROID__
+    runtime_no_fxaa = runtime_no_msaa;
+#else
+    runtime_no_fxaa = effective->fsr != 0 || effective->low_end == LOW_END_TOASTER;
+#endif
     publish_live(effective, true);
     const char *override = getenv("MHGU_FRAMERATE");
     if (override && *override) {
         float f = strtof(override, NULL);
         if (!(f >= 30)) f = 30;
-        if (f > 240) f = 240;
+        if (f > FPS_MAX) f = FPS_MAX;
         set_float(&live_fps, f);
     }
 }
@@ -124,8 +134,8 @@ float config_live_fps(void) { return get_float(&live_fps); }
 float config_live_fov(void) { return get_float(&live_fov); }
 float config_live_mouse_sensitivity(void) { return get_float(&live_mouse); }
 float config_live_draw_distance(void) { return get_float(&live_draw); }
-int config_live_fxaa(void) { return runtime_fsr ? 0 : SDL_GetAtomicInt(&live_fxaa); }
-int config_live_msaa(void) { return runtime_fsr ? 1 : SDL_GetAtomicInt(&live_msaa); }
+int config_live_fxaa(void) { return runtime_no_fxaa ? 0 : SDL_GetAtomicInt(&live_fxaa); }
+int config_live_msaa(void) { return runtime_no_msaa ? 1 : SDL_GetAtomicInt(&live_msaa); }
 int config_live_vsync(void) { return SDL_GetAtomicInt(&live_vsync); }
 int config_live_menu_confirm(void) { return SDL_GetAtomicInt(&live_menu_confirm); }
 int config_live_face_buttons(void) { return SDL_GetAtomicInt(&live_face); }
@@ -137,16 +147,19 @@ int config_live_smooth_gradients(void) { return SDL_GetAtomicInt(&live_smooth); 
 int config_live_discord(void) { return SDL_GetAtomicInt(&live_discord); }
 int config_live_discord_hunter(void) { return SDL_GetAtomicInt(&live_discord_hunter); }
 int config_live_touch_controls(void) { return SDL_GetAtomicInt(&live_touch); }
+int config_live_touch_scheme(void) { return SDL_GetAtomicInt(&live_touch_scheme); }
 int config_live_touch_hud(void) { return SDL_GetAtomicInt(&live_touch_hud); }
+int config_live_touch_auto_run(void) { return SDL_GetAtomicInt(&live_auto_run); }
 int config_live_lock_on(void) { return SDL_GetAtomicInt(&live_lock_on); }
+#ifdef __ANDROID__
+int config_live_mouse_menus(void) { return 0; }
+#else
+int config_live_mouse_menus(void) { return SDL_GetAtomicInt(&live_mouse_menus); }
+#endif
 int config_live_touch_show(int button) { return SDL_GetAtomicInt(&live_touch_show[button]); }
+int config_live_touch_show_trad(int button) { return SDL_GetAtomicInt(&live_touch_show_trad[button]); }
 uint32_t config_live_touch_combo(int index) { return (uint32_t)SDL_GetAtomicInt(&live_touch_combo[index]); }
 int config_live_touch_combo_pad(int index) { return SDL_GetAtomicInt(&live_touch_combo_pad[index]); }
-int config_live_touch_scheme(void) { return SDL_GetAtomicInt(&live_touch_scheme); }
-int config_live_touch_auto_run(void) { return SDL_GetAtomicInt(&live_touch_auto_run); }
-int config_live_touch_show_trad(int button) {
-    return button >= 0 && button < TB_COUNT ? SDL_GetAtomicInt(&live_touch_show_trad[button]) : 1;
-}
 
 // The names of a combined button's parts, in BTN_* order (hle/input.h)
 static const char *const COMBO_NAMES[16] = {"A", "B", "X", "Y", "L3", "R3", "L", "R", "ZL", "ZR", "Plus", "Minus", "Left", "Up", "Right", "Down"};
@@ -174,6 +187,7 @@ float config_live_touch_opacity(void) { return get_float(&live_touch_opacity); }
 int config_live_touch_vibration(void) { return SDL_GetAtomicInt(&live_touch_vibration); }
 int config_live_phone_rumble(void) { return SDL_GetAtomicInt(&live_phone_rumble); }
 int config_live_show_stats(void) { return SDL_GetAtomicInt(&live_show_stats); }
+int config_live_hub_full_list(void) { return SDL_GetAtomicInt(&live_hub_full); }
 int config_live_pause_background(void) { return SDL_GetAtomicInt(&live_pause_bg); }
 int config_live_shadows(void) { return SDL_GetAtomicInt(&live_shadows); }
 int config_live_bloom(void) { return SDL_GetAtomicInt(&live_bloom); }
@@ -268,7 +282,7 @@ bool config_validate(const Config *c, char *error, size_t size) {
 
 // What config_save writes: a setting of the table (setting) or a Quest<number> entry (setting NULL)
 typedef struct { const ConfigSetting *setting; const char *section; char key[64], value[256]; bool seen; } Entry;
-#define ENTRY_MAX (HP_QUESTS_MAX + 128)  // (every setting of g_settings, about 125 now, and the quests set apart)
+#define ENTRY_MAX (HP_QUESTS_MAX + 256)  // (every setting of g_settings, about 180 with the crossplay and Traditional ones, 1 more on a desktop, and the quests set apart)
 static void normalize(const char *s, char *out, size_t size) {
     size_t n = 0;
     for (; *s && n + 1 < size; s++)

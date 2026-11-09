@@ -20,8 +20,11 @@ typedef struct {
     char name[128];
     bool on;
 } ModEntry;
-// Every mod folder, in load order (the ones a list leaves out after it, by name)
+// Every mod folder, in load order (the ones a list leaves out after it, by name). A desktop leaves out those its menu
+// removed (mods/_remove.txt, runtime/pc_actions.c) until their folders are gone.
 int mods_installed(ModEntry *out, int max);
+// Did the game load the mod `name` at its start (mods.c)? It reads that mod's files while it runs.
+bool mods_loaded(const char *name);
 // Writes mods/load_order.txt for the list, in this order (mods that are off as "# off: name"); false with `err`
 // set when it can't
 bool mods_save_order(const ModEntry *e, int n, char *err, size_t errsz);

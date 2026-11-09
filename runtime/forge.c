@@ -33,6 +33,7 @@
 #include "interp.h"
 #include "mods.h"
 #include "overlay.h"
+#include "touch.h"
 
 #define FORGE_MAJOR 1
 #define FORGE_MINOR 5
@@ -922,9 +923,10 @@ static bool touch_down;
 static float touch_x, touch_y;
 
 // The mouse as the touch screen: the left button is a finger while the mouse is free (not captured for the camera,
-// Forge's menu closed), and the pointer must be on the game's picture, which is fitted into the window by its shape
-// (g_render_aspect) and centred. The picture is the console's 1280x720 screen: its HUD canvas (g_ui_anchor_aspect wide
-// at most, centred) is what 0..1279 spans; a pointer on the picture beyond that edge is at the edge.
+// Forge's menu and the HUD editor closed), and the pointer must be on the game's picture, which is fitted into the
+// window by its shape (g_render_aspect) and centred. The picture is the console's 1280x720 screen: its HUD canvas
+// (g_ui_anchor_aspect wide at most, centred) is what 0..1279 spans; a pointer on the picture beyond that edge is at
+// the edge.
 static bool mouse_touch(float *x, float *y) {
     SDL_Window *w = ui_window();
     float mx, my;
@@ -932,6 +934,9 @@ static bool mouse_touch(float *x, float *y) {
     if (!w || overlay_menu_open() || SDL_GetWindowRelativeMouseMode(w) || !SDL_GetWindowSize(w, &ww, &wh) || ww <= 0 || wh <= 0 ||
         !(SDL_GetMouseState(&mx, &my) & SDL_BUTTON_LMASK))
         return false;
+#ifndef __ANDROID__
+    if (touch_hud_editing()) return false;  // (the HUD editor has the mouse: runtime/touch.cpp)
+#endif
     float asp = g_render_aspect > 0 ? g_render_aspect : 16.0f / 9.0f;
     float pw = (float)ww, ph = (float)wh;  // (the picture's size in the window: the largest that fits)
     if (pw / ph > asp) pw = ph * asp;
@@ -1181,6 +1186,7 @@ static void frame_update(Cpu *c) {
     }
     input_frame();  // (Forge reads the input when it draws, after the updates: the plugins' view is the last frame's)
     overlay_frame(c);
+    if (HITCH_ON) hitch_frame(HT_UPDATE, dt);  // ((debug) MHGU_HITCHLOG: the game's frame, runtime/hitchlog.c)
     c->r[0] = ret[0], c->r[1] = ret[1], c->v.f[0] = s0;
 }
 

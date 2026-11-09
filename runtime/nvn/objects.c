@@ -410,6 +410,7 @@ NVN(nvnTextureWriteTexels) {  // (texture, view, region, data): linear data into
     NvnTexture *t = HOST(NvnTexture, A(0));
     const int32_t *r = (const int32_t *)AP(2);  // xoffset, yoffset, zoffset, width, height, depth
     LevelLayout l = tegra_level(&t->layout, 0);
+    t->texel_writes++;
     if (A(2) && r[0] == 0 && r[1] == 0 && (uint32_t)r[3] == t->width && (uint32_t)r[4] == t->height) {
         tegra_swizzle(AP(3), (uint8_t *)G2H((uint32_t)t->addr) + l.offset, l.wb, l.hb, r[5] > 0 ? (uint32_t)r[5] : 1,
                       t->layout.fmt->bpb, l.block_height_log2, l.block_depth_log2);

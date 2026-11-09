@@ -1,8 +1,14 @@
-# Comer / beber más rápido (MHGU 1.4.0, build FB08F1D20FD1204F). Vienen APAGADOS: se activan en Opciones -> Trucos.
-# Usá uno solo de los dos. El efecto de la habilidad Comer rápido (Speed Eating +2) para todas las pociones y la carne:
-# la animación de beber va más rápido (y la curación llega antes), sin cambiar nada más.
-# (f_4a21d8: la velocidad de la animación de comer / beber, player +0x14B0; los saltos al chequeo de la habilidad 0xe3
-# se cambian por "sí"; la segunda variante pone 2.5 en vez de 1.7)
+# Faster eating and drinking (MHGU 1.4.0, build FB08F1D20FD1204F). They come OFF: turn one on in the settings, Cheats.
+# Use only one of the two. The Speed Eating +2 skill's effect for every potion and for meat: the drinking animation is
+# faster (and the healing comes sooner), and nothing else changes. The second one drinks faster still (x2.5).
+#
+# Comer / beber más rápido (MHGU 1.4.0, build FB08F1D20FD1204F). Vienen APAGADOS: se activan en los ajustes, Trucos.
+# Usa uno solo de los dos. El efecto de la habilidad Comer rápido (Speed Eating +2) para todas las pociones y la carne:
+# la animación de beber va más rápido (y la curación llega antes), sin cambiar nada más. El segundo bebe aún más rápido
+# (x2.5).
+#
+# (f_4a21d8: the eating / drinking animation's speed, player +0x14B0; the jumps to the check for skill 0xe3 become
+# "yes"; the second one sets 2.5 instead of 1.7)
 
 [Comer rapido siempre (beber x1.7, carne x1.8)]
 04000000 002A21F8 E3A00001

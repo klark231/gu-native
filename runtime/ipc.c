@@ -173,7 +173,9 @@ int ipc_handle_request(Cpu *c, uint32_t handle) {
             if (!target) { LOG("[ipc] domain object %u missing\n", req.domain_obj); return 0xE401; }
         }
         if (ENV("MHGU_TRACE_IPC")) LOG("[ipc] %s cmd %u\n", target->name, req.cmd);
+        uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
         target->handler(target, &req, &resp);
+        if (HITCH_ON) hitch_add_label(HC_IPC, plat_now_ns() - t0, 0, target->name, (int)req.cmd);  // ((debug) MHGU_HITCHLOG)
     } else if (req.type == 5 || req.type == 7) {  // control
         req.cmd = *(uint32_t *)(payload + 8);
         switch (req.cmd) {

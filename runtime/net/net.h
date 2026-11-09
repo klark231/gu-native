@@ -35,6 +35,13 @@ typedef struct {
 bool ldn_net_up(void);           // a network exists (hosting with it created, or joined)
 bool ldn_hosting(void);          // we host it
 bool ldn_crossplay(void);        // emulator peers (Ryujinx, a Yuzu-family room): port-specific monster / HP synchronization is off
+bool ldn_hub_browsing(void);     // the Join Hub screen is open: searching, not joined
+int ldn_hub_lists(void);         // how many lists of hubs the last search had
+bool ldn_hub_list_goto(int n);   // a tap on a list's number (0 based)
+void ldn_hub_list_range(int *first, int *last, int *total); // the hubs of the chosen list: #first to #last of total
+int ldn_hub_list_chosen(void);   // the list the next search gives (0 based)
+bool ldn_hub_list_pending(void); // one was chosen that is not on the screen yet
+bool ldn_hub_list_step(int dir); // the arrows there: the next search gives the previous / next list of hubs (false: one list only)
 // The hub's players and their maximum, and an id for it (a hash of its session id: the same in every player's
 // game); false: no hub.
 bool ldn_party(int *n, int *max, char *id, size_t size);

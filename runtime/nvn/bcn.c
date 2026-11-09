@@ -10,6 +10,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <SDL3/SDL_cpuinfo.h>  // (no sysconf)
+#endif
 
 #define BCDEC_IMPLEMENTATION
 #define BCDEC_BC4BC5_PRECISE
@@ -118,7 +121,11 @@ static void *bcn_worker(void *unused) {
 
 static void bcn_workers_start(void) {
     if (P.started) return;
+#ifdef _WIN32
+    long cores = SDL_GetNumLogicalCPUCores();
+#else
     long cores = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
     int n = cores > BCN_WORKERS + 1 ? BCN_WORKERS : cores > 1 ? (int)cores - 1 : 0;
     P.started = n > 0 ? n : -1;
     for (int i = 0; i < n; i++) {

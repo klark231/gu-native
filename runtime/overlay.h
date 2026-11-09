@@ -23,6 +23,11 @@ int overlay_face_position(int semantic); // A, B, X, Y -> physical south/east/we
 void overlay_toggle_settings(void); // host main thread: F1 or Start + Back
 // Any thread: a notice shown over the game for a few seconds (title on its own line; the latest replaces any other).
 void overlay_notice(const char *title, const char *text);
+// What the player used last (runtime/host_input.c, from every event; any thread reads it): the port's menus show a
+// controller's buttons only after a controller's press, and the keys (or the mouse) after the keyboard's or the mouse's
+enum { USED_KEYS, USED_MOUSE, USED_PAD, USED_TOUCH };
+void overlay_input_seen(int kind);
+int overlay_last_input(void);
 
 // Host main thread: an event for ImGui while the menu is open (true: taken, not for the game) - and the menu key.
 bool overlay_event(const SDL_Event *e);

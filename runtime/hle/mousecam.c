@@ -14,8 +14,9 @@
 // Where it doesn't run (villages, whose camera doesn't turn, or other cameras) host_input.c gives the mouse to the
 // right stick as before (mousecam_active).
 //
-// The lock-on (runtime/touch.cpp: the target icon, a long press on L, a controller's right stick click): in the same
-// hook, the camera turns toward the nearest large monster every update, eased, as in the newer games. The camera's
+// The lock-on (runtime/touch.cpp: a tap on the target icon, the right stick's click: a controller's, or its key): in the
+// same hook, the camera turns toward the nearest large monster every update, eased, as in the newer games; not while a
+// menu of the game's is open (touch_lock_active, whatever the player plays with). The camera's
 // yaw unit u looks along (x, z) = (-sin, -cos)(u * 2 pi / 0x10000) (measured on a Galaxy S25: the eye +0x40 toward the
 // target point +0x60); its pitch is positive looking up. Only a monster in the hunter's zone of the map counts (+0x1054
 // of each: the game's own "(Diff Area)"), or the camera would stare at a wall. Monsters: sEnemy (0x1a51fe0) +0x1c, ten slots; each
@@ -30,7 +31,7 @@
 // The height: aiming, the shot leaves along the aim's pitch: hunter +0x14b8 (a float, -100 down .. 100 up; +0x14bc a copy),
 // from which the game makes +0x2714 (16-bit units: 100 is 45 degrees up, -100 is 30 down). A shot that isn't aimed ignores
 // them, it leaves level whatever they say (a Motorola g06: a shell in the same place at 0 and at -30 degrees), so with the
-// lock-on on a gun's fire button aims first (runtime/touch.cpp).
+// lock-on on a gun's fire button aims first, from any input (runtime/touch.cpp touch_lock_shot).
 #include <math.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -70,7 +71,7 @@ static int clamp_pitch(int p) { return p < -PITCH_MAX ? -PITCH_MAX : p > PITCH_M
 
 bool touch_lock_active(void);  // (runtime/touch.cpp: the lock-on is on and the player is not turning the camera)
 bool touch_lock_on(void);      // (the lock-on is on, whatever the camera is doing)
-bool touch_lock_assist(void);  // (a locked shot of the touch controls holds R for its aim now)
+bool touch_lock_assist(void);  // (a locked shot holds R for its aim now, from any input: touch_lock_shot)
 #define ZONE       0x1054u       // (u8, of a hunter and of a monster: which zone of the map it is in)
 #define PL_HEADING 0x14a0u
 #define PL_AIM     0x14b8u       // (float: the aim's pitch)
@@ -198,6 +199,9 @@ void mousecam_lock_shot(void) {
     // (the touch controls' locked shot holds R for the aim: an aim whose actions weapon_aiming doesn't know, another
     // style's, counts too)
     bool aiming = weapon_aiming(h) || (ranged != WEAPON_BOW && touch_lock_assist());
+    // (aiming while the player turns the camera by hand - the lock-on waiting for it: the aim is theirs, a bow's drawn shot
+    // included, whose draw button counts as fire; the shot's path could not be corrected under the lock-on: #132)
+    if (aiming && !touch_lock_active()) return;
     if (!(aiming && touch_lock_active()) && !((fire || now - fired < SHOT_NS) && (aiming || weapon_moving(h)))) return;
     float x = LDF(h + PL_PLACE), y = LDF(h + PL_PLACE + 4), z = LDF(h + PL_PLACE + 8), t[3];
     if (!isfinite(x) || !lock_target(x, y, z, t)) return;

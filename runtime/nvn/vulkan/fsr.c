@@ -52,6 +52,7 @@
 #include "fsr.h"
 #include "fsr4.h"
 #include "shaders.h"
+#include "xess.h"
 
 bool g_fsr_on;
 
@@ -75,9 +76,8 @@ static TexBackend *stand_image(NvnTexture *of, uint32_t w, uint32_t h, bool stor
                             .imageType = VK_IMAGE_TYPE_2D, .format = src->format, .extent = {w, h, 1}, .mipLevels = 1,
                             .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
                             .usage = usage, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     TexBackend *b = calloc(1, sizeof *b);
-    if (vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL) != VK_SUCCESS) {
+    if (vk_create_image(&ci, &b->image, &b->mem) != VK_SUCCESS) {
         LOG("[fsr] could not create a %ux%u image (format %d)\n", w, h, src->format);
         free(b);
         return NULL;
@@ -101,10 +101,16 @@ static TexBackend *stand_image(NvnTexture *of, uint32_t w, uint32_t h, bool stor
     return b;
 }
 
-// The stand-in of `of` at w x h (made, or remade when `of` is another kind of texture than before).
+// The stand-in of `of` at w x h (made, or remade when `of` is another kind of texture than before; on a desktop also
+// when `of` was made wide or back to RGBA8 since, SmoothGradients turned on or off while playing (textures.c
+// vk_rt_widen): plain scaling's H, and the window texture, keep the precision it gives them).
 static NvnTexture *stand(Stand *s, NvnTexture *of, uint32_t w, uint32_t h, bool storage) {
     if (!of->backend) return NULL;
-    if (s->fake.backend && s->fmt == of->format && s->w == of->width && s->h == of->height) return &s->fake;
+    bool same = s->fake.backend && s->fmt == of->format && s->w == of->width && s->h == of->height;
+#ifndef __ANDROID__
+    same = same && ((TexBackend *)s->fake.backend)->format == ((TexBackend *)of->backend)->format;
+#endif
+    if (same) return &s->fake;
     if (s->fake.backend) {
         TexBackend *old = s->fake.backend;
         vk_views_forget(old);
@@ -462,8 +468,7 @@ static bool own_image(TexBackend *b, VkFormat f, uint32_t w, uint32_t h, VkImage
     VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = f,
                             .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL) != VK_SUCCESS) return false;
+    if (vk_create_image(&ci, &b->image, &b->mem) != VK_SUCCESS) return false;
     b->format = f, b->base_type = VK_IMAGE_VIEW_TYPE_2D, b->width = w, b->height = h;
     b->depth = b->layers = b->levels = b->samples = 1;
     b->aspect = VK_IMAGE_ASPECT_COLOR_BIT, b->gpu_owned = true;
@@ -907,13 +912,12 @@ static VkShaderModule glsl_module(const char *src, int stage, const char *name) 
 }
 
 static bool objvel_init(void) {
-    VmaAllocationCreateInfo dev = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VmaAllocationCreateInfo host = {.usage = VMA_MEMORY_USAGE_AUTO,
                                     .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
     VmaAllocationInfo info;
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = (VkDeviceSize)CAP_SLOT * 2 * 16,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT};
-    if (vmaCreateBuffer(g_vk.vma, &bi, &dev, &cap_buf, &cap_mem, NULL) != VK_SUCCESS) return false;
+    if (vk_create_buffer(&bi, &cap_buf, &cap_mem) != VK_SUCCESS) return false;
     bi.size = (VkDeviceSize)IDX_SLOT * 4, bi.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
     if (vmaCreateBuffer(g_vk.vma, &bi, &host, &idx_buf, &idx_mem, &info) != VK_SUCCESS) return false;
     idx_map = info.pMappedData;
@@ -922,7 +926,7 @@ static bool objvel_init(void) {
     // an RTX 3090, against 0.2 ms here.)
     bi.size = (VkDeviceSize)MAX_TRACK * 4 * 4;
     bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    if (vmaCreateBuffer(g_vk.vma, &bi, &dev, &flag_buf, &flag_mem, NULL) != VK_SUCCESS) return false;
+    if (vk_create_buffer(&bi, &flag_buf, &flag_mem) != VK_SUCCESS) return false;
     bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     if (vmaCreateBuffer(g_vk.vma, &bi, &host, &flag_rb, &flag_rb_mem, &info) != VK_SUCCESS) return false;
     flag_map = info.pMappedData;
@@ -1120,7 +1124,9 @@ static FfxVkPortableImage ffx_image(TexBackend *b, VkImageUsageFlags usage) {
 static NvnTexture *g_h;                        // the full-screen image (learnt at the presents)
 static NvnTexture *last_target, *last_src;     // the frame's last draw: its target, the first texture it sampled
 static bool frame_open, redirect, frame_fsr;   // a draw seen since the present; from the start of the HUD on; FSR ran
-static bool plain_only;  // [Performance] LowEnd: the HUD at the screen's size over the scaled 3D picture, FSR itself never runs
+// RenderScale below 100 without FSR (a phone: with [Performance] LowEnd only): the HUD at the screen's size over the scaled
+// 3D picture, FSR itself never runs
+static bool plain_only;
 static uint32_t h_draws;                       // draws into H so far (post passes)
 static struct { NvnTexture *t; uint32_t n; } depths[4];
 static NvnTexture *mask_first;                 // the first render-size colour target drawn with depth (frame_mask)
@@ -1141,7 +1147,7 @@ static uint32_t menu_2d_scene, menu_models, menu_models_late, menu_cams, menu_ca
 static NvnTexture *shot_taken;  // (quest rewards, see the top) the game's screenshot buffer, drawn into since the HUD
 static uint64_t last_dispatch_ns, frame_id;
 // per-second log (MHGU_FSR_LOG)
-static uint32_t n_fsr4, n_fsr, n_scaled, n_none, n_match, n_nomatch, n_reset, lag_hist[4], n_objv_frames, n_react_frames;
+static uint32_t n_fsr4, n_xess, n_fsr, n_scaled, n_none, n_match, n_nomatch, n_reset, lag_hist[4], n_objv_frames, n_react_frames;
 static uint64_t log_t0;
 static char why_last[96];
 
@@ -1488,9 +1494,13 @@ static NvnTexture *frame_mask(void) {
     return mask_first && nmask < nmax ? mask_first : NULL;
 }
 
-// H -> H' scaled (frames without FSR)
+// H -> H' scaled (frames without FSR). (A desktop's plain scaling keeps the player's MSAA: H brought up to date with
+// its multisampled image first, as anything that reads it is, exec.c vk_ms_resolve; nothing to do when it is)
 static void scale_to_stand(NvnTexture *h, NvnTexture *hs) {
     TexBackend *s = vk_tex(h, true), *d = hs->backend;
+#ifndef __ANDROID__
+    vk_ms_resolve(s);
+#endif
     VkCommandBuffer cb = vk_cmd();
     vk_full_barrier(cb);
     VkImageBlit r = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .srcOffsets = {{0, 0, 0}, {(int32_t)s->width, (int32_t)s->height, 1}},
@@ -1501,10 +1511,13 @@ static void scale_to_stand(NvnTexture *h, NvnTexture *hs) {
 
 // prep + FSR: H -> H'. false: not done (H' untouched).
 static bool use_fsr4;  // [Upscaler] Upscaler = FSR4 and the driver's FSR 4 started (fsr4.c); false after it fails: FSR 3.1
+static bool use_xess;  // [Upscaler] Upscaler = XeSS and XeSS-SR started (xess.c); false after it fails: FSR 3.1
+void vk_gpuprof_mark(const char *label);  // ((debug) MHGU_CONTROL "gpuprof": exec.c)
 
 static bool run_fsr(NvnTexture *h, NvnTexture *hs, NvnTexture *depth, NvnTexture *mask, const CamRecord *cam) {
     if (use_fsr4 && !vk_fsr4_ready()) use_fsr4 = false;  // (it failed: fsr4.c logged why)
-    if (!use_fsr4 && !ctx_make()) return false;
+    if (use_xess && !vk_xess_ready()) use_xess = false;  // (it failed: xess.c logged why)
+    if (!use_fsr4 && !use_xess && !ctx_make()) return false;
     TexBackend *hb = vk_tex(h, true), *db = vk_tex(depth, true), *ob = hs->backend;
     if (hb->width != rw || hb->height != rh || db->width != rw || db->height != rh) {
         static int nlog;
@@ -1583,6 +1596,7 @@ static bool run_fsr(NvnTexture *h, NvnTexture *hs, NvnTexture *depth, NvnTexture
     if (objv) n_objv_frames++;
     if (react) n_react_frames++;
     mv_check(cb, hb, &img_sil[sil_cur], !reset && prev_in_ok, jd);  // ((debug) MHGU_FSR_MVCHECK)
+    vk_gpuprof_mark("  upscaler inputs: depth copy, motion vectors, reactive mask");
     // 2. FSR
     uint64_t now = plat_now_ns();
     float dt = last_dispatch_ns ? (float)((now - last_dispatch_ns) / 1e6) : 16.7f;
@@ -1607,6 +1621,17 @@ static bool run_fsr(NvnTexture *h, NvnTexture *hs, NvnTexture *depth, NvnTexture
             goto dispatched;
         }
         use_fsr4 = false;  // failed (logged): FSR 3.1 for this frame, with a fresh history
+        reset = true;
+        if (!ctx_make()) return false;
+    }
+    if (use_xess) {  // XeSS-SR: the same inputs (the reactive mask, written every frame, as its responsive pixel mask)
+        XessDispatch dx = {.cb = cb, .color = hb, .depth = &img_depth, .motion = &img_mvf, .reactive = &img_react, .output = ob,
+                           .jitter = {cam->jitter[0], cam->jitter[1]}, .render = {rw, rh}, .out = {ow, oh}, .reset = reset};
+        if (vk_xess_dispatch(&dx)) {
+            n_xess++;
+            goto dispatched;
+        }
+        use_xess = false;  // failed (logged): FSR 3.1 for this frame, with a fresh history
         reset = true;
         if (!ctx_make()) return false;
     }
@@ -1655,6 +1680,7 @@ static bool run_fsr(NvnTexture *h, NvnTexture *hs, NvnTexture *depth, NvnTexture
     }
 dispatched:
     vk_full_barrier(cb);
+    vk_gpuprof_mark(use_xess ? "  upscaler: XeSS-SR" : use_fsr4 ? "  upscaler: FSR 4" : "  upscaler: FSR 3.1");
     if (anim) anim_bypass(cb, hb, ob, cam->jitter);  // (animated surfaces: the current input there)
     prev_store(cb, hb);
     if (reset || reset_in) n_reset++;
@@ -1666,6 +1692,7 @@ dispatched:
 // The start of the HUD: FSR (or scaling) into H', then H, P, D are replaced from here on.
 static void hud_start(const char *why) {
     vk_end_pass();
+    if (g_config.fsr_upscaler == FSR_UP_XESS && !plain_only) vk_xess_frame();  // (XeSS-SR's context: made, or gone, here)
     NvnTexture *hs = stand(&st_h, g_h, ow, oh, !plain_only);
     if (!hs) return;
     redirect = true;
@@ -1760,7 +1787,11 @@ NvnTexture *vk_fsr_map(NvnTexture *t, bool depth) {
     return t;
 }
 
+#ifdef __ANDROID__
 bool vk_fsr_input(NvnTexture *t) { return g_fsr_on && t == g_h; }
+#else  // (a desktop's plain scaling only blits H, which can stay wide: SmoothGradients keeps working below 100%)
+bool vk_fsr_input(NvnTexture *t) { return g_fsr_on && !plain_only && t == g_h; }
+#endif
 
 NvnTexture *vk_fsr_present(NvnTexture *t) {
     NvnTexture *show = t;
@@ -1816,8 +1847,11 @@ NvnTexture *vk_fsr_present(NvnTexture *t) {
             "more %u), not %u | object motion %u frames, reactive %u | last HUD start: %s\n",
             n_fsr, n_scaled, n_none, n_reset, n_match, lag_hist[0], lag_hist[1], lag_hist[2], lag_hist[3], n_nomatch,
             n_objv_frames, n_react_frames, why_last);
-        LOG("[fsr] 1s: upscaler %s, FSR 4 frames %u\n", use_fsr4 ? vk_fsr4_name() : "FSR 3.1", n_fsr4);
-        n_fsr4 = 0;
+        if (g_config.fsr_upscaler == FSR_UP_XESS)
+            LOG("[fsr] 1s: upscaler %s, XeSS-SR frames %u\n", use_xess ? vk_xess_name() : "FSR 3.1", n_xess);
+        else
+            LOG("[fsr] 1s: upscaler %s, FSR 4 frames %u\n", use_fsr4 ? vk_fsr4_name() : "FSR 3.1", n_fsr4);
+        n_fsr4 = n_xess = 0;
         if (g_fsr_objvel && n_fsr) {
             uint32_t nstatic = 0;
             for (int i = 0; i < STAT_TAB; i++) nstatic += stat_tab[i].key && stat_tab[i].until > cap_frame;
@@ -1871,12 +1905,17 @@ NvnTexture *vk_fsr_present(NvnTexture *t) {
 }
 
 void vk_fsr_init(void) {
+#ifdef __ANDROID__
     if (!g_fsr_output[0] || (!g_config.fsr && !g_config.low_end)) return;
+#else  // (a desktop: config.c sets the output for plain scaling at any RenderScale below 100, Low-end mode or not)
+    if (!g_fsr_output[0]) return;
+#endif
     rw = g_render_size[0], rh = g_render_size[1], ow = g_fsr_output[0], oh = g_fsr_output[1];
-    if (!g_config.fsr) {  // ([Performance] LowEnd: config.c)
+    if (!g_config.fsr) {  // (RenderScale below 100: config.c)
         plain_only = true;
         g_fsr_on = true;
-        LOG("[lowend] the 3D picture at %ux%u, scaled to %ux%u under the HUD\n", rw, rh, ow, oh);
+        LOG("[%s] the 3D picture at %ux%u, scaled to %ux%u under the HUD\n", g_config.low_end ? "lowend" : "scale", rw, rh,
+            ow, oh);
         return;
     }
     logging = getenv("MHGU_FSR_LOG") != NULL;
@@ -1902,7 +1941,11 @@ void vk_fsr_init(void) {
         use_fsr4 = vk_fsr4_init();
         LOG("[fsr] Upscaler = FSR4: %s\n", use_fsr4 ? vk_fsr4_name() : "not available, FSR 3.1 is used");
     }
+    if (g_config.fsr_upscaler == FSR_UP_XESS) {  // (its context: hud_start, on the thread that draws)
+        use_xess = vk_xess_init(g_config.fsr_quality);
+        LOG("[fsr] Upscaler = XeSS: %s\n", use_xess ? vk_xess_name() : "not available, FSR 3.1 is used");
+    }
     LOG("[fsr] on (%s): %ux%u -> %ux%u, sharpness %.2f, fp16 %d, object motion %s, reactive %.2f\n",
-        use_fsr4 ? vk_fsr4_name() : "FSR 3.1", rw, rh, ow, oh, g_config.fsr_sharpness, g_vk.fsr_fp16, g_fsr_objvel ? "on" : "off",
+        use_fsr4 ? vk_fsr4_name() : use_xess ? vk_xess_name() : "FSR 3.1", rw, rh, ow, oh, g_config.fsr_sharpness, g_vk.fsr_fp16, g_fsr_objvel ? "on" : "off",
         g_config.fsr_reactive);
 }

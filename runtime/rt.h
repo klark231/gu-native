@@ -5,10 +5,17 @@
 #include <stdio.h>
 
 #include "cpu.h"
+#include "hitchlog.h"
+#include "logwriter.h"
 #include "platform.h"
 
-#define LOG(...) fprintf(stderr, __VA_ARGS__)
+#ifdef _WIN32  // (queued, the log's own thread writes it: runtime/logwriter.c; MHGU_HITCHLOG times the queuing)
+#define LOG(...) rt_logf(__VA_ARGS__)
+#define FATAL(...) (rt_log_flush(), rt_logf("FATAL: " __VA_ARGS__), rt_fatal_trace())
+#else
+#define LOG(...) (HITCH_ON ? hitch_logf(__VA_ARGS__) : fprintf(stderr, __VA_ARGS__))  // (MHGU_HITCHLOG: timed)
 #define FATAL(...) (fprintf(stderr, "FATAL: " __VA_ARGS__), rt_fatal_trace())
+#endif
 
 // ---- guest address space (32-bit; host address = GUEST_BASE + guest address)
 // Layout of the process as this runtime's kernel presents it (GetInfo / QueryMemory agree with it). The modules

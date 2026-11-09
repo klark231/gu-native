@@ -8,6 +8,10 @@
 enum { BTN_A, BTN_B, BTN_X, BTN_Y, BTN_LSTICK, BTN_RSTICK, BTN_L, BTN_R, BTN_ZL, BTN_ZR, BTN_PLUS, BTN_MINUS,
        BTN_LEFT, BTN_UP, BTN_RIGHT, BTN_DOWN };
 void input_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry);
+// Of the next input_set's buttons, those the touch controls' menu pad alone presses (its d-pad, its tabs, a drag's step
+// in a menu; not held by a key or a controller too): the game reads them only while a menu takes input
+// (menu_takes_input, hle/mousemenu.c) - a d-pad press reaching the hunter as a menu closes is a Hunter Art
+void input_stage_menu_only(uint64_t buttons);
 void input_get(uint64_t *buttons, int32_t sticks[4]);  // the controller state the game sees
 uint64_t input_npad_state(int32_t sticks[4]);  // what GetNpadState gives player 1: buttons (stick directions too), sticks
 extern volatile uint64_t g_a_pressed_ns;  // when A was last pressed (plat_now_ns; 0: never)

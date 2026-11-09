@@ -940,8 +940,13 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                             window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
                             SDLActivity.mFullscreenModeActive = false;
                         }
-                        if (Build.VERSION.SDK_INT >= 30 /* Android 11 (R) */) {
-                            window.getAttributes().layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+                        // (the notch's side too from Android 9, not only from 11: an Android 10 phone with a notch kept a black bar, #135)
+                        if (Build.VERSION.SDK_INT >= 28 /* Android 9 (P) */) {
+                            WindowManager.LayoutParams cutout = window.getAttributes();
+                            cutout.layoutInDisplayCutoutMode = Build.VERSION.SDK_INT >= 30
+                                    ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                                    : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                            window.setAttributes(cutout);
                         }
                         if (Build.VERSION.SDK_INT >= 30 /* Android 11 (R) */ &&
                             Build.VERSION.SDK_INT < 35 /* Android 15 */) {

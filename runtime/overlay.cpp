@@ -32,14 +32,17 @@ static void ImGui_ImplVulkan_UpdateTexture(ImTextureData *) {}
 #include "config.h"
 #include "touch.h"
 #include "forge.h"
+#include "hitchlog.h"
+#include "logwriter.h"
 #include "menu_confirm.h"
 #include "overlay.h"
 #include "perfstats.h"
 #include "hle/chat.h"
+#include "settings_locale.h"
 #include "settings_panel.h"
 #include "settings_locale.h"
 
-#define LOG(...) fprintf(stderr, __VA_ARGS__)
+#define LOG(...) rt_logf(__VA_ARGS__)  // (Windows: queued, the log's own thread writes it)
 
 extern "C" {
 void vk_lock(void);
@@ -50,6 +53,7 @@ void vi_pause_game(void);
 
 static std::atomic<bool> g_enabled, g_ready, g_open;
 static std::atomic<bool> g_settings_open, g_forge_open;
+static std::atomic<bool> g_modal_open;  // (the thank-you, settings_panel.cpp: a menu as far as input goes, until it is closed)
 static int g_menu_key;
 static float g_font_size;
 static ImFont *g_main_font;  // (the menu's; the CJK font is merged into it)
@@ -176,15 +180,20 @@ static ImGuiKey key_of(SDL_Scancode sc, SDL_Keycode kc) {
 
 static void set_open(bool open) {
     g_forge_open = open;
-    g_open = open || g_settings_open;
+    g_open = open || g_settings_open || g_modal_open;
     SDL_Window *w = ui_window();
     if (g_open) SDL_ShowCursor();  // (full screen hides it: runtime/ui.c)
     else if (w && (SDL_GetWindowFlags(w) & SDL_WINDOW_FULLSCREEN)) SDL_HideCursor();
     Ev e = {};
     e.kind = Ev::CLEAR;  // (keys and buttons held as it opens or closes: released)
     queue(e);
-    LOG("[overlay] forge %s, settings %s\n", open ? "open" : "closed", g_settings_open ? "open" : "closed");
+    LOG("[overlay] forge %s, settings %s%s\n", open ? "open" : "closed", g_settings_open ? "open" : "closed",
+        g_modal_open ? ", thank-you open" : "");
 }
+
+static std::atomic<int> g_last_input{USED_KEYS};  // (a PC's: the keys until something else is used)
+void overlay_input_seen(int kind) { g_last_input.store(kind, std::memory_order_relaxed); }
+int overlay_last_input(void) { return g_last_input.load(std::memory_order_relaxed); }
 
 static std::atomic<int> g_face_positions[4] = {1, 0, 3, 2};
 void overlay_face_positions(const int positions[4]) {
@@ -197,9 +206,15 @@ void overlay_request_close(void) {
     set_open(g_forge_open);
 }
 bool overlay_settings_dirty(void) { return settings_panel_dirty(); }
+#ifndef __ANDROID__
+static std::atomic<bool> g_menu_opened;  // (the player opened the settings menu: menu_hint has nothing to say)
+#endif
 void overlay_toggle_settings(void) {
-    if (!g_enabled) return;
+    if (!g_enabled || g_modal_open) return;  // (the thank-you first: closed, F1 and the chord work again)
     if (g_settings_open) { settings_panel_request_back(); return; }
+#ifndef __ANDROID__
+    g_menu_opened = true;
+#endif
     g_settings_open = true;
     set_open(g_forge_open);
 }
@@ -219,7 +234,7 @@ bool overlay_event(const SDL_Event *e) {
         return true;
     }
     if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && (int)e->key.scancode == g_menu_key) {
-        set_open(!g_forge_open);
+        if (!g_modal_open) set_open(!g_forge_open);
         return true;
     }
     if (!g_open) return false;
@@ -446,7 +461,21 @@ void overlay_init(const char *font_path, float font_size, int menu_key) {
         if (!font_path && access(p, R_OK) == 0) font_path = p;
 #endif
     ImFont *font = font_path ? io.Fonts->AddFontFromFileTTF(font_path, g_font_size, &cfg) : nullptr;
+    bool builtin = !font;  // (ImGui's own font: no file of the player's)
     g_main_font = font ? font : io.Fonts->AddFontDefaultVector(&cfg);
+#ifdef _WIN32
+    // (ImGui's own font has Latin-1 only: what it lacks - the thank-you's em dash, a licence's quotes, a chat line in another
+    // script - comes from Windows' Segoe UI, merged after it; the font itself stays as it was)
+    if (builtin) {
+        const char *windir = getenv("WINDIR");
+        std::string fallback = std::string(windir && *windir ? windir : "C:/Windows") + "/Fonts/segoeui.ttf";
+        ImFontConfig merge;
+        merge.MergeMode = true;
+        merge.SizePixels = g_font_size;
+        merge.Flags |= ImFontFlags_NoLoadError;
+        if (access(fallback.c_str(), R_OK) == 0) io.Fonts->AddFontFromFileTTF(fallback.c_str(), g_font_size, &merge);
+    }
+#endif
     ImGui::StyleColorsDark();
     forge_style(ImGui::GetStyle());
     ImGui::GetStyle().FontSizeBase = g_font_size;
@@ -472,11 +501,41 @@ void overlay_notice(const char *title, const char *text) {
     g_notice_ns = std::max<uint64_t>(SDL_GetTicksNS(), 1);
 }
 
+// (the thank-you open: a notice waits under it, its seconds not counting - shown whole once it is closed)
+static void notice_hold(uint64_t now) {
+    std::lock_guard<std::mutex> l(g_notice_lock);
+    if (g_notice_ns) g_notice_ns = std::max<uint64_t>(now, 1);
+}
+
+// (now is read once a frame: a notice posted since, menu_hint's or another thread's, came after it and is still up)
 static bool notice_due(uint64_t now) {
     std::lock_guard<std::mutex> l(g_notice_lock);
-    if (g_notice_ns && now - g_notice_ns >= NOTICE_NS) g_notice_ns = 0;
+    if (g_notice_ns && now >= g_notice_ns + NOTICE_NS) g_notice_ns = 0;
     return g_notice_ns != 0;
 }
+
+#ifndef __ANDROID__
+// (a desktop) Nothing on the screen says what opens the settings menu: a few seconds into each start a notice says so,
+// until the player has opened it once ([Application] MenuHintSeen, which settings_panel.cpp turns On as it opens). A
+// notice already up (a controller to set up, say) goes first; the menu opened before then, none this time.
+static const uint64_t MENU_HINT_NS = 6000000000ull;  // (after the first frame the overlay drew)
+static void menu_hint(uint64_t now) {
+    static uint64_t first;
+    static bool done;
+    if (done) return;
+    if (g_config.menu_hint_seen || g_menu_opened) {
+        done = true;
+        return;
+    }
+    if (!first) first = now;
+    // (nor over the credits or the thank-you after them: once they are done)
+    if (now - first < MENU_HINT_NS || notice_due(now) || settings_panel_credits_up()) return;
+    done = true;
+    int lang = config_language();
+    overlay_notice(settings_text(lang, "F1: settings"), settings_text(lang, "+ and - together on a controller"));
+    LOG("[overlay] notice: F1 opens the settings menu (MenuHintSeen = Off)\n");
+}
+#endif
 
 static void draw_notice(uint64_t now, float scale) {
     std::string title, text;
@@ -486,7 +545,8 @@ static void draw_notice(uint64_t now, float scale) {
         if (!g_notice_ns) return;
         title = g_notice_title, text = g_notice_text, at = g_notice_ns;
     }
-    float age = (now - at) / 1e9f, alpha = std::clamp(std::min(age / .15f, (NOTICE_NS / 1e9f - age) / .5f), 0.f, 1.f);
+    float age = now > at ? (now - at) / 1e9f : 0.f;  // (posted since now was read: just up)
+    float alpha = std::clamp(std::min(age / .15f, (NOTICE_NS / 1e9f - age) / .5f), 0.f, 1.f);
     auto color = [alpha](float r, float g, float b, float a) {
         return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a * alpha));
     };
@@ -497,13 +557,33 @@ static void draw_notice(uint64_t now, float scale) {
     ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, wrap, title.c_str());
     ImVec2 xs = font->CalcTextSizeA(size, FLT_MAX, wrap, text.c_str());
     float w = std::max(ts.x, xs.x) + bar + 2 * pad, h = ts.y + gap + xs.y + 2 * pad;
-    ImVec2 p0(vp->WorkPos.x + (vp->WorkSize.x - w) * .5f, vp->WorkPos.y + 20 * scale), p1(p0.x + w, p0.y + h);
+    float top = vp->WorkPos.y + 20 * scale, stats = perfstats_bottom();  // (under the FPS plate, both at the top)
+    if (stats > 0) top = std::max(top, stats + 8 * scale);
+    ImVec2 p0(vp->WorkPos.x + (vp->WorkSize.x - w) * .5f, top), p1(p0.x + w, p0.y + h);
     ImDrawList *dl = ImGui::GetForegroundDrawList();
-    dl->AddRectFilled(p0, p1, color(.025f, .04f, .065f, .92f), 6 * scale);
-    dl->AddRectFilled(p0, ImVec2(p0.x + bar, p1.y), color(1, .72f, .3f, 1), 6 * scale, ImDrawFlags_RoundCornersLeft);
+    // In the settings menu's colours, as the chat line's (draw_chat): Hunter the game's window with a red and green rule
+    // along its top and bottom, Blue and Gold a panel with a bar at its left
+    int theme = settings_panel_theme();
+    if (theme == THEME_HUNTER) {
+        float line = 2 * scale;
+        dl->AddRectFilled(p0, p1, color(50 / 255.f, 25 / 255.f, 24 / 255.f, .93f));
+        dl->AddRect(p0, p1, color(0, 0, 0, 1), 0, 0, 2 * scale);
+        dl->AddRectFilled(p0, ImVec2(p1.x, p0.y + line), color(176 / 255.f, 34 / 255.f, 30 / 255.f, 1));
+        dl->AddRectFilled(ImVec2(p0.x, p0.y + line), ImVec2(p1.x, p0.y + line * 1.7f), color(80 / 255.f, 142 / 255.f, 54 / 255.f, 1));
+        dl->AddRectFilled(ImVec2(p0.x, p1.y - line * 1.7f), ImVec2(p1.x, p1.y - line), color(80 / 255.f, 142 / 255.f, 54 / 255.f, 1));
+        dl->AddRectFilled(ImVec2(p0.x, p1.y - line), p1, color(176 / 255.f, 34 / 255.f, 30 / 255.f, 1));
+    } else if (theme == THEME_GOLD) {
+        dl->AddRectFilled(p0, p1, color(34 / 255.f, 25 / 255.f, 19 / 255.f, .94f), 6 * scale);
+        dl->AddRectFilled(p0, ImVec2(p0.x + bar, p1.y), color(213 / 255.f, 162 / 255.f, 79 / 255.f, 1), 6 * scale,
+                          ImDrawFlags_RoundCornersLeft);
+    } else {
+        dl->AddRectFilled(p0, p1, color(.025f, .04f, .065f, .92f), 6 * scale);
+        dl->AddRectFilled(p0, ImVec2(p0.x + bar, p1.y), color(1, .72f, .3f, 1), 6 * scale, ImDrawFlags_RoundCornersLeft);
+    }
     ImVec2 at_text(p0.x + bar + pad, p0.y + pad);
     dl->AddText(font, size, at_text, color(1, .8f, .45f, 1), title.c_str(), nullptr, wrap);
-    dl->AddText(font, size, ImVec2(at_text.x, at_text.y + ts.y + gap), color(.96f, .97f, 1, 1), text.c_str(), nullptr, wrap);
+    ImVec4 ink = theme == THEME_BLUE ? ImVec4(.96f, .97f, 1, 1) : ImVec4(242 / 255.f, 216 / 255.f, 170 / 255.f, 1);
+    dl->AddText(font, size, ImVec2(at_text.x, at_text.y + ts.y + gap), color(ink.x, ink.y, ink.z, 1), text.c_str(), nullptr, wrap);
 }
 
 // The line of chat being typed ("/", runtime/hle/chat.c): where the player dragged it (at first above the game's
@@ -563,16 +643,25 @@ void overlay_frame(void *cpu) {
     // is in the background, its clock held: runtime/hle/vi.c)
     vi_pause_game();
     if (!g_ready) return;
-    if (!g_settings_open) { bool closed = false; settings_panel(&closed); }
+    // (the menu closed: its state let go here, drawn - the credits - only inside the frame below: before the first frame
+    // there is no font, the credits' text measured with none faulted at the first frame - "accessing 0" under
+    // frame_update - and later ones were drawn into the last frame's list, cleared as the frame began)
+    if (!g_settings_open) settings_panel_idle();
+    bool credits = settings_panel_credits_up();
     bool open = g_open, free_render = forge_plugins_have(FORGE_IMGUI_FREE_RENDER);
     uint64_t now = SDL_GetTicksNS();
+#ifndef __ANDROID__
+    menu_hint(now);
+#endif
+    if (g_modal_open) notice_hold(now);
     bool notice = notice_due(now);
     char line[256];
     bool chat = chat_composing(line, sizeof line);
     ImGuiIO &io = ImGui::GetIO();
     bool touch = touch_drawn();  // (hidden, the settings button still shows)
     bool stats = perfstats_visible();  // ([Performance] ShowStats: runtime/perfstats.cpp)
-    if (!open && !free_render && !notice && !chat && !touch && !stats) {  // (nothing to draw)
+    bool fading = settings_panel_fading();  // (the settings menu closed a moment ago: fading out, taking no input)
+    if (!open && !free_render && !notice && !chat && !touch && !stats && !credits && !fading) {  // (nothing to draw)
         std::lock_guard<std::mutex> l(g_snap_lock);
         if (g_snap.Valid) snap_clear();
         apply_input(io);  // (keep the queue short)
@@ -607,6 +696,10 @@ void overlay_frame(void *cpu) {
     settings_panel(&settings);
     if (settings_panel_confirming()) settings = true;
     if (settings != g_settings_open) { g_settings_open = settings; set_open(g_forge_open); }
+    // The thank-you opened or closed this frame: while it is open every input is the overlay's (overlay_event, the
+    // controller in runtime/host_input.c, the fingers in runtime/touch.cpp), as with a menu
+    bool modal = settings_panel_modal();
+    if (modal != g_modal_open) { g_modal_open = modal; set_open(g_forge_open); }
     if (g_forge_open) {
         bool keep = true;
         ImGui::SetNextWindowPos(ImVec2(40 * scale, 40 * scale), ImGuiCond_FirstUseEver);
@@ -636,18 +729,21 @@ void overlay_frame(void *cpu) {
         if (!keep) set_open(false);
     }
     forge_imgui_run(cpu, FORGE_IMGUI_FREE_RENDER);
-    if (notice) draw_notice(now, scale);
-    if (chat) draw_chat(line, now, scale);
+    if (notice && !g_modal_open) draw_notice(now, scale);  // (not over the thank-you: it waits, notice_hold)
+    if (chat && !g_modal_open) draw_chat(line, now, scale);
     if (stats) perfstats_draw((float)w, (float)h);  // (under the touch controls, on the same background list)
     if (touch) touch_draw((float)w, (float)h);  // (the touch controls: runtime/touch.cpp)
     ImGui::Render();
+    settings_panel_after_render(ImGui::GetDrawData());
 
     ImDrawData *dd = ImGui::GetDrawData();
     if (dd->Textures)  // (texture uploads: on this thread, between the render thread's submissions)
         for (ImTextureData *tex : *dd->Textures)
             if (tex->Status != ImTextureStatus_OK) {
                 vk_lock();
+                uint64_t t0 = HITCH_ON ? hitch_now() : 0;
                 ImGui_ImplVulkan_UpdateTexture(tex);
+                if (HITCH_ON) hitch_add(HC_OVERLAY_TEX, hitch_now() - t0, (uint64_t)tex->Width * tex->Height * 4);
                 vk_unlock();
             }
     std::lock_guard<std::mutex> l(g_snap_lock);

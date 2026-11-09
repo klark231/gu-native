@@ -4,13 +4,24 @@
 // uniform ranges, once per submission) rather than imported: the 32-bit guest's heap is 2.5 GB and lazily committed.
 //   MHGU_SYNC_SHADERS=1   build shaders / pipelines on first use, blocking (deterministic runs; default: on worker
 //                         threads, draws needing them wait a bounded time, then are skipped until ready)
-//   MHGU_PIPE_WAIT_MS=n   per-frame budget for those waits (default 6; 0: skip at once)
+//   MHGU_PIPE_WAIT_MS=n   per-frame budget for those waits (default 6, a desktop's a quarter of the frame interval up
+//                         to 6; 0: skip at once)
+//   MHGU_PIPE_WAIT_NEW=1  (desktop) wait for builds no cache has as well (a pipeline first made at a draw, a program
+//                         being translated): by default their draws are skipped at once, no budget would get them
+//   MHGU_COMPILE_WORKERS=n  threads for SPIR-V / pipeline builds (default 3; a desktop's half its logical processors,
+//                         3 to 6, on Windows below the game's threads' priority)
 //   MHGU_NO_PROGRAM_CACHE=1  don't keep translated programs / pipeline states in cache/ for the next run to prebuild
 //   MHGU_SAVE_GLSL=1      translated shaders -> build/glsl/<code address>_<stage>.glsl
 //   MHGU_VK_STATS=1       draw / pass / skip counts in the log every 2 s (and shader / pipeline build stats)
+//   MHGU_VK_STAGING=<n>   desktop: staging chunks made at start-up (default 4; see "transient memory ring")
+//   MHGU_VK_VC_SAFETY=<n> the vertex cache's safety net: 0 off (Windows' default), 1 on, 2 checked (see "vertex cache")
 //   MHGU_SKIP_LOG=1       every draw skipped for a building program / pipeline: its shaders and colour target
 //   MHGU_NO_PREWARM=1     don't translate the game's programs ahead of their first use (see "prewarm"; the ini's
 //                         [Performance] ShaderPrewarm = Off does the same)
+#ifdef __ANDROID__
+#include <sys/resource.h>  // (setpriority: the shader workers below the game)
+#include <unistd.h>
+#endif
 #include <errno.h>
 #include <math.h>
 #include <pthread.h>
@@ -26,18 +37,19 @@
 #include "shaders.h"
 #include "vk.h"
 #include "../../touch.h"
-// [Touch] MoveHUD: the item bar's move to the top middle, on the game's 1280x720 canvas (cbuf_info)
-// [Touch] MoveHUD, while the touch controls show (runtime/touch.cpp), on the game's 1280x720 canvas (cbuf_info):
-//   the status (clock, health, stamina, sharpness, name: layer 103 above y 500) to the screen's left edge
-//   the item bar (layer 103 from y 500: x 992..1238 with its label) to the bottom middle, where a tap uses the item
-//     and a swipe turns the bar
-//   the Hunter Arts panels (layer 100, x 709..957 with their button icons, y 618..708: two rows; a third above them)
-//     to the top right, the target
-//     camera's icons (layer 100 at x 1200, y 42..82) left of them
-#define ITEM_BAR_DX (-475.0f)       // (x 992..1238 -> 517..763: the middle)
-#define ARTS_DX (311.0f)            // (x 709..957 -> 1020..1268, then anchored to the screen's right edge)
-#define ARTS_TOP 41.0f              // the top row's first piece goes to this y (two rows: 631 -> 41; three: the same)
-#define TARGET_DX (-250.0f)         // (x 1200 -> 950, from the right edge: left of the arts)
+#ifndef __ANDROID__
+#include "../../hle/mousemenu.h"
+#endif
+#ifdef _WIN32
+#include <SDL3/SDL_cpuinfo.h>  // (compile_workers: no sysconf)
+#endif
+// The hunt's HUD parts (runtime/hud_parts.h: the item bar, the Hunter Arts, the target camera), where the player put them
+// in the editors (runtime/touch.cpp) and, with the touch controls on the screen ([Touch] MoveHUD), out of the thumbs'
+// way by default, on the game's 1280x720 canvas (cbuf_info): the status (clock, health, stamina, sharpness, name:
+// layer 103 above y 500) to the screen's left edge, the item bar (layer 103 from y 500: x 992..1238 with its label) to
+// the bottom middle, where a tap uses the item and a swipe turns the bar, the Hunter Arts panels (layer 100, x 709..957
+// with their button icons, y 618..708: two rows; a third above them) to the top right, the target camera's icons (layer
+// 100 at x 1200, y 42..82) left of them
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_snapshots;
 // (MHGU_VK_STATS) time spent: translating command lists, waiting for the GPU, guest memory copied per submission
@@ -46,6 +58,9 @@ static _Atomic int stat_compiles;
 // (MHGU_VK_STATS) shader / pipeline builds: skips by cause, frames with skips, the waits, build times per job kind
 // (translate, GLSL -> SPIR-V + modules, pipeline), request -> ready latency, the slowest frame (exec thread's view)
 static uint64_t stat_skip_prog, stat_skip_pipe, stat_skip_frames, stat_waited_ns, stat_waits, stat_rescued, stat_frame_max;
+bool vk_gpu_adreno(void);  // (device.c)
+// (this draw: the game's alpha to coverage done as an alpha test at 0.5, one sample on an Adreno: the draw, #70)
+static bool a2c_as_test;
 static _Atomic uint64_t stat_pw_new, stat_pw_known, stat_pw_left;  // prewarm: translated, already cached, jobs queued
 static _Atomic uint64_t stat_job_n[3], stat_job_ns[3], stat_job_max[3], stat_lat_n, stat_lat_ns, stat_lat_max;
 static void atomic_max(_Atomic uint64_t *m, uint64_t v) {
@@ -57,6 +72,14 @@ static void job_stat(int kind, uint64_t t0) {
     atomic_fetch_add(&stat_job_n[kind], 1);
     atomic_fetch_add(&stat_job_ns[kind], d);
     atomic_max(&stat_job_max[kind], d);
+    if (HITCH_ON) hitch_add(HC_JOB_XLATE + kind, d, 0);  // ((debug) MHGU_HITCHLOG: translate, program, pipeline)
+}
+// The renderer's own pipelines (resolves, masked clears, FXAA), made on the render thread the first time they are needed
+static VkResult sync_pipeline(const VkGraphicsPipelineCreateInfo *pi, VkPipeline *p) {
+    uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
+    VkResult r = vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, pi, NULL, p);
+    if (HITCH_ON) hitch_add(HC_PIPE_SYNC, plat_now_ns() - t0, 0);
+    return r;
 }
 
 // ================================================================== submissions
@@ -155,6 +178,7 @@ void vk_wait_seq(uint64_t seq) {
     if (site >= 0 && site < W_SITES) {
         atomic_fetch_add(&stat_w_n[site], 1), atomic_fetch_add(&stat_w_ns[site], d_);
         if (seq >= submit_seq) atomic_fetch_add(&stat_w_drain[site], 1);
+        if (HITCH_ON) hitch_add(HC_GPU_OTHER + site, d_, 0);  // ((debug) MHGU_HITCHLOG: the sites in the same order)
     }
     if (r == VK_TIMEOUT) LOG("[vk] GPU did not finish submission %llu within 10 s (device lost?)\n", (unsigned long long)seq);
     else if (r != VK_SUCCESS) FATAL("vkWaitSemaphores: %d (device lost)\n", r);
@@ -167,7 +191,9 @@ static Sub *sub(void) {
     if (s->seq != submit_seq + 1) {  // slot reused: its previous submission must be done
         vk_wait_site(W_RING);
         vk_wait_seq(s->seq);
+        uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
         for (int i = 0; i < s->npools; i++) vkResetDescriptorPool(g_vk.dev, s->pools[i], 0);
+        if (HITCH_ON && s->npools) hitch_add(HC_DESC_RESET, plat_now_ns() - t0, (uint64_t)s->npools);
         s->cur_pool = 0;
         s->seq = submit_seq + 1;
         s->main_begun = s->upload_begun = false;
@@ -244,7 +270,10 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal) {
         si.signalSemaphoreCount = signal ? 1 : 0, si.pSignalSemaphores = &signal;
         fence = seq_fence[(submit_seq + 1) % SUBS];
     }
+    vk_upload_jobs_finish();  // (the upload buffer's copies read staging memory the texture workers may still be writing)
+    uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
     VK_CHECK(vkQueueSubmit(g_vk.queue, 1, &si, fence));
+    if (HITCH_ON) hitch_add(HC_SUBMIT, plat_now_ns() - t0, 0);
     if (fence) {
         pthread_mutex_lock(&fence_lock);
         fence_queued = submit_seq + 1;
@@ -307,7 +336,9 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
                                             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 512}};
             VkDescriptorPoolCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 4096,
                                              .poolSizeCount = 6, .pPoolSizes = sizes};
+            uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
             VK_CHECK(vkCreateDescriptorPool(g_vk.dev, &ci, NULL, &s->pools[s->npools++]));
+            if (HITCH_ON) hitch_add(HC_DESC_POOL, plat_now_ns() - t0, 0);
         }
         VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
                                           .descriptorPool = s->pools[s->cur_pool], .descriptorSetCount = 1, .pSetLayouts = &layout};
@@ -319,14 +350,17 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
 
 // ================================================================== transient memory ring
 // 32 MB host-visible chunks; a chunk is reused once every submission that allocated from it has completed.
+// Desktop: the first ones are made at start-up (vk_exec_init), so a burst of uploads in play doesn't make one: a new
+// chunk took 31-40 ms on an RX 6800 XT (its memory zeroed and mapped; render thread, vk_lock held: MHGU_HITCHLOG's
+// staging-chunk), and a hunt had made 3.
+//   MHGU_VK_STAGING=<n>   chunks made at start-up (default 4; 0: none, each made when needed)
 #define CHUNK_SIZE (32ull << 20)
+#define CHUNKS_AHEAD 4
 typedef struct { VkBuffer buf; VmaAllocation mem; uint8_t *ptr; uint64_t size, used, seq; } Chunk;
 static Chunk *chunks;
 static int nchunks, active = -1;
 
-static int new_chunk(uint64_t size) {
-    chunks = realloc(chunks, (nchunks + 1) * sizeof *chunks);
-    Chunk *c = &chunks[nchunks];
+static VkResult make_chunk(Chunk *c, uint64_t size) {
     memset(c, 0, sizeof *c);
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
                              .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
@@ -335,11 +369,94 @@ static int new_chunk(uint64_t size) {
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO,
                                   .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
     VmaAllocationInfo info;
-    VK_CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &c->buf, &c->mem, &info));
-    c->ptr = info.pMappedData;
-    c->size = size;
+    uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
+    VkResult r = vmaCreateBuffer(g_vk.vma, &bi, &ai, &c->buf, &c->mem, &info);
+    if (HITCH_ON) hitch_add(HC_CHUNK, plat_now_ns() - t0, size);  // ((debug) MHGU_HITCHLOG: on the thread that made it)
+    if (r == VK_SUCCESS) c->ptr = info.pMappedData, c->size = size;
+    return r;
+}
+
+#ifndef __ANDROID__
+// The ring's next chunk is made ahead, on a thread of its own. A new chunk is a vkAllocateMemory of some 30 ms (the
+// driver zeroes and pins its 32 MB: 8000 page faults), which a frame paid whenever a burst of first-time textures took
+// the last free chunk (measured: a 1.3 MB texture upload "took" 34.6 ms). Each time the ring takes the spare, the next
+// one is made. Phones still grow on the spot: there a chunk made ahead is 32 MB held until a burst needs it.
+// MHGU_VK_SPARE_CHUNK=0: no spare (for comparisons).
+static struct {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    bool want, ready, thread;
+    Chunk c;
+} spare = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER};
+
+static void *spare_thread(void *unused) {
+    (void)unused;
+    pthread_mutex_lock(&spare.mu);
+    for (;;) {
+        while (!spare.want) pthread_cond_wait(&spare.cv, &spare.mu);
+        pthread_mutex_unlock(&spare.mu);
+        Chunk c;
+        bool ok = !vk_exiting() && make_chunk(&c, CHUNK_SIZE) == VK_SUCCESS;
+        pthread_mutex_lock(&spare.mu);
+        spare.want = false;
+        if (ok) spare.c = c, spare.ready = true;
+    }
+    return NULL;
+}
+
+// (render thread) The spare, if it is ready; the next one is asked for either way.
+static bool take_spare(Chunk *c) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("MHGU_VK_SPARE_CHUNK"); on = !e || atoi(e) != 0; }
+    if (!on) return false;
+    pthread_mutex_lock(&spare.mu);
+    bool got = spare.ready;
+    if (got) *c = spare.c, spare.ready = false;
+    if (!spare.want) {
+        if (!spare.thread) {
+            pthread_t th;
+            spare.thread = !pthread_create(&th, NULL, spare_thread, NULL);
+            if (spare.thread) pthread_detach(th);
+        }
+        spare.want = spare.thread;
+        pthread_cond_signal(&spare.cv);
+    }
+    pthread_mutex_unlock(&spare.mu);
+    return got;
+}
+#endif
+
+static int new_chunk(uint64_t size, bool must) {  // (!must: -1 when the driver refuses)
+    Chunk c;
+#ifndef __ANDROID__
+    if (size != CHUNK_SIZE || !take_spare(&c))
+#endif
+    {
+        VkResult r = make_chunk(&c, size);
+        if (r != VK_SUCCESS) {
+            if (must) VK_CHECK(r);
+            return -1;
+        }
+    }
+    chunks = realloc(chunks, (nchunks + 1) * sizeof *chunks);
+    chunks[nchunks] = c;
     return nchunks++;
 }
+
+#ifndef __ANDROID__
+static void chunks_ahead(void) {
+    const char *e = getenv("MHGU_VK_STAGING");
+    int want = e ? atoi(e) : CHUNKS_AHEAD;
+    while (nchunks < want && nchunks < 16 && new_chunk(CHUNK_SIZE, false) >= 0) {}
+    if (!nchunks) return;
+    VmaAllocationInfo info;
+    vmaGetAllocationInfo(g_vk.vma, chunks[0].mem, &info);
+    const VkPhysicalDeviceMemoryProperties *mp;
+    vmaGetMemoryProperties(g_vk.vma, &mp);
+    LOG("[vk] staging: %d chunks of %llu MB made up front (memory type %u, flags %#x)\n", nchunks,
+        (unsigned long long)(CHUNK_SIZE >> 20), info.memoryType, mp->memoryTypes[info.memoryType].propertyFlags);
+}
+#endif
 
 VkSpan vk_transient(uint64_t size, uint64_t align) {
     if (align < 16) align = 16;
@@ -357,7 +474,7 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
     int pick = -1;
     for (int i = 0; i < nchunks; i++)
         if (i != active && chunks[i].seq <= done && chunks[i].size >= size) { pick = i; break; }
-    if (pick < 0) pick = new_chunk(size > CHUNK_SIZE ? size : CHUNK_SIZE);
+    if (pick < 0) pick = new_chunk(size > CHUNK_SIZE ? size : CHUNK_SIZE, true);
     active = pick;
     chunks[pick].used = size;
     chunks[pick].seq = pending;
@@ -411,34 +528,133 @@ static bool guest_range_ok(uint64_t addr, uint64_t size) { return addr && addr <
 // upload command buffer, which starts with a full barrier (earlier submissions' reads are done) and completes before
 // its draws. Without tracking for a range (outside the heap): not cached. MHGU_VK_VCACHE=0: off.
 // Safety net (as textures.c's periodic full hash): a write the tracking missed would leave a copy stale for good, so an
-// entry in use is copied in full again every 2-4 s (staggered by its slot), VC_FULL_FRAME bytes a frame at most (a
-// bigger entry alone in a frame).
+// entry in use is copied again every 2-4 s (staggered by its slot), a slice of VC_SLICE bytes at a time and VC_SLICE
+// bytes a frame at most: a big entry takes several frames, never one. Off on Windows, where GetWriteWatch is kept by
+// the memory manager from the page tables: it sees every write into the guest window whoever makes it (the game's code,
+// the runtime's own copies, the kernel's on ReadFile), and nothing maps those pages a second time (kernel.c's
+// MapMemory and shared memory copy into the window). Android's tracking is mprotect's, which the kernel's own writes
+// and its unwatched hot blocks get past (platform/android.c).
+//   MHGU_VK_VC_SAFETY=0|1|2   off / on (any platform) / on and checked: a slice whose bytes changed since its last copy
+//                             with no write reported there is logged (a write the tracking missed), with counts (a
+//                             test: every copy is hashed too)
 #define VC_TAB 4096
 #define VC_BUDGET (384ull << 20)
 #define VC_FULL_NS 2000000000ull
-#define VC_FULL_FRAME (2ull << 20)
-typedef struct { uint64_t addr, size, used_seq, checked_seq, full_t; uint32_t gen; VkBuffer buf; VmaAllocation mem; } VcEnt;
+#ifdef __ANDROID__
+#define VC_SLICE (2ull << 20)
+#else
+#define VC_SLICE (1ull << 20)
+#endif
+typedef struct {
+    uint64_t addr, size, used_seq, checked_seq, full_t;  // (full_t: when its last full copy or safety pass ended)
+    uint32_t gen, full_off;                              // (full_off: the safety pass's next slice)
+    uint64_t *sums;                                      // (checked: each slice's hash as last copied, 0 unknown)
+    VkBuffer buf;
+    VmaAllocation mem;
+} VcEnt;
 static VcEnt vc_tab[VC_TAB];
 static uint64_t vc_bytes;
 static uint64_t vc_frame = ~0ull, vc_t, vc_full_left;  // (the frame's number, its time, the safety net's bytes left)
 uint64_t stat_vc_hits, stat_vc_refresh;
 
-static void vc_new_frame(void) {
-    uint64_t f = vk_frame_counter();
-    if (f != vc_frame) vc_frame = f, vc_t = plat_now_ns(), vc_full_left = VC_FULL_FRAME;
+static int vc_safety(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("MHGU_VK_VC_SAFETY");
+#ifdef _WIN32
+        on = e ? atoi(e) : 0;
+#else
+        on = e ? atoi(e) : 1;
+#endif
+    }
+    return on;
 }
 
-static bool vc_full_due(VcEnt *e) {  // (the safety net: e's full copy now)
+static void vc_new_frame(void) {
+    uint64_t f = vk_frame_counter();
+    if (f != vc_frame) vc_frame = f, vc_t = plat_now_ns(), vc_full_left = VC_SLICE;
+}
+
+static bool vc_full_due(VcEnt *e) {  // (the safety net: e's turn to be copied again)
     vc_new_frame();
-    if (vc_t - e->full_t < VC_FULL_NS + (uint64_t)((e - vc_tab) & 255) * 8000000ull) return false;
-    if (e->size > vc_full_left && vc_full_left < VC_FULL_FRAME) return false;
-    vc_full_left = e->size < vc_full_left ? vc_full_left - e->size : 0;
-    return true;
+    return vc_t - e->full_t >= VC_FULL_NS + (uint64_t)((e - vc_tab) & 255) * 8000000ull;
+}
+
+// (MHGU_VK_VC_SAFETY=2) a slice's hash, never 0
+static uint64_t vc_sum(const uint8_t *p, uint64_t n) {
+    uint64_t h[4] = {0x9E3779B97F4A7C15ull ^ n, 0xC2B2AE3D27D4EB4Full, 0x165667B19E3779F9ull, 0x27D4EB2F165667C5ull}, v[4];
+    uint64_t i = 0;
+    for (; i + 32 <= n; i += 32) {
+        memcpy(v, p + i, 32);
+        for (int k = 0; k < 4; k++) h[k] = (h[k] ^ v[k]) * 0x100000001B3ull, h[k] ^= h[k] >> 29;
+    }
+    uint64_t r = h[0] ^ (h[1] * 0x9E3779B97F4A7C15ull) ^ (h[2] * 0xC2B2AE3D27D4EB4Full) ^ (h[3] * 0x165667B19E3779F9ull);
+    for (; i < n; i++) r = (r ^ p[i]) * 0x100000001B3ull;
+    return r | 1;
+}
+
+static bool vc_sums_alloc(VcEnt *e) {
+    return e->sums || (e->sums = calloc((e->size + VC_SLICE - 1) / VC_SLICE, sizeof *e->sums));
+}
+
+// (MHGU_VK_VC_SAFETY=2) bytes [lo, hi) of e were just copied from guest memory: the slices inside get their hash, one
+// copied in part becomes unknown (its other bytes are from an earlier copy)
+static void vc_sums_copied(VcEnt *e, uint64_t lo, uint64_t hi) {
+    if (!vc_sums_alloc(e)) return;
+    const uint8_t *g = (const uint8_t *)G2H((uint32_t)e->addr);
+    for (uint64_t k = lo / VC_SLICE; k * VC_SLICE < hi; k++) {
+        uint64_t o = k * VC_SLICE, n = e->size - o < VC_SLICE ? e->size - o : VC_SLICE;
+        e->sums[k] = lo <= o && o + n <= hi ? vc_sum(g + o, n) : 0;
+    }
+}
+
+// (MHGU_VK_VC_SAFETY=2) the slice of e at off (n bytes at g), about to be copied again: changed since its last copy
+// with the tracking reporting no write there since e's check (asked once more now: a write may have come after it)
+static void vc_check(VcEnt *e, uint64_t off, uint64_t n, const uint8_t *g) {
+    static uint64_t compared, changed, missed;
+    uint64_t k = off / VC_SLICE, h = vc_sum(g, n);
+    if (!vc_sums_alloc(e)) return;
+    if (e->sums[k]) {
+        compared++;
+        if (e->sums[k] != h) {
+            changed++;
+            uint32_t now;
+            if (vk_pages_changed(e->addr + off, n, e->gen, &now) == 0 && ++missed <= 20)
+                LOG("[vk] vertex cache: %#llx+%llu KB changed with no write reported there (missed by the write tracking)\n",
+                    (unsigned long long)(e->addr + off), (unsigned long long)(n >> 10));
+        }
+        if (compared % 2000 == 0)
+            LOG("[vk] vertex cache check: %llu slices compared, %llu changed, %llu of those missed by the write tracking\n",
+                (unsigned long long)compared, (unsigned long long)changed, (unsigned long long)missed);
+    }
+    e->sums[k] = h;
+}
+
+// The safety net's next slice of e (at e->full_off): its bytes, if the frame's budget has room for them, else 0
+static uint64_t vc_slice_next(VcEnt *e) {
+    uint64_t n = e->size - e->full_off < VC_SLICE ? e->size - e->full_off : VC_SLICE;
+    return n <= vc_full_left ? n : 0;
+}
+
+static void vc_slice_copy(VcEnt *e, uint64_t n) {
+    uint64_t off = e->full_off;
+    vc_full_left -= n;
+    const uint8_t *g = (const uint8_t *)G2H((uint32_t)e->addr) + off;
+    uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
+    if (vc_safety() == 2) vc_check(e, off, n, g);
+    VkSpan s = vk_transient_copy(g, n, 16);
+    VkBufferCopy rg = {s.off, off, n};
+    vkCmdCopyBuffer(vk_upload_cmd(), s.buf, e->buf, 1, &rg);
+    if (HITCH_ON) hitch_add(HC_VC_SAFETY, plat_now_ns() - t0, n);
+    stat_copy_bytes += n;
+    e->full_off = off + n < e->size ? (uint32_t)(off + n) : 0;
+    if (!e->full_off) e->full_t = vc_t;  // (the pass is over: the next in 2-4 s)
 }
 
 static void vc_drop(VcEnt *e) {
     vk_defer_buffer(e->buf, e->mem);
     vc_bytes -= e->size;
+    free(e->sums);
     memset(e, 0, sizeof *e);
 }
 
@@ -457,7 +673,8 @@ static bool vcache(uint64_t addr, uint64_t size, VkBuffer *buf) {
         if (c->buf && c->used_seq < pend && (old == ~0u || c->used_seq < vc_tab[old].used_seq)) old = slot;
     }
     bool copy = false;
-    uint32_t since = 0;  // refresh: only pages written after this generation
+    uint32_t since = 0;       // refresh: only pages written after this generation
+    uint64_t so = 0, sn = 0;  // the safety net's slice copied below: its offset and bytes (none: 0)
     if (!e) {
         uint32_t now = 0;
         if (vk_pages_changed(addr, size, 0, &now) < 0) return false;  // (no tracking here: per-submission copies)
@@ -476,8 +693,9 @@ static bool vcache(uint64_t addr, uint64_t size, VkBuffer *buf) {
         e = &vc_tab[free_slot];
         VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
                                  .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
-        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-        if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &e->buf, &e->mem, NULL) != VK_SUCCESS) { memset(e, 0, sizeof *e); return false; }
+        uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
+        if (vk_create_buffer(&bi, &e->buf, &e->mem) != VK_SUCCESS) { memset(e, 0, sizeof *e); return false; }
+        if (HITCH_ON) hitch_add(HC_VC_NEW, plat_now_ns() - t0, size);
         e->addr = addr; e->size = size; e->gen = now; e->checked_seq = pend;
         vc_bytes += size;
         copy = true;
@@ -486,9 +704,12 @@ static bool vcache(uint64_t addr, uint64_t size, VkBuffer *buf) {
         int ch = vk_pages_changed(addr, size, e->gen, &now);
         e->checked_seq = pend;
         if (ch != 0) { copy = true; since = ch > 0 ? e->gen : 0; e->gen = now; }
-        if ((since || !copy) && vc_full_due(e)) copy = true, since = 0;  // (not a full copy already: the safety net's)
+        if ((since || !copy) && vc_safety() && vc_full_due(e)) {  // (not a full copy already: the safety net's turn)
+            sn = vc_slice_next(e);
+            so = sn ? e->full_off : 0;
+        }
     }
-    if (copy && since) {  // the pages written since the last refresh, as runs
+    if (copy && since) {  // the pages written since the last refresh, as runs (none inside the slice: it has them)
         extern uint32_t vk_page_gen(uint64_t addr);
         VkBufferCopy rg[64];
         int n = 0;
@@ -496,6 +717,12 @@ static bool vcache(uint64_t addr, uint64_t size, VkBuffer *buf) {
         for (uint64_t p = first; p < addr + size; p += 4096) {
             if (vk_page_gen(p) <= since) continue;
             uint64_t lo = p < addr ? addr : p, hi = p + 4096 > addr + size ? addr + size : p + 4096;
+            if (sn && lo - addr < so + sn && hi - addr > so) {
+                if (e->sums) e->sums[so / VC_SLICE] = 0;  // (written, as reported: nothing to check there)
+                if (lo - addr < so) hi = addr + so;
+                else if (hi - addr > so + sn) lo = addr + so + sn;
+                else continue;
+            }
             if (n && rg[n - 1].dstOffset + rg[n - 1].size == lo - addr) { rg[n - 1].size += hi - lo; continue; }
             if (n == 64) { n = -1; break; }
             rg[n++] = (VkBufferCopy){lo - addr, lo - addr, hi - lo};  // (srcOffset fixed up below)
@@ -507,18 +734,25 @@ static bool vcache(uint64_t addr, uint64_t size, VkBuffer *buf) {
                 rg[k].srcOffset = s.off;
                 vkCmdCopyBuffer(vk_upload_cmd(), s.buf, e->buf, 1, &rg[k]);
                 stat_copy_bytes += rg[k].size;
+                if (vc_safety() == 2) vc_sums_copied(e, rg[k].dstOffset, rg[k].dstOffset + rg[k].size);
             }
             stat_vc_refresh++;
         }
     }
     if (copy && !since) {
+        uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
         VkSpan s = vk_transient_copy(G2H((uint32_t)addr), size, 16);
+        if (HITCH_ON) hitch_add(HC_VC_COPY, plat_now_ns() - t0, size);
         VkBufferCopy rg = {s.off, 0, size};
         vkCmdCopyBuffer(vk_upload_cmd(), s.buf, e->buf, 1, &rg);
         stat_copy_bytes += size;
         stat_vc_refresh++;
+        if (vc_safety() == 2) vc_sums_copied(e, 0, size);
         vc_new_frame();
-        e->full_t = vc_t;
+        e->full_t = vc_t, e->full_off = 0;  // (a safety pass under way starts again)
+    } else if (sn) {
+        vc_slice_copy(e, sn);
+        stat_vc_refresh++;
     } else {
         stat_vc_hits++;
     }
@@ -531,12 +765,42 @@ static bool vcache(uint64_t addr, uint64_t size, VkBuffer *buf) {
 // Two lists per queue: jobs a draw is (or may be) waiting for, and the start-up prewarm's (low: taken only when the
 // first list is empty).
 typedef struct Job { void (*fn)(void *); void *arg; struct Job *next; } Job;
-typedef struct { Job *head, *tail, *lhead, *ltail; pthread_mutex_t lock; pthread_cond_t cond; bool started; } JobQueue;
-static JobQueue compile_q = {NULL, NULL, NULL, NULL, PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, false};
-static JobQueue translate_q = {NULL, NULL, NULL, NULL, PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, false};
+typedef struct {
+    Job *head, *tail, *lhead, *ltail;
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+    bool started;
+    int threads;  // (0: compile_workers)
+} JobQueue;
+static JobQueue compile_q = {NULL, NULL, NULL, NULL, PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, false, 0};
+static JobQueue translate_q = {NULL, NULL, NULL, NULL, PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, false, 1};
+
+// The compile workers (SPIR-V, modules, pipelines): 3. A desktop has cores to spare: half its logical processors, 3 to
+// 6, so a burst of new pipelines ends sooner; on Windows below the game's threads' priority, so they don't compete.
+static int compile_workers(void) {
+    const char *e = getenv("MHGU_COMPILE_WORKERS");
+    if (e && atoi(e) > 0) return atoi(e) < 16 ? atoi(e) : 16;
+#ifdef __ANDROID__
+    return 3;
+#else
+#ifdef _WIN32
+    long n = SDL_GetNumLogicalCPUCores() / 2;
+#else
+    long n = sysconf(_SC_NPROCESSORS_ONLN) / 2;
+#endif
+    return n < 3 ? 3 : n > 6 ? 6 : (int)n;
+#endif
+}
 
 static void *worker(void *a) {
     JobQueue *q = a;
+#ifdef _WIN32
+    if (q == &compile_q) plat_thread_below_normal();
+#elif defined(__ANDROID__)
+    // (below the game too: the start's thousands of shaders kept every big core busy, the phone hot in its first minutes
+    // even on a Snapdragon 8 Gen 5, #91, #113; at nice 10 the scheduler gives them the efficient cores first)
+    if (q == &compile_q) setpriority(PRIO_PROCESS, (id_t)gettid(), 10);
+#endif
     for (;;) {
         pthread_mutex_lock(&q->lock);
         while (!q->head && !q->lhead) pthread_cond_wait(&q->cond, &q->lock);
@@ -559,16 +823,20 @@ static void *worker(void *a) {
 
 static bool sync_shaders(void) {
     static int v = -1;
-    if (v < 0) v = getenv("MHGU_SYNC_SHADERS") != NULL;
+    if (v < 0) {  // (PowerVR too: its shader compiler crashes building on several threads at once, issues #73, #99)
+        v = getenv("MHGU_SYNC_SHADERS") != NULL || strstr(g_vk.props.deviceName, "PowerVR") != NULL;
+        if (v) LOG("[vk] shaders and pipelines built on one thread, when first needed\n");
+    }
     return v;
 }
 
-static void enqueue(JobQueue *q, int nthreads, bool low, void (*fn)(void *), void *arg) {
+static void enqueue(JobQueue *q, bool low, void (*fn)(void *), void *arg) {
     if (sync_shaders()) { fn(arg); return; }
     pthread_mutex_lock(&q->lock);
     if (!q->started) {
         q->started = true;
-        for (int i = 0; i < nthreads; i++) { pthread_t t; pthread_create(&t, NULL, worker, q); }
+        int n = q->threads ? q->threads : compile_workers();
+        for (int i = 0; i < n; i++) { pthread_t t; pthread_create(&t, NULL, worker, q); }
     }
     Job *j = malloc(sizeof *j);
     j->fn = fn; j->arg = arg; j->next = NULL;
@@ -581,8 +849,8 @@ static void enqueue(JobQueue *q, int nthreads, bool low, void (*fn)(void *), voi
 
 // The translator isn't re-entrant: one thread translates, the compiles run on a few workers.
 static pthread_mutex_t translate_lock = PTHREAD_MUTEX_INITIALIZER;
-static void run_translate(void (*fn)(void *), void *arg) { enqueue(&translate_q, 1, false, fn, arg); }
-static void run_job(void (*fn)(void *), void *arg) { enqueue(&compile_q, 3, false, fn, arg); }
+static void run_translate(void (*fn)(void *), void *arg) { enqueue(&translate_q, false, fn, arg); }
+static void run_job(void (*fn)(void *), void *arg) { enqueue(&compile_q, false, fn, arg); }
 void vk_run_job(void (*fn)(void *), void *arg) { run_job(fn, arg); }  // (fsr.c: its capture shaders / pipelines)
 
 // A queued job a draw is waiting for goes to the front of its queue (the queues are FIFO, and an area load queues a
@@ -606,26 +874,128 @@ done:
     pthread_mutex_unlock(&q->lock);
 }
 
-// Build states (0 building, 1 ready, 2 failed) change under ready_lock so a draw can wait for one.
+// Build states (0 building, 1 ready, 2 failed) change under ready_lock so a draw can wait for one. Windows: the draw
+// waits on ready_event instead, which set_state sets while one waits (winpthreads' timed waits end on the system's
+// 15.6 ms tick whatever is asked: a frame's 6 ms budget took up to 22.5 ms).
 static pthread_mutex_t ready_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t ready_cond = PTHREAD_COND_INITIALIZER;
+#ifdef _WIN32
+static void *ready_event;  // (vk_exec_init)
+static _Atomic int ready_waiters;
+#endif
 static void set_state(_Atomic int *state, int v, uint64_t t_req) {
     if (t_req) {
         uint64_t d = plat_now_ns() - t_req;
         atomic_fetch_add(&stat_lat_n, 1);
         atomic_fetch_add(&stat_lat_ns, d);
         atomic_max(&stat_lat_max, d);
+        if (HITCH_ON) hitch_add(HC_BUILD_READY, d, 0);
     }
     pthread_mutex_lock(&ready_lock);
     atomic_store(state, v);
     pthread_cond_broadcast(&ready_cond);
     pthread_mutex_unlock(&ready_lock);
+#ifdef _WIN32
+    if (atomic_load(&ready_waiters)) plat_event_set(ready_event);
+#endif
 }
 
-// A draw whose program / pipeline is still building waits for it, up to MHGU_PIPE_WAIT_MS per frame in all, rather
-// than being skipped at once: most builds take a few ms (SPIR-V and pipeline caches), so the effect appears in its
-// first frame instead of a few frames later, and a slow (uncached) build costs at most the budget once per frame.
-// at_least_ns: a draw that mustn't be skipped waits that long whatever is left of the budget.
+// Until state's build is done or deadline. 1 ms slices: a program's GLSL compile is queued once its translation is
+// done, and goes to the front too.
+static void ready_wait(_Atomic int *state, void *job, uint64_t t0, uint64_t deadline) {
+#ifdef _WIN32
+    if (ready_event) {
+        atomic_fetch_add(&ready_waiters, 1);
+        for (uint64_t now = t0; !atomic_load(state) && now < deadline; now = plat_now_ns()) {
+            plat_event_wait_until(ready_event, now + 1000000 < deadline ? now + 1000000 : deadline);
+            if (!atomic_load(state)) promote(&compile_q, job);
+        }
+        atomic_fetch_sub(&ready_waiters, 1);
+        return;
+    }
+#endif
+    struct timespec rt;
+    clock_gettime(CLOCK_REALTIME, &rt);  // (the condition variable's clock)
+    int64_t rt_off = (int64_t)rt.tv_sec * 1000000000ll + rt.tv_nsec - (int64_t)t0;
+    pthread_mutex_lock(&ready_lock);
+    for (uint64_t now = t0; !atomic_load(state) && now < deadline; now = plat_now_ns()) {
+        uint64_t until = now + 1000000 < deadline ? now + 1000000 : deadline;
+        int64_t abs_ns = (int64_t)until + rt_off;
+        struct timespec ts = {(time_t)(abs_ns / 1000000000ll), (long)(abs_ns % 1000000000ll)};
+        pthread_cond_timedwait(&ready_cond, &ready_lock, &ts);
+        if (!atomic_load(state)) {
+            pthread_mutex_unlock(&ready_lock);
+            promote(&compile_q, job);
+            pthread_mutex_lock(&ready_lock);
+        }
+    }
+    pthread_mutex_unlock(&ready_lock);
+}
+
+#ifndef __ANDROID__
+// The frames' interval: the median of the last 16 (frame_dt_note, at each frame's first command list)
+static uint32_t frame_dt[16];
+static unsigned frame_dt_n;
+static void frame_dt_note(void) {
+    static uint64_t f0, t0;
+    uint64_t f = vk_frame_counter();
+    if (f == f0) return;
+    uint64_t now = plat_now_ns();
+    if (t0 && f > f0) {
+        uint64_t dt = (now - t0) / (f - f0);
+        frame_dt[frame_dt_n++ % 16] = dt < 100000000 ? (uint32_t)dt : 100000000;  // (a pause, a load: 0.1 s)
+    }
+    f0 = f, t0 = now;
+}
+static uint64_t frame_dt_median(void) {
+    unsigned n = frame_dt_n < 16 ? frame_dt_n : 16;
+    uint32_t v[16];
+    for (unsigned i = 0; i < n; i++) {  // (sorted as they are put in)
+        unsigned j = i;
+        for (; j && v[j - 1] > frame_dt[i]; j--) v[j] = v[j - 1];
+        v[j] = frame_dt[i];
+    }
+    return n ? v[n / 2] : 0;
+}
+static bool wait_new_builds(void) {
+    static int v = -1;
+    if (v < 0) v = getenv("MHGU_PIPE_WAIT_NEW") != NULL;
+    return v;
+}
+#endif
+
+// A frame's budget for draws waiting for builds: MHGU_PIPE_WAIT_MS, else 6 ms; a desktop's a quarter of the frame
+// interval up to that (at 160 Hz 1.6 ms: a 6.25 ms frame that waits 6 more misses its refresh, the picture repeats).
+static int64_t frame_wait_budget(void) {
+    static int64_t fixed = -2;  // (-1: MHGU_PIPE_WAIT_MS not set)
+    if (fixed == -2) {
+        const char *e = getenv("MHGU_PIPE_WAIT_MS");
+        fixed = !e ? -1 : atoi(e) > 0 ? atoi(e) * 1000000ll : 0;
+    }
+    if (fixed >= 0) return fixed;
+#ifdef __ANDROID__
+    return 6000000;
+#else
+    uint64_t dt = frame_dt_median();
+    return dt && dt / 4 < 6000000 ? (int64_t)(dt / 4) : 6000000;
+#endif
+}
+
+// (Windows) a wake-up comes some 0.1-0.5 ms after its time: the waits end that much early, so a frame's stay within
+// its budget
+#ifdef _WIN32
+#define WAIT_SLACK_NS 200000ll
+#else
+#define WAIT_SLACK_NS 0ll
+#endif
+
+// A draw whose program / pipeline is still building waits for it, up to the budget per frame in all, rather than
+// being skipped at once: a build from the caches takes about a millisecond (SPIR-V from cache/spirv, the driver's
+// pipeline cache), so the effect appears in its first frame instead of a few frames later. cached: such a build (a
+// program loading from the program cache, a pipeline of pipelines.bin / pipelines.list). A desktop skips the others at
+// once: a pipeline first made at a draw is the driver's whole compile (40-70 ms measured on a PC) and a program being
+// translated more, so a wait would cost every frame its budget until then for nothing. (MHGU_PIPE_WAIT_NEW=1: they wait
+// too.) at_least_ns: a draw that mustn't be skipped waits that long whatever is left of the budget.
 //
 // The quest photo (Quest Rewards / Reward Box screen): at the clear the game copies the scene into its photo buffer
 // once and never again, so a draw skipped then leaves the photo as whatever the buffer's memory held: black (the R9),
@@ -641,47 +1011,37 @@ void backend_photo_requested(void) {
 }
 static int64_t wait_budget_ns;
 static uint64_t wait_frame = ~0ull;
-static bool await_build(_Atomic int *state, void *job, int64_t at_least_ns) {
+static bool await_build(_Atomic int *state, void *job, int64_t at_least_ns, bool cached) {
     int s = atomic_load(state);
     if (s) return s == 1;
     promote(&translate_q, job);
     promote(&compile_q, job);
-    static int64_t budget = -1;
-    if (budget < 0) {
-        const char *e = getenv("MHGU_PIPE_WAIT_MS");
-        budget = (e ? atoi(e) : 6) * 1000000ll;
-        if (budget < 0) budget = 0;
-    }
     uint64_t f = vk_frame_counter();
     uint64_t photo = atomic_load(&photo_until);
     if (photo && f <= photo && at_least_ns < PHOTO_WAIT_NS) at_least_ns = PHOTO_WAIT_NS;
-    if (f != wait_frame) wait_frame = f, wait_budget_ns = budget;
-    int64_t allowed = wait_budget_ns > at_least_ns ? wait_budget_ns : at_least_ns;
-    if (allowed <= 0) return false;
-    uint64_t t0 = plat_now_ns(), deadline = t0 + (uint64_t)allowed;
-    struct timespec rt;
-    clock_gettime(CLOCK_REALTIME, &rt);  // (the condition variable's clock)
-    int64_t rt_off = (int64_t)rt.tv_sec * 1000000000ll + rt.tv_nsec - (int64_t)t0;
-    pthread_mutex_lock(&ready_lock);
-    for (uint64_t now = t0; !(s = atomic_load(state)) && now < deadline; now = plat_now_ns()) {
-        // 1 ms slices: a program's GLSL compile is queued once its translation is done, and goes to the front too
-        uint64_t until = now + 1000000 < deadline ? now + 1000000 : deadline;
-        int64_t abs_ns = (int64_t)until + rt_off;
-        struct timespec ts = {(time_t)(abs_ns / 1000000000ll), (long)(abs_ns % 1000000000ll)};
-        pthread_cond_timedwait(&ready_cond, &ready_lock, &ts);
-        if (!atomic_load(state)) {
-            pthread_mutex_unlock(&ready_lock);
-            promote(&compile_q, job);
-            pthread_mutex_lock(&ready_lock);
-        }
+    if (f != wait_frame) wait_frame = f, wait_budget_ns = frame_wait_budget();
+#ifndef __ANDROID__
+    if (!cached && !at_least_ns && !wait_new_builds()) {
+        if (HITCH_ON) hitch_add(HC_BUILD_COLD, 0, 0);
+        return false;
     }
-    pthread_mutex_unlock(&ready_lock);
+#else
+    (void)cached;
+#endif
+    int64_t allowed = wait_budget_ns > at_least_ns ? wait_budget_ns : at_least_ns;
+    if (allowed <= WAIT_SLACK_NS) {
+        if (HITCH_ON) hitch_add(HC_BUILD_SKIP, 0, 0);  // ((debug) MHGU_HITCHLOG: the frame's budget is spent)
+        return false;
+    }
+    uint64_t t0 = plat_now_ns();
+    ready_wait(state, job, t0, t0 + (uint64_t)(allowed - WAIT_SLACK_NS));
     s = atomic_load(state);
     uint64_t d = plat_now_ns() - t0;
     wait_budget_ns -= (int64_t)d;
     stat_waited_ns += d;
     stat_waits++;
     if (s == 1) stat_rescued++;
+    if (HITCH_ON) hitch_add(at_least_ns ? HC_BUILD_LONG : HC_BUILD_WAIT, d, s != 1);
     return s == 1;
 }
 
@@ -763,6 +1123,12 @@ static void st_defaults(void) {
 void vk_exec_init(void) {
     st_defaults();
     if (!g_vk.has_timeline) fence_init();
+#ifdef _WIN32
+    ready_event = plat_event_new();  // (NULL: the draws wait on winpthreads' condition variable)
+#endif
+#ifndef __ANDROID__
+    chunks_ahead();
+#endif
 }
 
 // ================================================================== render passes and framebuffers
@@ -885,7 +1251,116 @@ static bool ui_frontend_pass;  // this pass draws a front-end screen (Main Menu,
 static bool ui_stamp_pass;  // this pass draws the Quest Complete stamp (its borders, layer 97 at x 640, y 53 / 687, came first)
 static bool ui_results_pass, ui_results_last;  // this pass / the last pass with HUD in it draws the quest results screen
 static bool ui_meownster_pass;  // this pass draws the Meownster Hunters return screen (its map frame, layer 105, came first)
+// A menu window of the game's drawn in this frame: the touch controls' menu detection (runtime/touch.cpp: the menu pad
+// shows), and on a desktop the mouse in the game's menus, which it keeps for a moment after the menu's cursor stops
+// (runtime/hle/mousemenu.c)
+static void ui_menu_drawn(void) {
+    touch_hud_menu();
+#ifndef __ANDROID__
+    mousemenu_menu();
+#endif
+}
 volatile int g_hudtrace_active;  // (debug) MHGU_CONTROL "hudtrace": log every HUD quad of the next frame and its anchor (device.c)
+
+// The hunt's HUD with a menu of the game's open. Its windows (layer 97) are not what tells: the chat's log, a chat
+// bubble, a bow's or a bowgun's aim and the Quest Complete stamp are drawn there too, while the hunter is played, and
+// the parts drawn after them went back to the game's places (they jumped while a line of chat showed). A menu is open
+// as the touch controls tell it (touch_game_menu: a window that came at a press, or the hunter not played), read once
+// a pass. With none, every piece that falls in a part's region is the part's, and its place (layer, the game's x, y)
+// is kept, with the time. With one, a piece is the part's only at a place the part had in the last HUD_SEEN_NS (each
+// such piece keeps it), so that the menu's own pieces (its button hints at the bottom right, the Guild Card's plate)
+// stay where the game puts them while the part stays where the player has it. Measured: the hunt's pause menu and
+// pouch draw the status first, then their windows, and no item bar, Hunter Arts, target camera or minimap at all
+static bool ui_menu_open;  // (touch_game_menu, at the pass's start)
+#define HUD_SEEN 48
+#define HUD_SEEN_PARTS HP_COUNT
+#define HUD_SEEN_NS (1500 * 1000000ull)
+static struct { float z, x, y; uint64_t ns; } hud_seen[HUD_SEEN_PARTS][HUD_SEEN];
+static uint32_t hud_nseen[HUD_SEEN_PARTS];
+// Which part of the status (layer 103 above the item bar, not its ammo list) a piece is, by its place on the 16:9 canvas
+// (measured with a Great Sword and two Felynes: the clock's six pieces at the top left; the health and stamina bars' at
+// x 102 and their ends, y 20..33; the sharpness's at 110, 38 and 116, 32; the plates' from y 105). Other weapons' gauges,
+// the buffs' icons, other hunters' plates: by the same regions (below the bars: the gauges), and a piece in none of them
+// goes with the part whose box is nearest (*nearest: hudtrace says so), so that nothing is left behind as its neighbours
+// move
+static int hud_status_part(float x, float y, bool *nearest) {
+    *nearest = false;
+    if (x < 98.0f && y < 100.0f) return HP_CLOCK;
+    if ((fabsf(x - 116.0f) <= 1.0f && fabsf(y - 32.0f) <= 1.0f) || (x >= 104.0f && y >= 36.0f && y < 100.0f)) return HP_GAUGES;
+    if (x >= 98.0f && y < 36.0f) return HP_BARS;
+    if (x < 420.0f && y >= 100.0f) return HP_PARTY;
+    *nearest = true;
+    int best = HP_CLOCK;
+    float bd = 1e30f;
+    for (int p = HP_CLOCK; p <= HP_PARTY; p++) {
+        const float *b = HUD_BOX[p];
+        float dx = x < b[0] ? b[0] - x : x > b[2] ? x - b[2] : 0.0f, dy = y < b[1] ? b[1] - y : y > b[3] ? y - b[3] : 0.0f;
+        if (dx * dx + dy * dy < bd) bd = dx * dx + dy * dy, best = p;
+    }
+    return best;
+}
+static bool hud_accept(int part, float z, float x, float y) {
+    uint64_t now = plat_now_ns();
+    for (int i = 0; i < HUD_SEEN; i++) {
+        if (hud_seen[part][i].z != z || fabsf(hud_seen[part][i].x - x) > 2.0f || fabsf(hud_seen[part][i].y - y) > 2.0f) continue;
+        if (!ui_menu_open || now - hud_seen[part][i].ns < HUD_SEEN_NS) {
+            hud_seen[part][i].ns = now;
+            return true;
+        }
+        break;
+    }
+    if (ui_menu_open) return false;
+    int i = (int)(hud_nseen[part]++ % HUD_SEEN);
+    hud_seen[part][i].z = z, hud_seen[part][i].x = x, hud_seen[part][i].y = y, hud_seen[part][i].ns = now;
+    return true;
+}
+// ...and a part moved from the game's place whose frame (last frame's, on the canvas) lies on a menu window is not drawn
+// while the menu is open: it doesn't jump, and never covers the menu. A window: the pieces of layer 97 / 98 near each
+// other (their places, a margin more), this frame's and last frame's
+#define HUD_WIN 16
+typedef struct { float x0, y0, x1, y1; } HudBox;
+static HudBox hud_win[2][HUD_WIN];  // ([0] this frame's, [1] last frame's)
+static int hud_nwin[2];
+static HudBox hud_part_box[2][HUD_SEEN_PARTS];  // (the moved parts' pieces on the canvas: this frame's, last frame's)
+static uint64_t hud_frame, hud_hide_frame[HUD_SEEN_PARTS];
+static bool hud_hide[HUD_SEEN_PARTS];
+static void hud_new_frame(void) {
+    if (g_present_count == hud_frame) return;
+    hud_frame = g_present_count;
+    memcpy(hud_win[1], hud_win[0], sizeof hud_win[0]), hud_nwin[1] = hud_nwin[0], hud_nwin[0] = 0;
+    memcpy(hud_part_box[1], hud_part_box[0], sizeof hud_part_box[0]);
+    for (int p = 0; p < HUD_SEEN_PARTS; p++) hud_part_box[0][p] = (HudBox){1e9f, 1e9f, -1e9f, -1e9f};
+}
+static void hud_window_piece(float x, float y) {
+    const float NEAR = 48.0f;
+    for (int i = 0; i < hud_nwin[0]; i++) {
+        HudBox *b = &hud_win[0][i];
+        if (x < b->x0 - NEAR || x > b->x1 + NEAR || y < b->y0 - NEAR || y > b->y1 + NEAR) continue;
+        b->x0 = fminf(b->x0, x), b->y0 = fminf(b->y0, y), b->x1 = fmaxf(b->x1, x), b->y1 = fmaxf(b->y1, y);
+        return;
+    }
+    if (hud_nwin[0] < HUD_WIN) hud_win[0][hud_nwin[0]++] = (HudBox){x, y, x, y};
+}
+static void hud_part_piece(int part, float x, float y) {  // (where a moved part's piece went, for next frame's test)
+    HudBox *b = &hud_part_box[0][part];
+    b->x0 = fminf(b->x0, x), b->y0 = fminf(b->y0, y), b->x1 = fmaxf(b->x1, x), b->y1 = fmaxf(b->y1, y);
+}
+static bool hud_on_window(int part, const float pad[4]) {  // (decided once a frame: all of the part or none of it)
+    if (!ui_menu_open) return false;
+    if (hud_hide_frame[part] == hud_frame) return hud_hide[part];
+    hud_hide_frame[part] = hud_frame, hud_hide[part] = false;
+    HudBox p = hud_part_box[1][part];
+    if (p.x1 < p.x0) return false;
+    p.x0 -= pad[0], p.y0 -= pad[1], p.x1 += pad[2], p.y1 += pad[3];
+    const float M = 10.0f;  // (a window's edge pieces sit on its frame: the art reaches a little past them)
+    for (int f = 0; f < 2; f++)
+        for (int i = 0; i < hud_nwin[f]; i++) {
+            const HudBox *w = &hud_win[f][i];
+            if (p.x0 < w->x1 + M && p.x1 > w->x0 - M && p.y0 < w->y1 + M && p.y1 > w->y0 - M) hud_hide[part] = true;
+        }
+    if (hud_hide[part] && g_hudtrace_active) LOG("[hud] part %d on a menu window: not drawn while the menu is open\n", part);
+    return hud_hide[part];
+}
 
 // 16:10: a window is drawn as pieces (body, edges, corners, then its text), each placed by its own centre, so one rule
 // could send its top edge up and its bottom edge down (the chat window, the shoutout list, the Guild Card greeting).
@@ -899,8 +1374,9 @@ static struct {
     int n, predict;  // predict: the anchor this group got last frame (ui_group_known), -1 if not seen
     float z, x0, y0, xmin, xmax, ymin, ymax;
     uint8_t anchors;  // (bit per vertical anchor among its pieces)
-    struct { float *m, pos_y; uint8_t vanchor; uint32_t recent; } p[UI_GROUP_MAX];
+    struct { float *m, pos_y; uint8_t vanchor; uint32_t recent; int piece; } p[UI_GROUP_MAX];
 } ui_group;
+static int ui_piece = -1;  // (a desktop's: the piece cbuf_info just told the mouse menus, runtime/hle/mousemenu.c)
 // Each group's final anchor, by its first piece (layer and place): the HUD is drawn the same way every frame, so the
 // scissors of a group's pieces, recorded before the group is complete, take the anchor it got last frame
 #define UI_KNOWN 64
@@ -940,6 +1416,9 @@ static void ui_group_end(void) {
         float y = ui_group.p[i].pos_y;
         ui_group.p[i].m[13] = v == 0 ? y * sy : v == 2 ? 720.0f - (720.0f - y) * sy : 360.0f + (y - 360.0f) * sy;
         if (ui_nrecent - ui_group.p[i].recent <= UI_RECENT) ui_recent[ui_group.p[i].recent % UI_RECENT].vanchor = (uint8_t)v;
+#ifndef __ANDROID__
+        mousemenu_piece_y(ui_group.p[i].piece, ui_group.p[i].m[13]);
+#endif
     }
     if (g_hudtrace_active) LOG("[hud] group z %.1f: %d pieces, y %.1f..%.1f -> %c\n", ui_group.z, n, ui_group.ymin, ui_group.ymax, "TCB"[v]);
 }
@@ -964,6 +1443,7 @@ static void ui_group_add(float *m, float pos_z, float pos_x, float pos_y, int va
     ui_group.anchors |= (uint8_t)(1u << vanchor);
     ui_group.p[ui_group.n].m = m, ui_group.p[ui_group.n].pos_y = pos_y, ui_group.p[ui_group.n].vanchor = (uint8_t)vanchor;
     ui_group.p[ui_group.n].recent = ui_nrecent - 1;  // (cbuf_info recorded it just before)
+    ui_group.p[ui_group.n].piece = ui_piece;
     ui_group.n++;
 }
 static VkRenderPass pass_rp;
@@ -1294,7 +1774,7 @@ static VkPipeline resolve_pipeline(VkRenderPass rp, int kind, uint32_t samples) 
                                        .pDepthStencilState = &ds, .pColorBlendState = &cb, .pDynamicState = &dy,
                                        .layout = rs_layout, .renderPass = rp};
     VkPipeline p = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p) != VK_SUCCESS) LOG("[vk] resolve pipeline failed\n");
+    if (sync_pipeline(&pi, &p) != VK_SUCCESS) LOG("[vk] resolve pipeline failed\n");
     if (n < 32) tab[n].rp = rp, tab[n].kind = kind, tab[n++].p = p;
     return p;
 }
@@ -1453,8 +1933,7 @@ static bool picture_copy(TexBackend *b, TexBackend *d) {  // d: a copy of b (mad
                                 .extent = {b->width, b->height, 1}, .mipLevels = 1, .arrayLayers = 1,
                                 .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
                                 .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
-        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-        if (vmaCreateImage(g_vk.vma, &ci, &ai, &d->image, &d->mem, NULL) != VK_SUCCESS) return d->image = VK_NULL_HANDLE, false;
+        if (vk_create_image(&ci, &d->image, &d->mem) != VK_SUCCESS) return d->image = VK_NULL_HANDLE, false;
         d->format = b->format; d->width = b->width; d->height = b->height; d->depth = d->layers = d->levels = d->samples = 1;
         d->aspect = VK_IMAGE_ASPECT_COLOR_BIT; d->base_type = VK_IMAGE_VIEW_TYPE_2D;
         vk_image_init_layout(cb, d->image, d->aspect);
@@ -1635,6 +2114,7 @@ static void begin_pass(void) {
     ui_results_pass = false;
     ui_meownster_pass = false;
     ui_menu_pass = false;
+    ui_menu_open = touch_game_menu();
     ui_nrecent = 0;
     pass_msaa = false;
     // (MSAA: a colour target 3D models were drawn into lately (ms_expand), while they are; once they are not, it is like
@@ -2092,7 +2572,7 @@ static VkPipeline clear_pipeline(int index, int kind, uint32_t mask, bool depth,
                                        .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &ds,
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = pc_layout(), .renderPass = pass_rp};
     VkPipeline p = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p) != VK_SUCCESS) LOG("[vk] clear pipeline failed\n");
+    if (sync_pipeline(&pi, &p) != VK_SUCCESS) LOG("[vk] clear pipeline failed\n");
     tab[slot].key = key;
     tab[slot].pipe = p;
     return p;
@@ -2193,6 +2673,9 @@ typedef struct {
     uint32_t vlen, flen;
     bool src_saved;
     bool wanted;            // (under ready_lock) a draw needs it: a prewarm build goes on to make its modules
+    bool loaded;            // (render thread) built from the program cache (programs.src, cache/spirv): a draw may wait
+                            // for it a little, and its ShaderInfo (programs.bin's, or the prewarm's) keys its pipelines
+                            // before it is built (pipe_ahead)
     struct Pipe *prewarm;   // pipelines of earlier runs to build once this is (pipeline cache)
     FsrCapProg *fsrcap;     // FSR object motion: the capture variant of its vertex shader (fsr.c)
 } Prog;
@@ -2479,6 +2962,7 @@ static void progcache_open(void) {
         Prog *p = progcache_tab[i].prog;
         if (!p || !p->prewarm) continue;
         atomic_store(&p->state, 0);
+        p->loaded = true;
         run_job(load_program, p);
         used++;
     }
@@ -2537,7 +3021,8 @@ static void prog_want(Prog *p) {
     if (atomic_load(&p->state) == 3) { atomic_store(&p->state, 0); load = true; }
     pthread_mutex_unlock(&ready_lock);
     if (!atomic_load(&p->state)) p->t_req = plat_now_ns();
-    if (load) run_job(load_program, p);
+    if (load && HITCH_ON) hitch_add(HC_PROG_LOAD, 0, 0);
+    if (load) p->loaded = true, run_job(load_program, p);
 }
 
 // ---- prewarm: the game makes all its programs at start-up (nvnProgramSetShaders, ~6300 vertex / fragment pairs
@@ -2615,14 +3100,17 @@ static void prewarm_translate(void *arg) {
     if (!p) { atomic_fetch_add(&stat_pw_known, 1); atomic_fetch_add(&pw_total_known, 1); prewarm_done(); return; }
     atomic_fetch_add(&stat_pw_new, 1);
     atomic_fetch_add(&pw_total_new, 1);
-    if (translate_core(p, true)) enqueue(&compile_q, 3, true, prewarm_compile, p);
+    if (translate_core(p, true)) enqueue(&compile_q, true, prewarm_compile, p);
     else prewarm_done();
 }
 
 // (game thread) nvnProgramSetShaders
 void backend_program_created(const NvnProgram *np) {
     static int on = -1;
-    if (on < 0) on = g_config.shader_prewarm && !getenv("MHGU_NO_PREWARM") && !sync_shaders();
+    // (not on PowerVR: its shader compiler crashes building many pipelines at once, so a phone that played once closed at
+    // every later start, the saved pipelines being built on the workers (issues #73, #99; the MH4U port saw the same))
+    if (on < 0) on = g_config.shader_prewarm && !getenv("MHGU_NO_PREWARM") && !sync_shaders() &&
+                     !strstr(g_vk.props.deviceName, "PowerVR");
     if (!on || !(np->stage_mask & 1) || !(np->stage_mask & 2)) return;
     PrewarmReq *r = malloc(sizeof *r);
     for (int i = 0; i < 2; i++) {
@@ -2630,7 +3118,7 @@ void backend_program_created(const NvnProgram *np) {
         r->cmax[i] = np->stages[i].const_offset ? np->stages[i].const_offset : 0x10000;
     }
     if (atomic_fetch_add(&stat_pw_left, 1) == 0 && !pw_t0) pw_t0 = plat_now_ns();
-    enqueue(&translate_q, 1, true, prewarm_translate, r);
+    enqueue(&translate_q, true, prewarm_translate, r);
 }
 
 static struct { uint64_t key; Prog *prog; } prog_tab[PROG_TAB];
@@ -2681,6 +3169,7 @@ static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     p->fkey = *fkey;
     p->wanted = true;
     p->t_req = plat_now_ns();
+    if (HITCH_ON) hitch_add(HC_PROG_NEW, 0, 0);
     run_translate(translate_program, p);
     return p;
 }
@@ -2709,6 +3198,7 @@ typedef struct Pipe {
     PipeKey k;
     VkPipeline pipe;
     _Atomic int state;  // 0 building, 1 ready, 2 failed
+    bool cold;          // (render thread) first made at a draw (pipe_record): no cache has it, the driver compiles it all
     uint64_t t_req;
     struct Pipe *next;  // (Prog.prewarm)
 } Pipe;
@@ -2756,6 +3246,15 @@ static void prewarm_pipelines(Prog *p) {
         if (atomic_load(&p->state) == 1) run_job(build_pipeline, q);
         else set_state(&q->state, 2, 0);
     }
+}
+// (render thread) pp built once p is, or now if it is already
+static void pipe_attach(Prog *p, Pipe *pp) {
+    pthread_mutex_lock(&ready_lock);
+    int s = atomic_load(&p->state);
+    if (s != 1 && s != 2) pp->next = p->prewarm, p->prewarm = pp;
+    pthread_mutex_unlock(&ready_lock);
+    if (s == 1) run_job(build_pipeline, pp);
+    else if (s == 2) set_state(&pp->state, 2, 0);
 }
 static void plist_export_add(const Prog *p, const PipeRec *r);
 
@@ -2873,12 +3372,7 @@ static int plist_attach(Prog *p, const ListRec *r) {
     bool created;
     Pipe *pp = pipe_slot(&k, &created);
     if (!pp || !created) return 0;
-    pthread_mutex_lock(&ready_lock);
-    int s = atomic_load(&p->state);
-    if (s != 1 && s != 2) pp->next = p->prewarm, p->prewarm = pp;
-    pthread_mutex_unlock(&ready_lock);
-    if (s == 1) run_job(build_pipeline, pp);
-    else if (s == 2) set_state(&pp->state, 2, 0);
+    pipe_attach(p, pp);
     return 1;
 }
 
@@ -3153,8 +3647,7 @@ static void resolve_feedback(Prog *pr) {
                                         .extent = {src->width, src->height, 1}, .mipLevels = 1, .arrayLayers = 1,
                                         .samples = (VkSampleCountFlagBits)src->samples, .tiling = VK_IMAGE_TILING_OPTIMAL,
                                         .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
-                VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-                VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &d->image, &d->mem, NULL));
+                VK_CHECK(vk_create_image(&ci, &d->image, &d->mem));
                 d->format = src->format; d->width = src->width; d->height = src->height; d->depth = 1; d->layers = 1; d->levels = 1;
                 d->samples = src->samples; d->aspect = src->aspect; d->base_type = VK_IMAGE_VIEW_TYPE_2D;
                 vk_end_pass();
@@ -3271,8 +3764,14 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     if (size < 16) size = 16;
     if (!guest_range_ok(r.addr, size)) return zero_ubo(size);
     if (stage == 0 && k == 3) ui_relax_scissor = false, ui_scissor_v = -1;
-    if (stage == 0 && k == 3 && !st.ds[0] && (pass_h == g_render_size[1] || pass_sy != 1.0f) &&  // (FSR: stand-ins)
-        (fabsf(g_render_aspect - 16.0f / 9.0f) > 0.01f || touch_visible())) {  // (touch controls: their HUD parts at 16:9 too)
+    if (stage == 0 && k == 3 && !st.ds[0] && (pass_h == g_render_size[1] || pass_sy != 1.0f)) {  // (FSR: stand-ins)
+        // (touch controls: their HUD parts at 16:9 too. At 16:9 without them nothing moves but a part the player moved,
+        // sized or hid (HudPlace.custom), and the touch layer is still told where the hunt's parts are and when a menu is
+        // open: the lock-on's padlock and its menu check, the editors, touch.cpp)
+        bool hud_moves = fabsf(g_render_aspect - 16.0f / 9.0f) > 0.01f || touch_visible();
+        // (the parts' arrangement: an editor's while it shows one, else the touch controls' or the plain one)
+        int prof = g_hud_edit_prof >= 0 ? g_hud_edit_prof : g_touch_hud ? HUD_TOUCH : HUD_PLAIN;
+        g_hud_prof_now = prof;
         if (size >= 64) {
             float m[16];
             memcpy(m, G2H((uint32_t)r.addr), 64);
@@ -3307,8 +3806,10 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 if (backdrop) {
                     ui_frontend_pass = true;
                     // (the front-end's screens: the title, the main menu, the character select and creation are menus
-                    // too, driven with the d-pad and A / B: the touch controls' menu layout)
-                    touch_hud_menu();
+                    // too, driven with the d-pad and A / B; the touch controls' stick moves their cursor, and no menu
+                    // pad goes over their lists)
+                    ui_menu_drawn();
+                    touch_hud_front();
                 }
                 // [Display] FillScreen: the backdrop itself covers the wider screen, in its shape (cut above and below)
                 bool backdrop_fill = backdrop && g_config.fill_screen && s < 1.0f;
@@ -3321,12 +3822,19 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
 
                 bool is_3d_overlay = (pos_z > 180.0f);
                 float new_pos_x = pos_x, new_pos_y = pos_y;
-                bool item_bar_move = false, arts_move = false, target_move = false, status_edge = false;
-                // the hunt's HUD (not a menu, the results, a loading screen, the title): its item bar, Hunter Arts and
-                // target camera answer a finger (runtime/touch.cpp), moved or not; with the touch controls they move
-                bool hunt_hud = !ui_menu_pass && !ui_results_pass && !ui_results_last && !ui_loading_pass && !ui_title_pass &&
-                                !ui_meownster_pass;
-                bool item_bar_part = false, arts_part = false, target_part = false;
+                // the hunt's HUD (not the results, a loading screen, the title; under a menu of the game's, only at its
+                // places: hud_accept): its parts (HP_*) where the player put them, the touch controls' arrangement by
+                // default while they show; the item bar, the Hunter Arts and the target camera answer a finger
+                // (runtime/touch.cpp), moved or not
+                bool hunt_hud = !ui_results_pass && !ui_results_last && !ui_loading_pass && !ui_title_pass && !ui_meownster_pass;
+                int part = -1;              // (HP_*)
+                bool part_nearest = false;  // (a piece of the status in none of its parts' regions: the nearest's)
+                bool part_touch = false;    // (a finger works it there: the item bar itself, not its ammo list)
+                bool part_custom = false;   // (moved, sized or hidden by the player)
+                float part_k = 1.0f;        // (its size)
+                bool window_piece = false;  // (a menu window's, layer 97 / 98: hud_on_window)
+                bool hud_hidden = false;    // (a part hidden, or on a menu's window: not drawn)
+                hud_new_frame();
                 bool grouped = false;
                 int vgroup = 1;
 
@@ -3360,17 +3868,18 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                         // left and right)
                         anchor = pos_x >= 650.0f ? ANCHOR_RIGHT : ANCHOR_LEFT;
                         vanchor = pos_y < 360.0f ? V_TOP : V_BOTTOM;
+                        // (the dialogue box keeps the middle 16:9: at 21:9 or Edges it went under the touch stick, #77, #101)
+                        if (pos_y >= 360.0f && pos_x < 650.0f) anchor = ANCHOR_CENTER;
                     } else if (fabsf(pos_z - 97.0f) < 0.5f || fabsf(pos_z - 98.0f) < 0.5f) {
                         // 97.0: Menus and Submenus
                         // 98.0: text drawn over them (the Qty. label of the quantity box): it used the generic rule, which
                         // centered it 36 px below its top-anchored box
                         // Left window (Quest Info: x <= 430) -> Left anchor
                         // Submenu & Pause Menu (Combine, Items, Menu 1/2: x > 430) -> Right anchor
-                        if (pos_x > 430.0f) {
-                            anchor = ANCHOR_RIGHT;
-                        } else {
-                            anchor = ANCHOR_LEFT;
-                        }
+                        // The game lays its windows out for 16:9: they keep the middle 16:9 at any HUD anchor (split to
+                        // the edges at 21:9 / Edges, they went under the touch controls: #77, #101); the HUD's parts
+                        // on the other layers still go to the edges
+                        anchor = ANCHOR_CENTER;
                         // The Quest Complete banner's lower border slides in from y 739: it belongs to the bottom edge.
                         vanchor = pos_y > 650.0f ? V_BOTTOM : V_TOP;
                         // The Quest Complete stamp is one picture, after its borders (x 640, by the top and bottom edges; the
@@ -3378,21 +3887,22 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                         // "QUEST" (x -17) left of the rest.
                         if (fabsf(pos_z - 97.0f) < 0.5f && fabsf(pos_x - 640.0f) < 0.5f && (pos_y < 60.0f || pos_y > 680.0f))
                             ui_stamp_pass = true;
+                        window_piece = !ui_stamp_pass;
                         if (fabsf(pos_z - 97.0f) < 0.5f) {
                             ui_menu_pass = true;
-                            // (a menu of the game's is open: the touch controls' menu layout; not the field's Quest
-                            // Complete banner, drawn on this layer too, nor the chat's log: a box at the bottom left,
-                            // x 30..605, y 547..708 (y 323.. while the shoutouts are open beside it), which stays a few
-                            // seconds after a line is sent or comes, and kept the menu layout under the player: no
-                            // walking. Measured on a Motorola g06, a village)
+                            // (a menu of the game's is open: the touch controls' menu detection, the menu pad; not the
+                            // field's Quest Complete banner, drawn on this layer too, nor the chat's log: a box at the
+                            // bottom left, x 30..605, y 547..708 (y 323.. while the shoutouts are open beside it), which
+                            // stays a few seconds after a line is sent or comes, and kept a menu believed open under the
+                            // player. Measured on a Motorola g06, a village)
                             bool chat_log = pos_x < 620.0f && pos_y >= 540.0f;
-                            if (!ui_stamp_pass && !chat_log) touch_hud_menu();
+                            if (!ui_stamp_pass && !chat_log) ui_menu_drawn();
                         }
                         if (ui_stamp_pass) anchor = ANCHOR_CENTER;
                     } else if (fabsf(pos_z - 100.0f) < 0.5f) {
                         // (a window on this layer, the multiplayer menu or the hub's form: a stretched panel, which the
-                        // HUD's parts here never are, in a hunt: the touch controls' menu layout)
-                        if (fabsf(m[0]) > 2.0f && fabsf(m[5]) > 2.0f) touch_hud_menu();
+                        // HUD's parts here never are, in a hunt: the touch controls' menu detection)
+                        if (fabsf(m[0]) > 2.0f && fabsf(m[5]) > 2.0f) ui_menu_drawn();
                         // 100.0: Hunter Arts HUD and bottom right prompts (y > 600) -> Bottom anchor
                         // Target cam selector (right edge, y 42..82: x > 1000, y < 360) -> Top anchor, so it stays by the minimap.
                         // (Windows centered on this layer, x 640, must stay one piece: they keep the Bottom anchor.)
@@ -3404,12 +3914,15 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                         vanchor = ((pos_x > 1000.0f && pos_y < 360.0f) || pos_y < 10.0f || (ui_menu_pass && pos_x < 630.0f && pos_y < 560.0f)) ? V_TOP : V_BOTTOM;
                         // Touch controls (runtime/touch.cpp): the hunt's Hunter Arts panels (x 726..842, y 560..720: up
                         // to three rows) to the top right, the target camera's icons (x 1200, y < 100) left of them
-                        if (hunt_hud && pos_x >= 700.0f && pos_x <= 900.0f && pos_y > 560.0f) {
-                            arts_part = true;
-                            if (g_touch_hud) vanchor = V_TOP, arts_move = true;
-                        } else if (hunt_hud && fabsf(pos_x - 1200.0f) < 1.0f && pos_y < 100.0f) {
-                            target_part = true;
-                            target_move = g_touch_hud != 0;
+                        // (not a stretched panel: the multiplayer menu's, the hub form's)
+                        bool flat = !(fabsf(m[0]) > 2.0f && fabsf(m[5]) > 2.0f);
+                        if (hunt_hud && flat && pos_x >= 700.0f && pos_x <= 900.0f && pos_y > 560.0f &&
+                            hud_accept(HP_ARTS, pos_z, pos_x, pos_y)) {
+                            part = HP_ARTS, part_touch = true;
+                            if (prof == HUD_TOUCH) vanchor = V_TOP;
+                        } else if (hunt_hud && fabsf(pos_x - 1200.0f) < 1.0f && pos_y < 100.0f &&
+                                   hud_accept(HP_TARGET, pos_z, pos_x, pos_y)) {
+                            part = HP_TARGET, part_touch = true;
                         }
                     } else if (fabsf(pos_z - 103.0f) < 0.5f) {
                         // 103.0: In-hunt Status HUD & Item Selector
@@ -3419,24 +3932,39 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                         if (pos_y < 500.0f && !(pos_x > 900.0f && pos_y > 330.0f)) {
                             anchor = ANCHOR_LEFT;
                             vanchor = V_TOP;
-                            status_edge = g_touch_hud && hunt_hud;  // (touch controls: at the screen's left edge)
+                            // (its parts: the clock, health and stamina, the sharpness and the gauges, the plates; with
+                            // the touch controls at the screen's left edge by default)
+                            if (hunt_hud) {
+                                int p = hud_status_part(pos_x, pos_y, &part_nearest);
+                                if (hud_accept(p, pos_z, pos_x, pos_y)) part = p;
+                            }
                         } else {
                             anchor = ANCHOR_RIGHT;
                             vanchor = V_BOTTOM;
+                            bool bar = hunt_hud && hud_accept(HP_ITEMS, pos_z, pos_x, pos_y);
+                            if (bar) part = HP_ITEMS, part_touch = pos_y >= 500.0f;
                             // the item bar is drawn through a scissor sized for the original layout; it cut the moved bar
-                            ui_relax_scissor = s < 1.0f || sy < 1.0f || (g_touch_hud && hunt_hud);
+                            // (and the ammo list above it)
+                            ui_relax_scissor = s < 1.0f || sy < 1.0f || (bar && (prof == HUD_TOUCH || hud_custom(HP_ITEMS, prof)));
                             // Touch controls on the screen (runtime/touch.cpp): the bar goes to the bottom middle, out of
                             // the right thumb's buttons, where a tap on it uses the item and a swipe turns it
-                            item_bar_part = hunt_hud && pos_y >= 500.0f;
-                            if (g_touch_hud && hunt_hud) {
-                                anchor = ANCHOR_CENTER;
-                                item_bar_move = true;
-                            }
+                            if (prof == HUD_TOUCH && bar) anchor = ANCHOR_CENTER;
                         }
                     } else if (fabsf(pos_z - 105.0f) < 0.5f) {
                         // 105.0: Minimap & Target Cam
                         anchor = ANCHOR_RIGHT;
                         vanchor = V_TOP;
+                        // the minimap: its picture (one piece at 1114, 225 in both of its zooms; not drawn under the hunt's
+                        // menus) and the icons over it, in its box. Under a menu its icons, which move, go with the map
+                        // while its picture is at its place
+                        static uint64_t map_frame;
+                        if (hunt_hud && pos_x >= 975.0f && pos_x <= 1255.0f && pos_y >= 92.0f && pos_y <= 365.0f) {
+                            bool picture = fabsf(pos_x - 1114.0f) < 3.0f && fabsf(pos_y - 225.0f) < 3.0f;
+                            if (picture ? hud_accept(HP_MAP, pos_z, pos_x, pos_y) : !ui_menu_open || map_frame == g_present_count) {
+                                part = HP_MAP;
+                                if (picture) map_frame = g_present_count;
+                            }
+                        }
                     } else {
                         // General fallback for other layers
                         if (pos_x <= 430.0f) anchor = ANCHOR_LEFT;
@@ -3481,45 +4009,76 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                     } else {
                         new_pos_x = 640.0f + (pos_x - 640.0f) * s;
                     }
-                    if (status_edge) new_pos_x = pos_x * s;
-                    // (each moved part where the player put it in the touch layout editor, runtime/touch.cpp)
-                    if (item_bar_move) new_pos_x += (ITEM_BAR_DX + g_touch_zone_dx[TZ_ITEM]) * s;
-                    if (arts_move) new_pos_x = 1280.0f - (1280.0f - (pos_x + ARTS_DX + g_touch_zone_dx[TZ_ARTS])) * s;
-                    if (target_move) new_pos_x = 1280.0f - (1280.0f - (pos_x + TARGET_DX + g_touch_zone_dx[TZ_TARGET])) * s;
                     int v = vanchor == V_TOP ? 0 : vanchor == V_BOTTOM ? 2 : 1;
                     ui_recent[ui_nrecent % UI_RECENT].x = pos_x, ui_recent[ui_nrecent % UI_RECENT].y = pos_y;
                     ui_recent[ui_nrecent % UI_RECENT].vanchor = (uint8_t)v;
                     ui_recent[ui_nrecent % UI_RECENT].hanchor = (uint8_t)anchor;
                     ui_nrecent++;
-                    if (arts_move) {
-                        static uint64_t arts_frame;
-                        static float arts_top = 631.0f, arts_top_now = 1e9f;
-                        if (g_present_count != arts_frame) {
-                            if (arts_top_now < 1e9f) arts_top = arts_top_now;
-                            arts_top_now = 1e9f, arts_frame = g_present_count;
-                        }
-                        if (pos_y < arts_top_now) arts_top_now = pos_y;
-                        new_pos_y = (pos_y - fminf(arts_top, arts_top_now) + ARTS_TOP) * sy;
-                    }
-                    else if (vanchor == V_TOP) new_pos_y = pos_y * sy;
+                    if (vanchor == V_TOP) new_pos_y = pos_y * sy;
                     else if (vanchor == V_BOTTOM) new_pos_y = 720.0f - (720.0f - pos_y) * sy;
                     else new_pos_y = 360.0f + (pos_y - 360.0f) * sy;
-                    if (item_bar_move) new_pos_y += g_touch_zone_dy[TZ_ITEM] * sy;
-                    if (arts_move) new_pos_y += g_touch_zone_dy[TZ_ARTS] * sy;
-                    if (target_move) new_pos_y += g_touch_zone_dy[TZ_TARGET] * sy;
-                    if (item_bar_part) touch_hud_piece(TZ_ITEM, pos_x, pos_y, new_pos_x, new_pos_y);
-                    if (arts_part) touch_hud_piece(TZ_ARTS, pos_x, pos_y, new_pos_x, new_pos_y);
-                    if (target_part) touch_hud_piece(TZ_TARGET, pos_x, pos_y, new_pos_x, new_pos_y);
+                    if (part >= 0) {  // a part: where the player has it (runtime/hud_parts.h)
+                        // (the Hunter Arts' top row, which the touch arrangement takes to the top: its first piece's y,
+                        // last frame's or this one's so far, whichever is higher; two rows by default)
+                        static uint64_t arts_frame;
+                        static float arts_top = HUD_ARTS_TOP_GAME, arts_top_now = 1e9f;
+                        if (part == HP_ARTS) {
+                            if (g_present_count != arts_frame) {
+                                if (arts_top_now < 1e9f) arts_top = arts_top_now;
+                                arts_top_now = 1e9f, arts_frame = g_present_count;
+                            }
+                            if (pos_y < arts_top_now) arts_top_now = pos_y;
+                        }
+                        HudPlace hp;
+                        hud_place_begin(&hp, part, prof, fminf(arts_top, arts_top_now));
+                        if (part == HP_ARTS) g_hud_arts_top = fminf(arts_top, arts_top_now);
+                        part_custom = hp.custom;
+                        if (hud_moves || part_custom) {  // (at 16:9 without the touch controls, left alone: the game's)
+                            hud_place_piece(&hp, pos_x, pos_y, &new_pos_x, &new_pos_y);
+                            g_hud_shift_dx[part] = hp.shift_x, g_hud_shift_dy[part] = hp.shift_y;
+                            part_k = hp.k, hud_hidden = hp.hidden;
+                        }
+                    }
+                    if (!hud_moves && !part_custom) new_pos_x = pos_x, new_pos_y = pos_y;  // (told only: drawn where the game put it)
+                    if (window_piece) hud_window_piece(new_pos_x, new_pos_y);
+                    {  // (a part moved from the game's place: where it went, and not drawn while it lies on a menu's window)
+                        // (the touch arrangement moves all but the minimap)
+                        int p = part >= 0 && ((prof == HUD_TOUCH && part != HP_MAP) || part_custom) ? part : -1;
+                        if (p >= 0) {
+                            const float *pp = HUD_PAD[p];
+                            float pad[4] = {pp[0] * s * part_k, pp[1] * sy * part_k, pp[2] * s * part_k, pp[3] * sy * part_k};
+                            hud_part_piece(p, new_pos_x, new_pos_y);
+                            if (hud_on_window(p, pad)) hud_hidden = true;
+                        }
+                    }
+#ifndef __ANDROID__
+                    // (the menus' layers: the mouse's hit tests map the pointer back to the game's canvas through where
+                    // their pieces went, runtime/hle/mousemenu.c)
+                    ui_piece = -1;
+                    if (pos_z > 93.5f && pos_z < 101.5f) {
+                        bool moved = hud_moves || part_custom;
+                        float kx = moved ? s * part_k : 1.0f, ky = moved ? sy * part_k : 1.0f;
+                        ui_piece = mousemenu_piece(pos_x, pos_y, pos_z, new_pos_x, new_pos_y, kx, ky);
+                    }
+#endif
+                    // (where each part's pieces went, its size, whether a finger works it, hidden: runtime/touch.cpp)
+                    if (part >= 0) touch_hud_piece(part, pos_x, pos_y, new_pos_x, new_pos_y, part_k, (part_touch ? 1 : 0) | (hud_hidden ? 2 : 0));
                     // One anchor per window (ui_group_end), on a picture narrower than 16:9. Not for the hunt's status HUD
                     // and item bar (103), the minimap (105), the loading screen, or the bars that belong to an edge (a
                     // cinematic's at y 0 / 720, the Quest Complete border sliding in from y 739).
                     grouped = sy < 1.0f && !(ui_loading_pass && pos_z >= 94.0f && pos_z < 109.5f) && fabsf(pos_z - 103.0f) >= 0.5f &&
-                              fabsf(pos_z - 105.0f) >= 0.5f && pos_y >= 10.0f && pos_y <= 712.0f && !arts_move && !target_move;
+                              fabsf(pos_z - 105.0f) >= 0.5f && pos_y >= 10.0f && pos_y <= 712.0f &&
+                              !(part >= 0 && ((prof == HUD_TOUCH && (part == HP_ARTS || part == HP_TARGET)) || part_custom));
                     vgroup = v;
                     if (g_hudtrace_active)
-                        LOG("[hud] z %.1f pos %.1f,%.1f m %.2f %.2f %.2f %.2f -> %c%c %.1f,%.1f%s sc %d,%d %dx%d\n", pos_z, pos_x, pos_y, m[0], m[1], m[4],
-                            m[5], "LRC"[anchor], "TBC"[vanchor], new_pos_x, new_pos_y, ui_menu_pass ? " menu" : "", st.scissor[0][0],
-                            st.scissor[0][1], st.scissor[0][2], st.scissor[0][3]);
+                        LOG("[hud] z %.1f pos %.1f,%.1f m %.2f %.2f %.2f %.2f -> %c%c %.1f,%.1f%s sc %d,%d %dx%d%s%s%s%s\n", pos_z, pos_x, pos_y, m[0], m[1],
+                            m[4], m[5], "LRC"[anchor], "TBC"[vanchor], new_pos_x, new_pos_y, ui_menu_pass ? " menu" : "", st.scissor[0][0],
+                            st.scissor[0][1], st.scissor[0][2], st.scissor[0][3], part >= 0 ? " part " : "", part >= 0 ? HUD_KEY[part] : "",
+                            part >= 0 && part_nearest ? " (nearest)" : "", hud_hidden ? " hidden" : "");
+                }
+                if (!hud_moves && !part_custom) {  // (the touch layer told; the piece, its scissor and its matrix stay the game's)
+                    ui_relax_scissor = false;
+                    return ubo_span(guest_copy(r.addr, size), size);
                 }
 
                 if (backdrop_fill) {
@@ -3532,6 +4091,8 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                     m[0] *= s; m[4] *= s; m[8] *= s;
                 }
                 if (!backdrop_tall) { m[1] *= sy; m[5] *= sy; m[9] *= sy; }
+                if (part_k != 1.0f) { m[0] *= part_k; m[1] *= part_k; m[4] *= part_k; m[5] *= part_k; m[8] *= part_k; m[9] *= part_k; }
+                if (hud_hidden) m[0] = m[1] = m[4] = m[5] = m[8] = m[9] = 0.0f;  // (no area: nothing drawn)
                 m[12] = new_pos_x;
                 m[13] = new_pos_y;
 
@@ -3631,10 +4192,11 @@ static VkDescriptorSet stage_set(int nbinds, const VkBindingInfo *binds, VkDescr
             bi[n] = ubo_span(shared_rscale, sizeof rs);
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b->binding == ALPHA_REF_BUFFER_INDEX) {
-            float ref[4] = {st.alpha_ref, 0, 0, 0};
+            const float aref = a2c_as_test ? 0.5f : st.alpha_ref;
+            float ref[4] = {aref, 0, 0, 0};
             shared_new_submission();
-            if (!shared_have_aref || !shared_on() || memcmp(&shared_aref_v, &st.alpha_ref, sizeof shared_aref_v))
-                shared_aref = vk_transient_copy(ref, sizeof ref, 256), shared_aref_v = st.alpha_ref, shared_have_aref = true;
+            if (!shared_have_aref || !shared_on() || memcmp(&shared_aref_v, &aref, sizeof shared_aref_v))
+                shared_aref = vk_transient_copy(ref, sizeof ref, 256), shared_aref_v = aref, shared_have_aref = true;
             bi[n] = ubo_span(shared_aref, sizeof ref);
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {  // tint (19), gmap (20): zeros
@@ -3723,9 +4285,11 @@ static CsProg *compute_program(NvnProgram *np) {
     maxwell_gmem_size = HEAP_MAX;
     ShaderKey k = {0};
     k.glsl = 1;
+    uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
     pthread_mutex_lock(&translate_lock);
     cp->si = maxwell_translate((const uint8_t *)G2H((uint32_t)s5->code_addr), s5->const_offset ? s5->const_offset : 0x10000, STAGE_COMPUTE, &k);
     pthread_mutex_unlock(&translate_lock);
+    if (HITCH_ON) hitch_add(HC_CS_NEW, plat_now_ns() - t0, 0);  // (the translate thread's translation waited for too)
     cp->p.vi = cp->si;
     if (!cp->si->msl) {
         LOG("[compute] translate failed: %s (code %llx)\n", cp->si->error, (unsigned long long)s5->code_addr);
@@ -3747,7 +4311,8 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     if (!st.program || !gx || !gy || !gz) return;
     CsProg *cp = compute_program(st.program);
     if (!cp) { stat_skipped++; return; }
-    if (!await_build(&cp->p.state, cp, 0)) { skip_draw(&stat_skip_pipe); return; }
+    // (cached: after its first run its SPIR-V and pipeline come from the caches)
+    if (!await_build(&cp->p.state, cp, 0, true)) { skip_draw(&stat_skip_pipe); return; }
     vk_end_pass();
     st.rt_dirty = true;
     ms_resolve_sampled(5, cp->si);
@@ -3840,7 +4405,7 @@ static VkPipeline fxaa_pipeline(VkRenderPass rp) {
                                        .pViewportState = &vs, .pRasterizationState = &rs, .pMultisampleState = &ms,
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = fxaa_layout, .renderPass = rp};
     VkPipeline p = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p) != VK_SUCCESS) LOG("[vk] FXAA pipeline failed\n");
+    if (sync_pipeline(&pi, &p) != VK_SUCCESS) LOG("[vk] FXAA pipeline failed\n");
     if (n < 8) tab[n].rp = rp, tab[n++].p = p;
     return p;
 }
@@ -4053,6 +4618,7 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
                   uint32_t smask);
 static bool shadow_skipped(void) {
     static NvnTexture *cleared[8];
+    static VkImage cleared_image[8];  // (the image the atlas had then: the game may give it a new one, after a quest)
     if (config_live_shadows()) {
         memset(cleared, 0, sizeof cleared);  // (turned on again: cleared again when it next goes off)
         return false;
@@ -4062,68 +4628,24 @@ static bool shadow_skipped(void) {
     if (!d || (d->width < 512 && d->height < 512) || (d->width == g_render_size[0] && d->height == g_render_size[1])) return false;
     int i = 0;
     while (i < 8 && cleared[i] && cleared[i] != d) i++;
-    if (i < 8 && !cleared[i]) {  // (the first time: the far depth, once; a new atlas - another zone's - once too)
+    VkImage image = d->backend ? ((TexBackend *)d->backend)->image : VK_NULL_HANDLE;
+    // (the first time: the far depth, once; a new atlas - another zone's - once too; and the same atlas again when its
+    // image was made anew: left as it was, its garbage put the whole scene in shadow, dark after a quest - #88, #105)
+    if (i < 8 && (!cleared[i] || cleared_image[i] != image)) {
         bool relaxed = ui_relax_scissor;  // (the whole atlas, not the cascade the scissor is set for)
         ui_relax_scissor = true;
         clear(-1, 0, NULL, 0, true, 1.0f, false, 0, 0);
         ui_relax_scissor = relaxed;
         cleared[i] = d;
+        cleared_image[i] = image;
         LOG("[vk] shadows off: the %ux%u shadow atlas cleared once, its draws left out\n", d->width, d->height);
     }
     renderer_mark_gpu_owned(d);  // (not to be uploaded from the guest's memory when sampled)
     return true;
 }
 
-static void draw(CmdRec *r, bool indexed) {
-    if (!st.program) { stat_skipped++; return; }
-    if (shadow_skipped()) { stat_skipped++; return; }
-    ShaderKey vkey = {0}, fkey = {0};
-    vkey.glsl = fkey.glsl = 1;
-    vkey.flip_y = fkey.flip_y = nvn_window_origin() == 0;
-    vkey.depth_minus_one = nvn_depth_mode() == 0;
-    for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
-    for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
-    if (st.color_state[2] >= 1 && st.color_state[2] <= 7) fkey.alpha_func = st.color_state[2];  // (NVN alpha test)
-    Prog *pr = get_program(st.program, &vkey, &fkey);
-    if (!pr) { stat_skipped++; return; }
-    if (!await_build(&pr->state, pr, 0)) { skip_draw(&stat_skip_prog); return; }
-    fs_new(pr, (uint32_t)r->x[2]);
-    if (fxaa_skipped(pr) || lowend_skipped(pr)) return;
-    NvnTexture *movie = movie_picture(pr);
-    uint32_t mode = (uint32_t)r->x[0];
-    VkPrimitiveTopology topo;
-    bool native = topology(mode, &topo);
-    if (!native && mode != 6 && mode != 7 && mode != 9) { stat_skipped++; return; }
-    if (g_fsr_on) {  // FSR: the frame's structure; at the start of the HUD FSR runs before this draw (fsr.c)
-        FsrDraw fd = {.color0 = st.rt.ncolor ? st.rt.color[0] : NULL, .depth = st.rt.depth, .count = (uint32_t)r->x[2],
-                      .depth_write = st.ds[0] && st.ds[1], .vubuf = &st.ubuf[0][0].addr, .nvubuf = 18,
-                      .vp_w = st.viewport[0][2], .vp_h = st.viewport[0][3]};
-        for (int i = 0; i < pr->fi->ntex && fd.ntex < 16; i++) fd.tex[fd.ntex++] = shader_texture_object(1, &pr->fi->tex[i]);
-        vk_fsr_draw(&fd);
-    }
-
-    ms_want_depth = st.ds[0] && st.rt.depth;  // (MSAA, a picture 3D models are drawn into: pass_models)
-    if (in_pass && pass_models && !pass_msaa && ms_want_depth && !pass_want_depth) st.rt_dirty = true;
-    models_fxaa_track(ms_want_depth);  // (FXAA: the same, models_fxaa_end)
-    if (st.rt_dirty) vk_end_pass();  // (MSAA: the ending pass marks its targets for resolving before they are read)
-    ms_resolve_sampled(0, pr->vi);
-    ms_resolve_sampled(1, pr->fi);
-    resolve_feedback(pr);
-    if (st.rt.depth && st.ds[0] && st.ds[1]) snapshots_invalidate(st.rt.depth);
-    for (int i = 0; i < st.rt.ncolor; i++)
-        if (st.rt.color[i] && ((st.channel_mask >> (i * 4)) & 0xF)) snapshots_invalidate(st.rt.color[i]);
-    begin_pass();
-    pass_skip_clear = 0;  // (drawn into: later clears are clears again)
-    VkCommandBuffer cb = vk_cmd();
-    int af = fkey.alpha_func;
-    if (pass_samples > 1 && (af == 2 || af == 4 || af == 5 || af == 7)) {  // MSAA: the alpha test as sample coverage
-        fkey.alpha_coverage = (uint8_t)pass_samples;
-        pr = get_program(st.program, &vkey, &fkey);
-        if (!pr) { stat_skipped++; return; }
-        if (!await_build(&pr->state, pr, 0)) { skip_draw(&stat_skip_prog); return; }
-    }
-
-    // ---- pipeline
+// The pipeline a draw of pr needs in the pass open now, with the state set now
+static PipeKey pipe_key(Prog *pr, uint32_t mode, bool native, VkPrimitiveTopology topo, bool flip_y) {
     PipeKey k;
     memset(&k, 0, sizeof k);
     k.prog = pr;
@@ -4166,12 +4688,12 @@ static void draw(CmdRec *r, bool indexed) {
         if (fw == ~0ull) { const char *e = getenv("MHGU_FORCE_WMASK"); fw = e ? strtoull(e, NULL, 16) : 0; }
         if (fw && st.program->stages[1].code_addr == fw && k.ncolor) k.write_mask[0] = 0xF;
     }
-    k.a2c = st.ms[0xC] != 0;
+    k.a2c = st.ms[0xC] != 0 && !a2c_as_test;
     k.topology = (uint8_t)(native ? topo : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
     k.poly_fill = st.poly[2] != 1;
     k.cull = st.poly[0];
     bool ccw = st.poly[1] == 1;
-    k.front_ccw = ccw != vkey.flip_y;
+    k.front_ccw = ccw != flip_y;
     k.prim_restart = st.prim_restart && native && (mode == 3 || mode == 5);
     k.depth_clamp = st.depth_clamp && g_vk.depth_clamp;  // (shadow casters beyond the light's near / far planes)
     k.depth_bias = (st.poly[3] & 4) != 0;
@@ -4181,12 +4703,6 @@ static void draw(CmdRec *r, bool indexed) {
     k.depth_write = k.depth_test && st.ds[1];
     k.depth_op = (uint8_t)(k.depth_test ? compare_fn(st.ds[2]) : VK_COMPARE_OP_ALWAYS);
     k.stencil_test = st.ds[3] && has_stencil;
-    // (3D models drawn over the finished picture, without MSAA: from the next frame on, for as long as they are drawn,
-    // the player's anti-aliasing for them: ms_expand, models_fxaa_end)
-    if (k.depth_write) {
-        TexBackend *c0 = st.rt.ncolor && st.rt.color[0] ? st.rt.color[0]->backend : NULL;
-        if (c0 && (!pass_msaa || c0->ms_models) && full_picture(pass_w, pass_h)) c0->ms_models = g_present_count;
-    }
     k.sample_shading = pass_msaa && pass_models && !k.depth_test;  // (the menu's 2D draws after the models: pass_models)
     if (k.stencil_test) {
         uint32_t ops = st.ds[5] | st.ds[6] << 8 | st.ds[7] << 16;
@@ -4198,18 +4714,122 @@ static void draw(CmdRec *r, bool indexed) {
             k.sten_ops[f][3] = (uint8_t)compare_fn(f ? st.ds[4] >> 4 : st.ds[4] & 0xF);
         }
     }
+    return k;
+}
+
+// A pipeline first made at a draw: recorded in pipelines.bin for the next run's start; no cache has it now (cold)
+static void pipe_record(Pipe *pp) {
+    pp->t_req = plat_now_ns();
+    pp->cold = true;
+    pipecache_store(pp);
+    if (HITCH_ON) hitch_add(HC_PIPE_NEW, plat_now_ns() - pp->t_req, 0);  // (the time: its record written)
+}
+
+// A draw skipped for its program, still loading from the program cache: its pipeline is keyed now (the program's
+// ShaderInfo is known) and attached to the program as pipelines.bin's are, so its build starts as soon as the program
+// is built rather than at a draw a frame or more later. Only where the key is the one that draw will need: the pass it
+// draws into is open and stays so (no MSAA pass to begin for 3D models), no alpha test as sample coverage (another
+// program).
+static void pipe_ahead(Prog *pr, uint32_t mode, bool flip_y, int af) {
+    if (atomic_load(&pr->state) == 2 || !in_pass || st.rt_dirty) return;
+    if ((pass_models && !pass_msaa && st.ds[0] && st.rt.depth && !pass_want_depth) ||
+        (pass_samples > 1 && (af == 2 || af == 4 || af == 5 || af == 7)))
+        return;
+    VkPrimitiveTopology topo;
+    bool native = topology(mode, &topo);
+    if (!native && mode != 6 && mode != 7 && mode != 9) return;
+    PipeKey k = pipe_key(pr, mode, native, topo, flip_y);
+    bool created;
+    Pipe *pp = pipe_slot(&k, &created);
+    if (!pp || !created) return;
+    pipe_record(pp);
+    pipe_attach(pr, pp);
+}
+
+static void draw(CmdRec *r, bool indexed) {
+    if (!st.program) { stat_skipped++; return; }
+    if (shadow_skipped()) { stat_skipped++; return; }
+    ShaderKey vkey = {0}, fkey = {0};
+    vkey.glsl = fkey.glsl = 1;
+    vkey.flip_y = fkey.flip_y = nvn_window_origin() == 0;
+    vkey.depth_minus_one = nvn_depth_mode() == 0;
+    for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
+    for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
+    if (st.color_state[2] >= 1 && st.color_state[2] <= 7) fkey.alpha_func = st.color_state[2];  // (NVN alpha test)
+    Prog *pr = get_program(st.program, &vkey, &fkey);
+    if (!pr) { stat_skipped++; return; }
+    if (!await_build(&pr->state, pr, 0, pr->loaded)) {
+        if (pr->loaded) pipe_ahead(pr, (uint32_t)r->x[0], vkey.flip_y, fkey.alpha_func);
+        skip_draw(&stat_skip_prog);
+        return;
+    }
+    fs_new(pr, (uint32_t)r->x[2]);
+    if (fxaa_skipped(pr) || lowend_skipped(pr)) return;
+    NvnTexture *movie = movie_picture(pr);
+    uint32_t mode = (uint32_t)r->x[0];
+    VkPrimitiveTopology topo;
+    bool native = topology(mode, &topo);
+    if (!native && mode != 6 && mode != 7 && mode != 9) { stat_skipped++; return; }
+    if (g_fsr_on) {  // FSR: the frame's structure; at the start of the HUD FSR runs before this draw (fsr.c)
+        FsrDraw fd = {.color0 = st.rt.ncolor ? st.rt.color[0] : NULL, .depth = st.rt.depth, .count = (uint32_t)r->x[2],
+                      .depth_write = st.ds[0] && st.ds[1], .vubuf = &st.ubuf[0][0].addr, .nvubuf = 18,
+                      .vp_w = st.viewport[0][2], .vp_h = st.viewport[0][3]};
+        for (int i = 0; i < pr->fi->ntex && fd.ntex < 16; i++) fd.tex[fd.ntex++] = shader_texture_object(1, &pr->fi->tex[i]);
+        vk_fsr_draw(&fd);
+    }
+
+    ms_want_depth = st.ds[0] && st.rt.depth;  // (MSAA, a picture 3D models are drawn into: pass_models)
+    if (in_pass && pass_models && !pass_msaa && ms_want_depth && !pass_want_depth) st.rt_dirty = true;
+    models_fxaa_track(ms_want_depth);  // (FXAA: the same, models_fxaa_end)
+    if (st.rt_dirty) vk_end_pass();  // (MSAA: the ending pass marks its targets for resolving before they are read)
+    ms_resolve_sampled(0, pr->vi);
+    ms_resolve_sampled(1, pr->fi);
+    resolve_feedback(pr);
+    if (st.rt.depth && st.ds[0] && st.ds[1]) snapshots_invalidate(st.rt.depth);
+    for (int i = 0; i < st.rt.ncolor; i++)
+        if (st.rt.color[i] && ((st.channel_mask >> (i * 4)) & 0xF)) snapshots_invalidate(st.rt.color[i]);
+    begin_pass();
+    pass_skip_clear = 0;  // (drawn into: later clears are clears again)
+    VkCommandBuffer cb = vk_cmd();
+    // ([Performance] Grass Off: the tall grass and foliage, drawn with alpha to coverage, are left out: #85, #121)
+    if (!g_config.grass && st.ms[0xC]) { stat_skipped++; return; }
+    int af = fkey.alpha_func;
+    // One sample on an Adreno: the game's alpha to coverage became nothing at all for partly transparent texels (the
+    // tall grass missing on an Adreno 640, #70; Mali keeps those at alpha 0.5 and up): done as an alpha test at 0.5
+    a2c_as_test = false;
+    if (pass_samples <= 1 && st.ms[0xC] && af == 0 && vk_gpu_adreno()) {
+        a2c_as_test = true;
+        fkey.alpha_func = 7;
+        pr = get_program(st.program, &vkey, &fkey);
+        if (!pr) { stat_skipped++; return; }
+        if (!await_build(&pr->state, pr, 0, pr->loaded)) { skip_draw(&stat_skip_prog); return; }
+    }
+    if (pass_samples > 1 && (af == 2 || af == 4 || af == 5 || af == 7)) {  // MSAA: the alpha test as sample coverage
+        fkey.alpha_coverage = (uint8_t)pass_samples;
+        pr = get_program(st.program, &vkey, &fkey);
+        if (!pr) { stat_skipped++; return; }
+        if (!await_build(&pr->state, pr, 0, pr->loaded)) { skip_draw(&stat_skip_prog); return; }
+    }
+
+    // ---- pipeline
+    PipeKey k = pipe_key(pr, mode, native, topo, vkey.flip_y);
+    // (3D models drawn over the finished picture, without MSAA: from the next frame on, for as long as they are drawn,
+    // the player's anti-aliasing for them: ms_expand, models_fxaa_end)
+    if (k.depth_write) {
+        TexBackend *c0 = st.rt.ncolor && st.rt.color[0] ? st.rt.color[0]->backend : NULL;
+        if (c0 && (!pass_msaa || c0->ms_models) && full_picture(pass_w, pass_h)) c0->ms_models = g_present_count;
+    }
     bool created;
     Pipe *pp = pipe_slot(&k, &created);
     if (!pp) { stat_skipped++; return; }
     if (created) {
-        pp->t_req = plat_now_ns();
-        pipecache_store(pp);
+        pipe_record(pp);
         run_job(build_pipeline, pp);
     }
     // A movie frame is the whole picture: skipped, the screen showed the pass's black clear for a few frames at the
     // start of the first movie after an update (its pipeline not in cache/pipelines.bin yet, ~2 frames to build). It
     // waits for its pipeline, so the picture before it stays up that long instead.
-    if (!await_build(&pp->state, pp, movie ? 2000000000ll : 0)) { skip_draw(&stat_skip_pipe); return; }
+    if (!await_build(&pp->state, pp, movie ? 2000000000ll : 0, !pp->cold)) { skip_draw(&stat_skip_pipe); return; }
     if (ss_need(SS_PIPE, ss.pipe == pp->pipe)) { ss.pipe = pp->pipe; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe); }
 
     // ---- dynamic state
@@ -4821,7 +5441,10 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_CLEAR_BUFFER: {  // (address, size, 32-bit value): CPU-side, in order with the list
             uint64_t a = r->x[0], n = r->x[1] & ~3ull;
             uint32_t v = (uint32_t)r->x[2];
-            if (guest_range_ok(a, n)) for (uint64_t i = 0; i < n; i += 4) ST32((uint32_t)(a + i), v);
+            if (guest_range_ok(a, n)) {
+                vk_upload_jobs_guard(a, n, "ClearBuffer");  // (texture bands queued before it read what was there first)
+                for (uint64_t i = 0; i < n; i += 4) ST32((uint32_t)(a + i), v);
+            }
             gcopy_gen++;
             break;
         }
@@ -4829,7 +5452,10 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_DRAW_ARRAYS: draw(r, false); break;
         case CMD_DRAW_ELEMENTS: draw(r, true); break;
         case CMD_UPDATE_UNIFORM_BUFFER:
-            if (guest_range_ok(r->x[0] + r->x[2], r->x[3])) memcpy(G2H((uint32_t)(r->x[0] + r->x[2])), x, r->x[3]);
+            if (guest_range_ok(r->x[0] + r->x[2], r->x[3])) {
+                vk_upload_jobs_guard(r->x[0] + r->x[2], r->x[3], "UpdateUniformBuffer");
+                memcpy(G2H((uint32_t)(r->x[0] + r->x[2])), x, r->x[3]);
+            }
             gcopy_gen++;  // (copies shared within the submission are stale now)
             break;
         case CMD_FENCE_SYNC:
@@ -4844,6 +5470,7 @@ static void exec_list(uint64_t handle, int depth) {
             if (!r->x[1] || !guest_range_ok(r->x[1], 16)) break;
             uint64_t now = plat_now_ns();
             uint64_t ticks = (uint64_t)((unsigned __int128)now * 384 / 625);
+            vk_upload_jobs_guard(r->x[1], 16, "ReportCounter");
             ST64((uint32_t)r->x[1], 0);
             ST64((uint32_t)r->x[1] + 8, ticks);
             break;
@@ -4853,8 +5480,10 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_COPY_BUFFER_TO_TEXTURE: copy_buffer_to_texture(r->x[0], x); break;
         case CMD_COPY_TEXTURE_TO_BUFFER: copy_texture_to_buffer(x, r->x[3]); break;
         case CMD_COPY_BUFFER_TO_BUFFER:  // (src, dst, size): guest memory only the CPU writes here
-            if (guest_range_ok(r->x[0], r->x[2]) && guest_range_ok(r->x[1], r->x[2]))
+            if (guest_range_ok(r->x[0], r->x[2]) && guest_range_ok(r->x[1], r->x[2])) {
+                vk_upload_jobs_guard(r->x[1], r->x[2], "CopyBufferToBuffer");
                 memmove(G2H((uint32_t)r->x[1]), G2H((uint32_t)r->x[0]), r->x[2]);
+            }
             gcopy_gen++;
             break;
         default: break;
@@ -4868,10 +5497,14 @@ void backend_execute(uint64_t handle) {
     perf_hint_thread(PERF_SUBMIT);  // (the translating thread, for the performance hint session: platform/android_perf.c)
 #endif
     vk_lock();
+#ifndef __ANDROID__
+    frame_dt_note();  // (the frame interval: the wait budget's)
+#endif
     plist_drain();  // (the pipeline list's programs the prewarm met)
     uint64_t t0 = plat_now_ns();
     exec_list(handle, 0);
     stat_exec_ns += plat_now_ns() - t0;
+    if (HITCH_ON) hitch_add(HC_EXEC, plat_now_ns() - t0, 0);
     renderer_submit();
     vk_unlock();
     static int stats = -1;

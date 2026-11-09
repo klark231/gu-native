@@ -1,0 +1,38 @@
+// MHGU.exe's icon (the Android launcher icon) and version (native/CMakeLists.txt: the VERSION file's text and its
+// numbers). They come unquoted and are made strings here: windres hands -D values to the preprocessor as a shell would,
+// quotes taken off.
+#include <winver.h>
+
+#define STR_(x) #x
+#define STR(x) STR_(x)
+
+1 ICON "MHGU.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION MHGU_RC_NUMBERS
+PRODUCTVERSION MHGU_RC_NUMBERS
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "khorne-hub"
+            VALUE "FileDescription", "MHGU for PC"
+            VALUE "FileVersion", STR(MHGU_RC_TEXT)
+            VALUE "InternalName", "MHGU"
+            VALUE "LegalCopyright", "khorne-hub. Free, made by fans; only the links khorne-hub gives are official."
+            VALUE "OriginalFilename", "MHGU.exe"
+            VALUE "ProductName", "MHGU"
+            VALUE "ProductVersion", STR(MHGU_RC_TEXT)
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

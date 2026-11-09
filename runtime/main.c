@@ -6,9 +6,11 @@
 #include <sys/stat.h>
 
 #include "camera_jitter.h"
+#include "gamefolder.h"
 #include "gamelib.h"
 #include "hle.h"
 #include "hle/itembar.h"
+#include "hle/mousemenu.h"
 #include "hle/mousecam.h"
 #include "kernel.h"
 #include "mods.h"
@@ -57,8 +59,13 @@ static void boot(const char *root) {
     char why[512];
 #ifdef __ANDROID__
     if (!gamelib_load(why, sizeof why)) game_lib_failed(why);
+#else
+    if (!gamelib_load(why, sizeof why)) {  // (the reason in a box, as Android's game_lib_failed: not a crash report)
+        LOG("[gamelib] %s\n", why);
+        plat_error_box(why);
+        exit(1);
+    }
 #endif
-    if (!gamelib_load(why, sizeof why)) FATAL("%s\n", why);
     loader_load(exefs);
     kernel_init();
     dispatch_init();
@@ -73,6 +80,7 @@ static void boot(const char *root) {
     camjit_init();  // (FSR: the main camera and its jitter: runtime/hle/camera_jitter.c)
     mousecam_init();  // (mouse look on the hunt camera's angles: runtime/hle/mousecam.c)
     itembar_init();  // (the mouse wheel on the item bar: runtime/hle/itembar.c)
+    mousemenu_init();  // (the mouse in the game's menus, a desktop's: runtime/hle/mousemenu.c)
     emtrace_init();  // (debug, MHGU_EMTRACE: runtime/hle/emtrace.c)
     kotrace_init();  // (debug, MHGU_KOTRACE: runtime/hle/kotrace.c)
     cheats_init();  // (cheat codes from cheats/: runtime/cheats.c)
@@ -205,6 +213,11 @@ int main(int argc, char **argv) {
             if (s) *s = 0, snprintf(data, sizeof data, "%s/data", exe);
         }
         if (getenv("MHGU_DATA_DIR")) snprintf(data, sizeof data, "%s", getenv("MHGU_DATA_DIR"));  // (Android: chosen)
+#ifndef __ANDROID__
+        // (a desktop: the player's folder with exefs, romfs and mhgugame.dll, chosen before or now, as Android's
+        // GameFolderActivity does: runtime/gamefolder.c)
+        else if (!gamefolder_find(data, sizeof data)) return 0;
+#endif
         g_game_dir = data;
         mods_make_dir();
         cheats_make_dir();
@@ -215,6 +228,11 @@ int main(int argc, char **argv) {
         } else {
             fprintf(stderr, "[main] no user data folder: saves go to save\\ beside the executable\n");
         }
+#ifndef __ANDROID__
+        pc_apply_imported_save();  // (a save imported from the menu: in place before the game runs, runtime/pc_actions.c)
+        pc_install_bundled_cheats();  // (the port's optional cheats, the first time: off)
+        pc_apply_mod_changes();  // (mods removed or replaced in the menu while the game used them: deleted now)
+#endif
         char main_path[1200];
         snprintf(main_path, sizeof main_path, "%s/exefs/main", data);
         FILE *f = fopen(main_path, "rb");
@@ -224,8 +242,7 @@ int main(int argc, char **argv) {
                                         "exefs and romfs.");
             files_rejected();
 #else
-            const char *msg = "The game files were not found. Put your own dump's exefs and romfs folders in the data "
-                              "folder next to mhgurecomp.exe (data\\exefs, data\\romfs).";
+            const char *msg = "The game files were not found: exefs and romfs are not in the game folder.";
 #endif
             fprintf(stderr, "%s\n", msg);
             plat_error_box(msg);
@@ -278,9 +295,11 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
+    rt_log_start();  // (Windows: from here the log's own thread writes it, runtime/logwriter.c)
+    hitch_init();  // ((debug) MHGU_HITCHLOG=1: before the game's threads start, runtime/hitchlog.c)
     LOG("MHGU Recomp %s\n", MHGU_VERSION);
-#ifdef __ANDROID__
-    void plat_log_device(void);
+#if defined(__ANDROID__) || defined(_WIN32)
+    void plat_log_device(void);  // (the phone; Windows: how this run treats its threads)
     plat_log_device();
 #endif
     { void fnprof_init(void); fnprof_init(); }

@@ -1,3 +1,28 @@
+// Altered from zlib 1.2.8: inflate_fast of its inffast.c (Copyright (C) 1995-2008, 2010, 2013 Mark Adler) and adler32
+// of its adler32.c (Copyright (C) 1995-2011 Mark Adler), changed to work on the game's own structures (below). zlib's
+// notice, which its license asks to keep:
+//
+//  Copyright (C) 1995-2013 Jean-loup Gailly and Mark Adler
+//
+//  This software is provided 'as-is', without any express or implied
+//  warranty.  In no event will the authors be held liable for any damages
+//  arising from the use of this software.
+//
+//  Permission is granted to anyone to use this software for any purpose,
+//  including commercial applications, and to alter it and redistribute it
+//  freely, subject to the following restrictions:
+//
+//  1. The origin of this software must not be misrepresented; you must not
+//     claim that you wrote the original software. If you use this software
+//     in a product, an acknowledgment in the product documentation would be
+//     appreciated but is not required.
+//  2. Altered source versions must be plainly marked as such, and must not be
+//     misrepresented as being the original software.
+//  3. This notice may not be removed or altered from any source distribution.
+//
+//  Jean-loup Gailly        Mark Adler
+//  jloup@gzip.org          madler@alumni.caltech.edu
+//
 // zlib's inflate_fast (main 0x1422ce8) and adler32 (main 0x1422774) as host code. The game's archives (.arc) are zlib
 // streams, and decompressing them is most of a loading screen's work: on the loader thread (main 0xdc74e0) 80% of the
 // time went to the game's inflate, 72% to inflate_fast alone (2026-10-31, quest 101's load, sampled); with it as host

@@ -288,25 +288,56 @@ static struct { File *f; int fd; uint64_t used; } fdc[FDC];
 static uint64_t fdc_clock;
 static pthread_mutex_t fdc_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static int64_t read_file(File *f, uint8_t *dst, uint64_t off, uint64_t n) {
-    pthread_mutex_lock(&fdc_lock);
-    int slot = -1, oldest = 0;
+static void fdc_take(void) {
+    if (HITCH_ON) hitch_mutex_lock(&fdc_lock, HC_FILE_LOCK);  // ((debug) MHGU_HITCHLOG: the waits, opens and reads timed)
+    else pthread_mutex_lock(&fdc_lock);
+}
+static int fdc_find(File *f, int *oldest) {  // (fdc_lock held) f's slot, or -1 and the least used one
+    int slot = -1, lru = 0;
     for (int i = 0; i < FDC; i++) {
         if (fdc[i].f == f) { slot = i; break; }
-        if (fdc[i].used < fdc[oldest].used) oldest = i;
+        if (fdc[i].used < fdc[lru].used) lru = i;
     }
-    if (slot < 0) {
-        slot = oldest;
-        if (fdc[slot].f) close(fdc[slot].fd);
-        fdc[slot].f = f;
-        fdc[slot].fd = open(f->path, O_RDONLY | O_BINARY);
-        if (fdc[slot].fd < 0) LOG("[romfs] cannot open %s\n", f->path);
+    if (oldest) *oldest = lru;
+    return slot;
+}
+
+static int64_t read_file(File *f, uint8_t *dst, uint64_t off, uint64_t n) {
+    fdc_take();
+    int oldest, slot = fdc_find(f, NULL), fd;
+    if (slot >= 0) {
+        fdc[slot].used = ++fdc_clock;
+        fd = fdc[slot].fd;
+        pthread_mutex_unlock(&fdc_lock);
+    } else {
+        // (opened with the lock let go: on a hard disk an open takes 20-30 ms, and every other file read - another game
+        // thread's, the music's - waited that long for it; MHGU_HITCHLOG saw one wait 61 ms)
+        pthread_mutex_unlock(&fdc_lock);
+        uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
+        int mine = open(f->path, O_RDONLY | O_BINARY);
+        if (mine < 0) LOG("[romfs] cannot open %s\n", f->path);
+        if (HITCH_ON) hitch_add_label(HC_FILE_OPEN, plat_now_ns() - t0, 0, f->rpath, -1);
+        fdc_take();
+        slot = fdc_find(f, &oldest);
+        if (slot >= 0) {  // (another thread opened it meanwhile: its descriptor, ours closed)
+            fdc[slot].used = ++fdc_clock;
+            fd = fdc[slot].fd;
+            pthread_mutex_unlock(&fdc_lock);
+            if (mine >= 0) close(mine);
+        } else {
+            slot = oldest;
+            if (fdc[slot].f && fdc[slot].fd >= 0) close(fdc[slot].fd);
+            fdc[slot].f = f, fdc[slot].fd = mine, fdc[slot].used = ++fdc_clock;
+            fd = mine;
+            pthread_mutex_unlock(&fdc_lock);  // (pread doesn't move the file position: safe while others use it)
+        }
     }
-    fdc[slot].used = ++fdc_clock;
-    int fd = fdc[slot].fd;
-    pthread_mutex_unlock(&fdc_lock);  // (pread doesn't move the file position: safe while others use it)
     if (fd < 0) return -1;
-    return plat_pread(fd, dst, n, (off_t)off);  // (dst: an IPC buffer in guest memory, platform.h)
+    if (!HITCH_ON) return plat_pread(fd, dst, n, (off_t)off);  // (dst: an IPC buffer in guest memory, platform.h)
+    uint64_t t0 = plat_now_ns();
+    int64_t r = plat_pread(fd, dst, n, (off_t)off);
+    hitch_add_label(HC_FILE_READ, plat_now_ns() - t0, n, f->rpath, -1);
+    return r;
 }
 
 static int file_at(const RomfsImage *im, uint64_t rel) {  // index of the file whose padded data range holds rel, or -1

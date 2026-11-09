@@ -11,7 +11,8 @@ This file has two uses: helping someone set the game up, and continuing the proj
   console. The person brings their own `exefs` and `romfs`.
 - Never commit or publish `exefs`, `romfs`, `generated/`, `libmhgugame.so`, `libmhgugame.id`, saves or signing keys. Never put game
   code in an APK or a release: `libmhgugame.so` is made from the game, so each person makes their own with `tools/build_game.py`.
-- Keep `LICENSE` and `THIRD_PARTY_NOTICES`. The MIT license requires them.
+- Keep `LICENSE` (the project's own license from 0.1.7: no redistribution without the author's written permission) and
+  `THIRD_PARTY_NOTICES` (MHGURecomp's MIT license and the other libraries' licenses require it).
 - Don't lower someone's graphics or audio settings without asking.
 - Any new menu, notice or touch control must match the game's style: bronze, gold and wine-dark, with no default Android look.
 
@@ -44,13 +45,86 @@ Windows, in Git Bash, with the Android SDK, NDK 27.0.12077973, CMake 3.22.1 and 
 1. Put the sources in `deps/src/`: `SDL3-3.4.18`, `ffmpeg` (9.0.2) and `shaderc` (2026.4, with glslang 16.6.0 and SPIRV-Tools and
    SPIRV-Headers 1.4.363.0 in its `third_party`). Then run `bash deps/build_deps.sh arm64-v8a` and `bash deps/build_ffmpeg.sh arm64-v8a`.
 2. `bash native/build_native.sh arm64-v8a` builds the runtime. It first builds `crates/mhgu-crossplay` (Rust: crossplay with Ryujinx, Yuzu-family rooms and Citra-family rooms), so it needs rustup with the `aarch64-linux-android` target (`x86_64-linux-android` for that ABI) and, the first time, network access for cargo. With `MHGU_DEV=1` in front, a test build.
-3. `cd android && ./gradlew assembleRelease`. It signs only if `android/keystore.properties` and `mhgu.keystore` exist.
+3. `cd android && ./gradlew assembleRelease` makes four APKs (`app-standard-release.apk`, `app-antutu-release.apk`, `app-ludashi-release.apk`, `app-alt-release.apk`; one with `assembleStandardRelease` etc.). The other three have the package names `com.antutu.ABenchMark`, `com.ludashi.benchmark` and `com.mhgu.recomp.alt` and the labels "MHGU Antutu", "MHGU Ludashi" and "MHGU Alt" (Alt: a second install beside the standard one): the code is the same (namespace `com.mhgu.recomp`), but each package has its own `Android/data/<package>/files` (settings, log, saves) and none installs over the real benchmark. It signs only if `android/keystore.properties` and `mhgu.keystore` exist.
 
 The public APK leaves `libmhgugame.so` out. `-Pwithgame` keeps it for your own tests: never publish that APK.
 
 `GAMELIB_ID` is a hash of the generator and of the headers listed in `tools/build_game.py`, `runtime/gamelib.h` and
 `hle_symbols.txt` included. If any of them changes, every player must run the tool again, and the app says so. `runtime/*.c` can change
 without that: new hooks use `fnhook_set`, new declarations go in another header. Check the id before releasing.
+
+## Building for Windows
+
+In Git Bash, with llvm-mingw 20241217 (UCRT) and the Android SDK's CMake 3.22.1 and Ninja. No MSYS2 needed.
+
+1. The same sources, plus `Vulkan-Headers` (tag vulkan-sdk-1.4.363.0), in `deps/src/` or a folder named by `DEPS_SRC`. Then
+   `bash deps/build_deps.sh win64` and `bash deps/build_ffmpeg.sh win64`; `LLVM_MINGW=<its folder or its bin folder>` if it isn't in the scripts' default place.
+2. `bash native/build_windows.sh` builds `MHGU.exe` and `mhguffmpeg.dll`, and leaves them with `SDL3.dll` in `native/build/win64/MHGU`.
+3. `python tools/build_game.py <folder with exefs and romfs>`, the players' same command, translates once and leaves both
+   `libmhgugame.so` (+ `.id`) and `mhgugame.dll` (+ `mhgugame.id`) in that folder; one already up to date is kept, so a player who made the
+   phone's only gets the PC's added. `--android` / `--pc` make one only, `--force` both again. It finds or downloads the NDK and
+   llvm-mingw (`--ndk`, `--llvm-mingw`). The Android library it makes is the same, byte for byte, as before the PC part existed.
+4. `MHGU.exe` finds the folder by itself (`runtime/gamefolder.c`): the one chosen before (`game_folder.txt` beside the settings), `data`
+   beside the executable, or its own folder; else it asks with the system's folder dialog, with the checks and messages of Android's
+   `GameFolderActivity` (in English or Spanish), and then loads `mhgugame.dll` from that folder.
+
+- `mhgugame.dll` imports the runtime's functions from the executable by name, so it only loads into `MHGU.exe`: don't rename it. The
+  tool needs no copy of it: a first link lists what nothing else provides, and `llvm-dlltool` makes the import library from that. The
+  variables among them are reached through clang's `.refptr` pointers and go in as `DATA`; a variable that went in as code would be read
+  through a jump thunk.
+- The game code is built for x86-64-v2 (SSE4.2: any 64-bit processor from 2009 on): `runtime/gamelib.c` refuses an older one
+  with a message. The game has no fused multiply-add, and x86-64-v3 measured no faster; never `-march=native`.
+- The renderer's `vk*` are volk's pointers here too, from the Vulkan loader SDL opened for the window (`nvn/vulkan/device.c`).
+- The Android app's own screens are `runtime/pc_actions.c` here: Game folder, Import / Export save, Log folder, Add cheats, Add a mod
+  use SDL3's file dialogs (they answer on their own thread; `settings_panel_request_view` opens the menu's confirmation, `overlay_notice`
+  tells the result), and Licenses is a page of the menu reading `licenses/` beside the executable. An imported save waits in
+  `save_import/` beside the settings and is put in place at the next start, before the game runs, the current one copied to
+  `save_backups/<date>` beside the save folder. `pick folder|save|export|cheats|mod <path>` in the control file answers a dialog.
+- Add a mod takes the mod's folder or its `.zip` (`runtime/unzip.c`, the project's own reader: stored and Deflate, ZIP64; every path
+  is checked before anything is written). The Cheats and Mods tabs remove a cheat file (its cheats stop at once: `cheats_drop_file`) or
+  a mod. A mod the game loaded at its start is only hidden (`mods/_remove.txt`, read by `mods_installed`) and deleted at the next start
+  (`pc_apply_mod_changes`), since the game reads its files while it runs; one added again while in use waits as `mods/.update-<name>`.
+  Deleting never goes through a link (a junction, a symbolic link: `is_link`): the link alone goes, and what it points to stays.
+- `native/build_windows.sh` also puts `pipelines.list`, `licenses/` (with llvm-mingw's runtime, linked into MHGU.exe) and
+  `extras/comer_rapido.txt` (the optional cheats, copied into `cheats/` and turned off at the first start) in the program's folder.
+- The NDK's Windows `make` cuts command lines at about 8 KB: `deps/build_ffmpeg.sh` installs the libraries without `make install`,
+  whose header step was cut and wrote into `deps/src`.
+- Test runs: `MHGU_HOME` (settings, caches, log, `shots/`), `MHGU_DATA_DIR` (the game folder), `MHGU_SAVE_DIR` (saves: otherwise
+  `%APPDATA%\MHGURecomp\save`), `MHGU_CONTROL` (the control file above), `MHGU_WINDOW=1280x720`, `MHGU_FPS=1` (frame rate in the
+  log), `MHGU_FPS_LIMIT=240`, `MHGU_VSYNC=0`, `MHGU_QUICKHUNT=101`. `sdlquit` in the control file closes it once `[Application]
+  ConfirmExit = Off`. `MHGU_HIDDEN=1` still draws (shots, `gpuprof`) without showing a window: measured that way, nothing caps the
+  frame rate but the limit, where a visible window on the desktop stopped at the monitor's refresh rate. `sdlkey F1` opens the menu
+  and `mouse <x> <y> click` presses its rows and tabs.
+- Measured on an RX 6800 XT (Ryzen 5 3600XT), a 1920x1080 window, no limit and no VSync: 200 to 237 fps in menus, about 205 in the
+  village, 140 to 165 in a Jurassic Frontier quest (the monitor's refresh, see MHGU_HIDDEN above). Hidden, 3D at 3440x1440: the 240
+  limit in that quest, the GPU's frame 1.8 to 2.3 ms, of which the window image's pass (the picture copied in, the overlay) 0.2 to
+  0.6 ms. AMD's Windows driver has no mailbox present mode: VSync on is FIFO.
+- Below 100 % RenderScale a desktop always uses `fsr.c`'s plain scaling (`config.c`), Low-end mode or not: the 3D picture small,
+  the HUD, the text and the game's last draw at the window's size (Borderless with a smaller Resolution: the screen's, as FSR),
+  without the phone's caps. It finds the start of the HUD as FSR does, so Bloom on is the usual case (checked at 50 % and 33 %,
+  with Bloom on and off). The player's MSAA (the 3D's passes, before the HUD) and FXAA stay; menus' 3D models drawn after the
+  start of the HUD come out at the window's size with no anti-aliasing, as with FSR (`models_aa`; the 3D resolution's help says
+  so); SmoothGradients keeps H wide (`vk_fsr_input`). A desktop's Low-end mode: the menu sets RenderScale for a 3D picture about
+  720 lines tall at the Resolution of the moment (`config_lowend_scale`: 66 % at 1080p, 50 % at 1440p, 33 % at 4K) and Bloom
+  off, and MSAA (F7 too) and FSR are off; FXAA, shadows, texture filtering, the frame rate and reverb stay. Toaster: about 540
+  lines, 30 FPS, no shadows, FXAA or anisotropic filtering (trilinear stays: NEAREST mips showed as steps on the floors).
+  Leaving either, the menu also takes back an older PC build's phone values (40 %, Toaster 25 %, 30 FPS, no shadows, Toaster's
+  reverb off), which its files still have. Android keeps a phone's values.
+- The log is written by a thread of its own (`runtime/logwriter.c`): a line costs the thread that logs a few microseconds. Before,
+  each was an `fprintf` to the unbuffered stderr, which the C runtime writes to a file a character at a time (~150 us a line), and
+  with the log on a hard disk lines took up to 28 ms on the game's threads. A full 1 MB queue drops lines and the log says so; FATAL,
+  a crash and exit write the queue out first (`rt_log_flush`). `MHGU_LOG_ASYNC=0`: each line written by the thread that logs.
+- Thread priorities (`runtime/platform/windows.c`): guest threads above normal up to Horizon priority 43, normal from 44 on (never
+  under normal, where the runtime's own normal threads kept a lock's holder off the CPU; never highest), the update and presenting
+  threads, the vsync tick and the audio mixer at least above normal, background work below normal (`plat_thread_priority`). A thread
+  waiting on a guest mutex lends the owner its level until the owner lets it go (`kernel.c` `prio_lend`), as Horizon does; the hitch
+  log's `prio-lend` counts it. The process opts out of power throttling (EcoQoS and ignored timer resolution). `MHGU_PRIO=0`: all
+  normal; `MHGU_PRIO_LEND=0`: nothing lent; `MHGU_QOS=0`: throttling left to Windows. The log's `[plat] thread priorities` line says which.
+- Guest kernel waits (`runtime/kernel.c` `kwait`): each guest thread sleeps on an auto-reset event of its own, a timed wait until its
+  deadline on the thread's high-resolution timer (`plat_event_wait_until`). winpthreads' timed waits end on the system's 15.6 ms tick:
+  a 1 ms guest wait took 15 ms (median), a 16 ms one 31; now 1.1-1.3 and 16.3, p99 about 0.6 ms late (the timer's 0.5 ms tick here).
+  A wait that times out as it is woken counts as woken, as in Horizon. `MHGU_KWAIT_PTHREAD=1`: the condition variables as before; the
+  log's `[kernel] guest waits` line says which. Android and Linux: the condition variables, unchanged.
 
 ## Testing on a device
 
@@ -140,7 +214,7 @@ Android killing the game shows in `adb logcat` as `lowmemorykiller: Kill 'com.mh
 - The shadow maps are one 1024x3072 depth atlas (three cascades), the first pass of a hunt's frame: 47 draws, 2.8 ms of a Moto g06's 18.6.
   The game clears it with three full-size draws, not a clear. `[Performance] Shadows = Off` clears it once and skips its pass (`shadow_skipped`).
 - The chat's log is a layer 97 window at the bottom left (x 30..605, y 547..708 of the 1280x720 canvas) that stays seconds after a line: it
-  must not count as a menu (`touch_hud_menu`), or the touch controls stay in the menu layout and the hunter can't walk.
+  must not count as a menu (`touch_hud_menu`), or the menu pad shows over the hunt.
 - A model's skeleton: +0x490 the joint count, +0x494 the array, 0xa0 bytes each, world position at +0x40 (w 1.0), parent at +0x91 (0xff the
   root). The root is the pelvis. Locked shots aim there (`mousecam.c body_center`).
 - `camera_fovy` compares the camera's aspect with the screen's with a tolerance: a small 3D picture's rounding made them differ at 33%.
@@ -171,19 +245,51 @@ Android killing the game shows in `adb logcat` as `lowmemorykiller: Kill 'com.mh
   sets), and draw skips binding the same two again (`SS_SETS`; any other graphics bind forgets them). Zeros, the identity rescale table,
   the alpha reference and each stage's driver constants are copied once per submission (`shared_*`, `zero_ubo`), or every set would be
   new; a storage buffer of zeros is shared only by shaders without `uses_gmem_store`. `MHGU_VK_SETREUSE=0`, `MHGU_VK_SHARED=0`: off.
+- Texture uploads (`nvn/vulkan/textures.c`): a texture's first upload is hashed and copied into staging memory by three worker
+  threads in bands of about 1 MB, and the submission waits for them (`vk_upload_jobs_finish`): nothing draws early or half uploaded.
+  The list's own CPU-side writes (ClearBuffer, CopyBufferToBuffer, UpdateUniformBuffer, ReportCounter) run at once, so one over
+  memory a queued band has yet to read waits for the bands first (`vk_upload_jobs_guard`, `tex-guard` in the hitch log): a draw
+  before the write sees the old contents, as on the console's GPU. What each texture's queued bands read is kept until they are
+  done (`up_range`); a write over none of it waits for nothing.
+  Under 256 KB, and formats decoded on the CPU (BCn on a Mali, ASTC), stay on the render thread. `tegra.c` copies a GOB whole (into
+  staging memory 5 to 9 times the old speed). On a desktop the staging ring's next 32 MB chunk is made ahead on its own thread: made on
+  the spot it cost 34 ms inside a frame. `MHGU_TEX_ASYNC=0`, `MHGU_VK_SPARE_CHUNK=0`: off. A texture that changes on 120 frames in a
+  row is named once in the log (`[tex] changed and uploaded ...`).
 - A Galaxy (Samsung) refuses every simpleperf event for apps (`cpu-clock`, `task-clock`, `cpu-cycles`): profile the CPU on another
   phone. Its frame is CPU-bound: the GPU span in `gpuprof` includes the gaps where the GPU waits for the render thread.
-- `[Performance] LowEnd` is Off, On or Toaster (2). Everything that tests `low_end` treats Toaster as On; Toaster adds a HUD at most 540 lines
-  tall and smaller BC textures, and the menu sets 25 %, 30 FPS, Shadows, Bloom and Reverb off. `[Performance] Bloom` (the bloom and depth
-  of field chain, `lowend_skipped`; not with real FSR: Low-end mode's plain scaling sets `g_fsr_on` too, so test `g_config.fsr`) and
-  `[Audio] Reverb` are switches for everyone. A file with LowEnd on and no Bloom key gets Bloom off, as before.
+- `[Performance] LowEnd` is Off, On or Toaster (2). On a phone (a desktop's: Building for Windows) everything that tests `low_end`
+  treats Toaster as On; Toaster adds a HUD at most 540 lines tall and smaller BC textures, and the menu sets 25 %, 30 FPS, Shadows,
+  Bloom and Reverb off. `[Performance] Bloom` (the bloom and depth of field chain, `lowend_skipped`; not with real FSR: the plain
+  scaling sets `g_fsr_on` too, so test `g_config.fsr`) and `[Audio] Reverb` are switches for everyone. A file with LowEnd on and no
+  Bloom key gets Bloom off, as before.
 - Test runs can override the device's settings without touching its ini: `MHGU_LOWEND=0|1|2`, `MHGU_SCALE`, `MHGU_SHADOWS`, `MHGU_BLOOM`,
   `MHGU_FPS_LIMIT`, `MHGU_NO_REVERB=1`. A phone on its charger reads charging current: unplug it to measure watts. At 30 FPS the GPU runs at
   lower clocks, so `gpuprof` times are longer: compare frame rates or watts, not milliseconds, across FPS limits.
 - Internet hubs (`net/ldn.c`, the `server/` hub server): the Network page shows Hub server, Matchmaking key and Check hub server on
-  Android too; empty Server is None (`LDN_DEFAULT_SERVER` is empty: the project runs no server). Players type any server they want.
-- The touch menu layout can show ZL and ZR tabs beside L and R (`C_MZL`, `C_MZR`), each with `[Touch] ShowMenuZL` / `ShowMenuZR`, off by
-  default (Buttons on the screen).
+  Android too; empty Server is `LDN_DEFAULT_SERVER`, two public servers (a list of up to `MAX_HUBS` = 8, separated by spaces or commas). Hosting lists the hub on every server under link versions 2 and 3 (`LINK_VERSIONS`, one thread each); searching asks every server for each version (and the `public-phone` room without a key), and a found hub remembers its server, version and room for joining. With no Key a hub is listed in the public room under v2 and v3 and in the `public-phone` room under v3 (3 listings a server: the server limits hubs per IP to 4 by default), so PCs and phones of both builds see each other. A host accepts hellos and LAN probes of either version; `discover` tries each version on `Search hosts` addresses.
+- `[Touch] Layout` = Traditional (`touch.cpp`, `trad()`): the hunt's separate-attack controls (`C_HEAVY` A, `C_LIGHT` X, `C_DODGE` B, `C_SHEATHE` Y, R, L, ZR, ZL, +, -, d-pad, stick) as plain lettered discs, always: no menu layout, no menu pad, no ranged one (`game` and `ranged` are forced off in `touch_input`). Its own file, `touch_layout_traditional.txt`, and its own defaults; `from_right` puts L and ZL at the left and + at the right there. Switching in the settings applies at once (`switch_scheme`).
+- While a menu of the game's is open the touch layout doesn't change: the menu pad shows besides (`C_MPAD`, `[Touch] ShowMenuPad`,
+  saved as `menu_pad` in touch_layout.txt) and presses the d-pad, its page tabs above it (`C_ML` / `C_MR`: the pair the game's option
+  turns pages with, `menu_pages_zl`), the other pair above them with `ShowMenuZL` / `ShowMenuZR` (off by default) and a small Minus
+  below it while the hunt's is hidden (the item box opens its other sections with it). The game reads what the pad alone presses
+  only while a menu takes input: a menu's cursor (`cCursor`, `cBoxCursor`, a quantity, a yes / no: hle/mousemenu.c, hooked on both
+  platforms) ran in the game's last update, or the hunter isn't played (`menu_takes_input`, gated in hle/input.c as the game reads
+  the controller). A hunt's menu closing runs no cursor while its windows still fade out, and the hunter takes commands again from
+  the next update on (an X there drew the weapon): a d-pad press then is a Hunter Art. The stick keeps walking (the pause menu, the
+  pouch and the town's item box don't read the stick); it moves the cursor where the hunter isn't played (the title, the main menu)
+  and in a town's menu once the player hasn't moved for 300 ms of tilt (the item box, a shop). Test with `finger` and `touchedit`
+  (MHGU_CONTROL); `menutrace` shows each pad update's buttons and how many updates ago a cursor ran.
+- The HUD's parts (`runtime/hud_parts.h`: the item bar, the Hunter Arts, the target camera, the clock, health and stamina, the
+  sharpness and gauges, the party, the minimap) are found by layer and place in `cbuf_info` (`nvn/vulkan/exec.c`; the status, layer
+  103, split by region, a piece in none going with the nearest part: `hudtrace` says which part and "nearest") and placed by
+  `hud_place_*`, which the touch editor uses for its estimates too. Two arrangements, saved as `hud_<key>` and `pc_hud_<key>` in
+  touch_layout.txt (offset, size, opacity, hidden; files with only offset and size read the same): `HUD_TOUCH` while the touch
+  controls show with MoveHUD On, `HUD_PLAIN` otherwise (a controller, a keyboard, MoveHUD Off); the touch editor edits either
+  (its HUD switch), a desktop's Move the HUD all of the plain one's (the same frames and names: draw_part_frames, part_frame). Left at their defaults the parts land exactly where
+  they always did: keep it so. A menu of the game's is told by `touch_game_menu`, not by a layer 97 window (the chat's log, a
+  bubble, an aim, the Quest Complete stamp are drawn there too): with one open a part takes only pieces at places it had in the
+  last 1.5 s, and a moved part on its window isn't drawn. The hunt's pause menu and pouch draw only the status, before their
+  windows; the minimap has no scissor.
 - Bugs that only show on some devices are common here. Test on a real phone, and on a device without Snapdragon.
 - Citra Room crossplay (`[Multiplayer] Crossplay = Citra Room`, `crates/mhgu-crossplay/src/citra_bridge.rs`): the game is one 3DS in an
   Azahar / Citra room. MHXX players' networks come from their beacons (`uds.rs`) and show in the game's search; joining one is a UDS

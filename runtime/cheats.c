@@ -51,6 +51,7 @@ typedef struct {
     Op *ops;
     int nops;
     int on, ran;          // on: wanted (the settings set it, any thread); ran: running (the window loop's)
+    int gone;             // its file was removed (cheats_drop_file, any thread): off for good
     bool stopping;        // (run_all: turned off this run)
     uint32_t *words;      // the code words it changed, to put back when it is turned off
     int nwords;
@@ -541,7 +542,8 @@ static void undo(Cheat *ch) {
 static void run_all(void) {
     for (int i = 0; i < ncheats; i++) {  // (every cheat's new state first: undo asks which ones keep running)
         Cheat *ch = &cheats[i];
-        bool on = ch->master || __atomic_load_n(&ch->on, __ATOMIC_ACQUIRE);
+        bool on = !__atomic_load_n(&ch->gone, __ATOMIC_ACQUIRE) &&
+                  (ch->master || __atomic_load_n(&ch->on, __ATOMIC_ACQUIRE));
         ch->stopping = !on && ch->ran;
         if (on && !ch->ran && g_present_count) LOG("[cheats] %s: on\n", ch->name);
         ch->ran = on;
@@ -577,7 +579,36 @@ int cheats_count(void) { return ncheats; }
 const char *cheats_name(int i) { return i >= 0 && i < ncheats ? cheats[i].name : ""; }
 const char *cheats_file(int i) { return i >= 0 && i < ncheats ? cheats[i].file : ""; }
 bool cheats_master(int i) { return i >= 0 && i < ncheats && cheats[i].master; }
-bool cheats_on(int i) { return i >= 0 && i < ncheats && (cheats[i].master || __atomic_load_n(&cheats[i].on, __ATOMIC_ACQUIRE)); }
+bool cheats_on(int i) {
+    return i >= 0 && i < ncheats && !cheats_dropped(i) &&
+           (cheats[i].master || __atomic_load_n(&cheats[i].on, __ATOMIC_ACQUIRE));
+}
+bool cheats_dropped(int i) { return i >= 0 && i < ncheats && __atomic_load_n(&cheats[i].gone, __ATOMIC_ACQUIRE); }
+
+void cheats_drop_file(const char *file) {
+    for (int i = 0; i < ncheats; i++)
+        if (!strcmp(cheats[i].file, file)) {
+            __atomic_store_n(&cheats[i].on, 0, __ATOMIC_RELEASE);
+            __atomic_store_n(&cheats[i].gone, 1, __ATOMIC_RELEASE);
+        }
+    LOG("[cheats] %s: removed in the settings, its cheats stop\n", file);
+}
+
+#ifndef __ANDROID__
+// A cheat file the game didn't load that is in a cheats folder now: one added since the start (a desktop's restart can
+// be put off), whose lines here - its cheats, off for the next start - stay
+static bool added_since(const char *file) {
+    for (int i = 0; i < ncheats; i++)
+        if (!strcmp(cheats[i].file, file)) return false;
+    char path[1100];
+    struct stat st;
+    snprintf(path, sizeof path, "%s/%s", cheats_dir(), file);
+    if (!stat(path, &st) && S_ISREG(st.st_mode)) return true;
+    if (getenv("MHGU_CHEATS_DIR") || !g_game_dir) return false;
+    snprintf(path, sizeof path, "%s/cheats/%s", g_game_dir, file);
+    return !stat(path, &st) && S_ISREG(st.st_mode);
+}
+#endif
 
 bool cheats_set(const bool *on, int n, char *err, size_t errsz) {
     char path[1024], tmp[1040];
@@ -588,14 +619,27 @@ bool cheats_set(const bool *on, int n, char *err, size_t errsz) {
     if (!f) { snprintf(err, errsz, "Could not write %s", path); return false; }
     fputs("# Cheats turned off in the settings (the Cheats tab writes this file): <file><tab><cheat name>\n", f);
     for (int i = 0; i < ncheats && i < n; i++)
-        if (!on[i] && !cheats[i].master) fprintf(f, "%s\t%s\n", cheats[i].file, cheats[i].name);
+        if (!on[i] && !cheats[i].master && !cheats_dropped(i)) fprintf(f, "%s\t%s\n", cheats[i].file, cheats[i].name);
+#ifndef __ANDROID__
+    char line[512];
+    FILE *old = fopen(path, "rb");
+    while (old && fgets(line, sizeof line, old)) {
+        line[strcspn(line, "\r\n")] = 0;
+        char *tab = strchr(line, '\t');
+        if (line[0] == '#' || !tab) continue;
+        *tab = 0;
+        if (added_since(line)) fprintf(f, "%s\t%s\n", line, tab + 1);
+    }
+    if (old) fclose(old);
+#endif
     bool ok = !ferror(f);
     ok = !fclose(f) && ok;
 #ifdef _WIN32
     if (ok) remove(path);  // (Windows' rename won't replace a file; this one is small and rewritten whole)
 #endif
     if (!ok || rename(tmp, path)) { remove(tmp); snprintf(err, errsz, "Could not write %s", path); return false; }
-    for (int i = 0; i < ncheats && i < n; i++) __atomic_store_n(&cheats[i].on, on[i] ? 1 : 0, __ATOMIC_RELEASE);
+    for (int i = 0; i < ncheats && i < n; i++)
+        __atomic_store_n(&cheats[i].on, on[i] && !cheats_dropped(i) ? 1 : 0, __ATOMIC_RELEASE);
     return true;
 }
 

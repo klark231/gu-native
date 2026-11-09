@@ -10,6 +10,9 @@
 #include "vk.h"
 #include "../astc.h"
 #include <unistd.h>
+#ifdef _WIN32
+#include <SDL3/SDL_cpuinfo.h>  // (no sysconf)
+#endif
 #include "../bcn.h"
 
 // ================================================================== formats
@@ -197,9 +200,11 @@ typedef struct { VkImage img; VmaAllocation mem; VkImageView view; VkFramebuffer
 static Dead *dead;
 static int ndead, cap_dead;
 static void views_forget(TexBackend *b);
+static void up_forget(TexBackend *b);
 
 void vk_collect_dead(void) {
     uint64_t done = vk_completed_seq();
+    uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
     int k = 0;
     for (int i = 0; i < ndead; i++) {
         if (dead[i].seq > done) { dead[k++] = dead[i]; continue; }
@@ -208,6 +213,7 @@ void vk_collect_dead(void) {
         else if (dead[i].view) vkDestroyImageView(g_vk.dev, dead[i].view, NULL);
         else vmaDestroyImage(g_vk.vma, dead[i].img, dead[i].mem);
     }
+    if (HITCH_ON && k < ndead) hitch_add(HC_DEAD, plat_now_ns() - t0, (uint64_t)(ndead - k));
     ndead = k;
 }
 
@@ -228,9 +234,27 @@ void vk_defer_buffer(VkBuffer b, VmaAllocation mem) { defer((Dead){.buf = b, .me
 static bool low_memory_textures(void) {
     static int on = -1;
     if (on < 0) {
+#ifdef _WIN32
+        uint64_t ram = (uint64_t)SDL_GetSystemRAM() << 20;
+#else
         uint64_t ram = (uint64_t)sysconf(_SC_PHYS_PAGES) * (uint64_t)sysconf(_SC_PAGESIZE);
+#endif
         on = ram < 5ull << 30;
         if (on) LOG("[vk] %llu MB of memory: 3D textures without their largest level\n", (unsigned long long)(ram >> 20));
+    }
+    return on;
+}
+
+// 3 GB or less (phones that ran out of GPU memory, vkQueueSubmit failing after minutes): big 3D textures lose two levels
+static bool very_low_memory_textures(void) {
+    static int on = -1;
+    if (on < 0) {
+#ifdef _WIN32
+        on = 0;
+#else
+        on = (uint64_t)sysconf(_SC_PHYS_PAGES) * (uint64_t)sysconf(_SC_PAGESIZE) < 3584ull << 20;
+        if (on) LOG("[vk] 3.5 GB or less: big 3D textures without their two largest levels\n");
+#endif
     }
     return on;
 }
@@ -295,7 +319,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
             }
             if (levels >= 4 && layers == 1 && depth == 1 && samples == 1 && type == VK_IMAGE_TYPE_2D && t->target != 8 &&
                 t->target != 9 && (tw >= 256 || th >= 256) && tw >= 4 && th >= 4 && (low_memory_textures() || g_config.low_end))
-                b->mip_skip = g_config.low_end && levels >= 5 && (tw >= 512 || th >= 512) ? 2
+                b->mip_skip = (g_config.low_end || very_low_memory_textures()) && levels >= 5 && (tw >= 512 || th >= 512) ? 2
                             : g_config.low_end == LOW_END_TOASTER && levels >= 5 ? 2  // (Toaster: the 256s too)
                                                                                  : 1;
             static int nlog;
@@ -324,15 +348,14 @@ static void create_image(NvnTexture *t, TexBackend *b) {
                             .arrayLayers = layers,
                             .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    VkResult r = vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL);
+    VkResult r = vk_create_image(&ci, &b->image, &b->mem);
     if (r != VK_SUCCESS) {
         LOG("[vk] image creation failed (%d): nvn fmt %#x %ux%ux%u target %u\n", r, t->format, t->width, t->height, t->depth, t->target);
         ci.format = vf = VK_FORMAT_R8G8B8A8_UNORM;
         ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         ci.flags &= ~VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-        VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL));
+        VK_CHECK(vk_create_image(&ci, &b->image, &b->mem));
         depthfmt = false;
     }
     b->format = vf;
@@ -377,9 +400,8 @@ static TexBackend *ms_image(TexBackend *b, VkFormat format, VkImageAspectFlags a
                             .imageType = VK_IMAGE_TYPE_2D, .format = format, .extent = {b->width, b->height, 1},
                             .mipLevels = 1, .arrayLayers = 1, .samples = (VkSampleCountFlagBits)samples,
                             .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     TexBackend *m = calloc(1, sizeof *m);
-    VkResult r = vmaCreateImage(g_vk.vma, &ci, &ai, &m->image, &m->mem, NULL);
+    VkResult r = vk_create_image(&ci, &m->image, &m->mem);
     if (r != VK_SUCCESS) {
         static int nlog;
         if (nlog++ < 5) LOG("[vk] MSAA image %ux%u x%u failed (%d)\n", b->width, b->height, samples, r);
@@ -426,20 +448,25 @@ static TexBackend *tex_backend(NvnTexture *t) {
     if (b) return b;
     vk_collect_dead();
     b = calloc(1, sizeof *b);
+    uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
     create_image(t, b);
+    if (HITCH_ON) hitch_add(HC_TEX_CREATE, plat_now_ns() - t0, 0);
     t->backend = b;
     return b;
 }
 
 void backend_texture_destroyed(NvnTexture *t) {
     vk_lock();
+    uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
     TexBackend *b = t->backend;
     if (b) {
+        up_forget(b);  // (its first upload's hash, if still to come, goes nowhere)
         destroy_image(b);
         free(b->pending_rgba);
         free(b);
     }
     t->backend = NULL;
+    if (HITCH_ON) hitch_add(HC_TEX_DESTROY, plat_now_ns() - t0, 0);
     vk_unlock();
 }
 
@@ -482,6 +509,15 @@ int vk_pages_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now
     for (uint64_t p = lo / PT_PAGE; p < hi / PT_PAGE; p++)
         if (pt_gen[p] > since) return 1;
     return 0;
+}
+
+// (a log line) the pages of [addr, addr + size) written after generation `since`, as vk_pages_changed last saw them
+static uint32_t pages_written(uint64_t addr, uint64_t size, uint32_t since) {
+    if (!pt_gen || !size || addr < HEAP_BASE || addr - HEAP_BASE + size > HEAP_MAX) return 0;
+    uint64_t lo = (addr - HEAP_BASE) / PT_PAGE, hi = (addr - HEAP_BASE + size + PT_PAGE - 1) / PT_PAGE;
+    uint32_t n = 0;
+    for (uint64_t p = lo; p < hi; p++) n += pt_gen[p] > since;
+    return n;
 }
 
 // ================================================================== uploads (change detected)
@@ -528,7 +564,323 @@ static void upload_pending(TexBackend *b) {
     vkCmdCopyBufferToImage(vk_upload_cmd(), s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
 }
 
+// ---- an upload's work: bands of guest memory, each hashed and then copied into staging memory
+// A texture's layers and levels are cut into bands of about BAND bytes of guest memory: whole rows of GOB blocks of a
+// block-linear level (8 << block height rows each), rows of a linear one; a 3D level, or one decoded on the CPU (BCn,
+// ASTC), is one band. Whoever runs a band hashes it, then copies it. The texture's hash is its bands' hashes in order,
+// so the check (hash only, on the render thread) and a first upload (on the workers) hash it the same way. A band is
+// hashed right before it is copied: a write the game makes meanwhile can only make the next check see a change (one
+// upload too many), never leave a hash of data that was not copied.
+#define BAND (1u << 20)
+enum { CV_NONE, CV_RGB8, CV_BCN, CV_ASTC };  // what a band's rows become: themselves, RGBA8 from RGB8, decoded texels
+typedef struct UpRec {  // a first upload's band hashes (filled by its jobs), made its texture's at the submission
+    TexBackend *b;
+    struct UpRec *next;
+    uint32_t n;
+    uint64_t h[];
+} UpRec;
+typedef struct {
+    UpRec *rec;          // the band's hash goes to rec->h[band] (NULL: copied only)
+    const uint8_t *src;  // guest memory: rows of blocks, block-linear (stride 0) or linear (stride bytes apart)
+    uint8_t *dst;        // staging memory (NULL: hashed only)
+    uint64_t len;        // the guest bytes hashed
+    uint32_t band, wb, hb, d, bpb, bh, bd, stride, w, h;  // (w, h: a decoded level's texels)
+    uint8_t conv, bcn, tb, abw, abh, srgb;
+} UpJob;
+
+static uint64_t band_mix(uint64_t acc, uint64_t h) {
+    acc = (acc ^ h) * 0x9E3779B97F4A7C15ull;
+    return acc ^ (acc >> 31);
+}
+
+static uint64_t rec_hash(const UpRec *r) {
+    uint64_t acc = 0x27D4EB2F165667C5ull;
+    for (uint32_t i = 0; i < r->n; i++) acc = band_mix(acc, r->h[i]);
+    return band_mix(acc, r->n);
+}
+
+static void run_job(const UpJob *j) {
+    if (j->rec) j->rec->h[j->band] = hash_full(j->src, j->len);
+    if (!j->dst) return;
+    uint64_t row = (uint64_t)j->wb * j->bpb, n = (uint64_t)j->wb * j->hb * j->d;
+    uint8_t *lin = j->conv == CV_NONE ? j->dst : malloc(row * j->hb * j->d + 1);
+    if (!lin) return;  // (out of memory: the level keeps what it had)
+    if (j->stride) for (uint32_t y = 0; y < j->hb; y++) memcpy(lin + y * row, j->src + (uint64_t)y * j->stride, row);
+    else tegra_deswizzle(j->src, lin, j->wb, j->hb, j->d, j->bpb, j->bh, j->bd);
+    if (j->conv == CV_RGB8) {
+        uint8_t *o = j->dst;
+        for (uint64_t i = 0; i < n; i++) { o[i * 4] = lin[i * 3]; o[i * 4 + 1] = lin[i * 3 + 1]; o[i * 4 + 2] = lin[i * 3 + 2]; o[i * 4 + 3] = 255; }
+    } else if (j->conv == CV_BCN) {
+        bcn_decode(j->bcn, lin, j->w, j->h, j->dst, j->tb);
+    } else if (j->conv == CV_ASTC) {
+        astc_decode_ldr(lin, j->w, j->h, j->abw, j->abh, j->srgb, j->dst);
+    }
+    if (lin != j->dst) free(lin);
+}
+
+// ---- the upload workers
+// A texture's first upload used to be done whole on the render thread, inside the command list, before its draw was
+// recorded: the hash, then every level deswizzled into staging memory. A new monster or area brings 20 to 30 MB of them
+// in one frame (measured 7 to 19 ms of it; 45 ms with a new staging chunk). Now the render thread records the copies
+// and queues the bands here, and the workers fill the staging memory while it goes on with the command list. The
+// submission waits for them before it goes to the GPU (vk_upload_jobs_finish, where the render thread runs whatever no
+// worker has taken yet). The copies still run on the GPU ahead of their submission's draws, with the same data, so
+// nothing is drawn early or half uploaded. The same data: a write the CPU makes later in the same list (ClearBuffer,
+// CopyBufferToBuffer, UpdateUniformBuffer) over memory a queued band has yet to read waits for the bands first
+// (vk_upload_jobs_guard), so the draw before it sees the old contents. A texture under UP_ASYNC is done on the spot, as
+// before: queuing it costs more than it saves. So is one decoded on the CPU (a phone's BCn, ASTC): bcn.c already spreads
+// a big one over threads of its own, and three decodes at once would hold three times its buffers (a phone's memory).
+// MHGU_TEX_ASYNC=0: everything on the spot (for comparisons).
+#define UP_WORKERS 3         // (besides the render thread, as bcn.c's)
+#define UP_ASYNC (256u << 10)
+#define UP_BAND_MIN (64u << 10)  // (a big texture's small levels too: done here, in less time than queuing them takes)
+#define UP_RANGES 128
+typedef struct { uintptr_t lo, hi; } UpRange;  // (host addresses of guest memory)
+static struct {
+    pthread_mutex_t mu;
+    pthread_cond_t go, idle;
+    UpJob *q;
+    int n, cap, next, busy, started;  // q[next .. n): not taken yet; busy: being run
+    UpRec *recs;                      // (vk_lock) first uploads waiting for their hashes
+    UpRange rg[UP_RANGES], all;       // (vk_lock) what the queued bands read: a texture's each, and the span of them all
+    int nr;
+} U = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, PTHREAD_COND_INITIALIZER};
+
+static void *up_worker(void *unused) {
+    (void)unused;
+    pthread_mutex_lock(&U.mu);
+    for (;;) {
+        while (U.next >= U.n) pthread_cond_wait(&U.go, &U.mu);
+        UpJob j = U.q[U.next++];
+        U.busy++;
+        pthread_mutex_unlock(&U.mu);
+        uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
+        run_job(&j);
+        if (HITCH_ON) hitch_add(HC_TEX_JOB, plat_now_ns() - t0, j.len);  // ((debug) MHGU_HITCHLOG: counted here, on O)
+        pthread_mutex_lock(&U.mu);
+        if (!--U.busy && U.next >= U.n) pthread_cond_broadcast(&U.idle);
+    }
+    return NULL;
+}
+
+static bool up_workers(void) {
+    if (U.started) return U.started > 0;
+    const char *e = getenv("MHGU_TEX_ASYNC");
+#ifdef _WIN32
+    long cores = SDL_GetNumLogicalCPUCores();
+#else
+    long cores = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
+    int n = e && !atoi(e) ? 0 : cores > UP_WORKERS + 1 ? UP_WORKERS : cores > 1 ? (int)cores - 1 : 0;
+    U.started = -1;
+    for (int i = 0; i < n; i++) {
+        pthread_t th;
+        if (pthread_create(&th, NULL, up_worker, NULL)) break;
+        pthread_detach(th);
+        U.started = i + 1;
+    }
+    LOG("[vk] texture uploads: %d worker thread%s\n", U.started > 0 ? U.started : 0, U.started == 1 ? "" : "s");
+    return U.started > 0;
+}
+
+static void up_push(const UpJob *j) {
+    pthread_mutex_lock(&U.mu);
+    if (U.n == U.cap) {
+        int cap = U.cap ? U.cap * 2 : 256;
+        UpJob *q = realloc(U.q, (size_t)cap * sizeof *q);
+        if (!q) { pthread_mutex_unlock(&U.mu); run_job(j); return; }
+        U.q = q, U.cap = cap;
+    }
+    U.q[U.n++] = *j;
+    pthread_cond_signal(&U.go);
+    pthread_mutex_unlock(&U.mu);
+}
+
+// (vk_lock) [lo, hi): what a texture's queued bands read, kept until they are done. One touching the last is merged
+// into it (a pool's textures side by side); with no room left the last one grows to cover it (more waits, none missed).
+static void up_range(uintptr_t lo, uintptr_t hi) {
+    if (!U.nr || lo < U.all.lo) U.all.lo = lo;
+    if (!U.nr || hi > U.all.hi) U.all.hi = hi;
+    UpRange *r = U.nr ? &U.rg[U.nr - 1] : NULL;
+    if (r && (U.nr == UP_RANGES || (lo <= r->hi && hi >= r->lo))) {
+        if (lo < r->lo) r->lo = lo;
+        if (hi > r->hi) r->hi = hi;
+        return;
+    }
+    U.rg[U.nr++] = (UpRange){lo, hi};
+}
+
+// (exec.c vk_submit_extra before vkQueueSubmit, and vk_upload_jobs_guard; vk_lock held) Every queued band done: its
+// staging memory written for this submission's copies. The bands nobody has taken yet are run here; then the first
+// uploads get their hashes.
+void vk_upload_jobs_finish(void) {
+    U.nr = 0;
+    if (!U.n && !U.recs) return;
+    pthread_mutex_lock(&U.mu);
+    while (U.next < U.n) {
+        UpJob j = U.q[U.next++];
+        U.busy++;
+        pthread_mutex_unlock(&U.mu);
+        uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
+        run_job(&j);
+        if (HITCH_ON) hitch_add(HC_TEX_JOB, plat_now_ns() - t0, j.len);
+        pthread_mutex_lock(&U.mu);
+        U.busy--;
+    }
+    if (U.busy) {
+        uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
+        while (U.busy) pthread_cond_wait(&U.idle, &U.mu);
+        if (HITCH_ON) hitch_add(HC_TEX_WAIT, plat_now_ns() - t0, 0);  // ((debug) MHGU_HITCHLOG: the workers' last bands)
+    }
+    U.n = U.next = 0;
+    pthread_mutex_unlock(&U.mu);
+    for (UpRec *r = U.recs, *nx; r; r = nx) {
+        nx = r->next;
+        if (r->b) r->b->data_hash = rec_hash(r);
+        free(r);
+    }
+    U.recs = NULL;
+}
+
+// (exec.c exec_list; vk_lock held) The CPU is about to write guest memory [addr, addr + size) in the middle of a command
+// list: ClearBuffer, CopyBufferToBuffer, UpdateUniformBuffer, a counter's report, done at once, in order with the list.
+// A draw earlier in the list must see what was there before, as on the GPU: if a queued band has yet to read any of it,
+// every band is done first. A write that meets none (the usual case) costs a comparison or a few.
+void vk_upload_jobs_guard(uint64_t addr, uint64_t size, const char *what) {
+    if (!U.nr || !size) return;
+    uintptr_t lo = (uintptr_t)G2H((uint32_t)addr), hi = lo + size;
+    if (hi <= U.all.lo || lo >= U.all.hi) return;
+    int i = 0;
+    while (i < U.nr && (hi <= U.rg[i].lo || lo >= U.rg[i].hi)) i++;
+    if (i == U.nr) return;
+    static int nlog;
+    if (nlog++ < 8)
+        LOG("[tex] %s writes %llx (%llu bytes) in a command list, over a texture queued for upload earlier in it: the "
+            "queued bands done first\n", what, (unsigned long long)addr, (unsigned long long)size);
+    uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
+    vk_upload_jobs_finish();
+    if (HITCH_ON) hitch_add_label(HC_TEX_GUARD, plat_now_ns() - t0, 0, what, -1);  // ((debug) MHGU_HITCHLOG)
+}
+
+// (vk_lock) b is going away before its first upload's bands are done: they go on (they only write staging memory and
+// their record), their hash goes nowhere
+static void up_forget(TexBackend *b) {
+    for (UpRec *r = U.recs; r; r = r->next)
+        if (r->b == b) r->b = NULL;
+}
+
+// The guest bytes t's upload reads. A linear texture's are its rows at its stride: tegra_total_size is the block-linear
+// size, rows rounded up to whole GOB blocks, which for a linear texture of another height reaches past its storage
+// (nvnTextureBuilderGetStorageSize: stride x height) into whatever the game keeps after it.
+static uint64_t upload_extent(const NvnTexture *t) {
+    const FormatInfo *fi = t->layout.fmt;
+    if (!(t->flags & 0x10) || !t->stride || t->layout.levels > 1 || t->layout.layers > 1 || t->layout.depth > 1)
+        return tegra_total_size(&t->layout);
+    uint64_t hb = (t->layout.height + fi->bh - 1) / fi->bh, row = (uint64_t)(t->layout.width + fi->bw - 1) / fi->bw * fi->bpb;
+    return (hb ? hb - 1 : 0) * t->stride + row;
+}
+
+// t's upload, band by band, always in the same order. P_COUNT: how many bands. P_HASH: its hash, here. P_UPLOAD:
+// staging memory, the copies recorded, and the bands run here or queued (async), hashed as well when rec.
+enum { P_COUNT, P_HASH, P_UPLOAD };
+static uint64_t plan(NvnTexture *t, TexBackend *b, const uint8_t *mem, int mode, UpRec *rec, bool async) {
+    const FormatInfo *fi = t->layout.fmt;
+    VkFmt mf = fmt_of(t->format);
+    bool fmt_ok = b->format == mf.vf || b->astc_bw || b->bcn;  // (else: an unsupported format, nothing sensible to copy)
+    bool linear = (t->flags & 0x10) != 0;
+    uint32_t stride = linear ? (uint32_t)t->stride : 0;
+    uint32_t layers = t->layout.layers ? t->layout.layers : 1;
+    if (layers > b->layers && b->depth == 1) layers = b->layers;
+    uint64_t layer_size = tegra_layer_size(&t->layout);
+    uint32_t levels = t->layout.levels < b->levels ? t->layout.levels : b->levels;
+    VkCommandBuffer cb = mode == P_UPLOAD && fmt_ok ? vk_upload_cmd() : VK_NULL_HANDLE;
+    uint64_t acc = 0x27D4EB2F165667C5ull;
+    uint32_t nb = 0;
+    uintptr_t qlo = 0, qhi = 0;  // (what the queued bands read, for vk_upload_jobs_guard)
+    for (uint32_t layer = 0; layer < layers; layer++) {
+        for (uint32_t lv = b->mip_skip; lv < levels; lv++) {
+            LevelLayout l = tegra_level(&t->layout, lv);
+            const uint8_t *src = mem + layer * layer_size + l.offset;
+            UpJob j = {.wb = l.wb, .hb = l.hb, .d = l.d, .bpb = fi->bpb, .bh = l.block_height_log2, .bd = l.block_depth_log2,
+                       .stride = stride, .w = l.w, .h = l.h};
+            uint32_t gr = 8u << l.block_height_log2, gd = 1u << l.block_depth_log2;
+            uint64_t brow = (uint64_t)((l.wb * fi->bpb + 63) / 64) * (512ull << (l.block_height_log2 + l.block_depth_log2));
+            uint64_t level_bytes = brow * ((l.hb + gr - 1) / gr) * ((l.d + gd - 1) / gd);
+            uint32_t step = l.hb;  // rows a band takes
+            VkSpan s = {0};
+            uint64_t out_row = 0;
+            VkBufferImageCopy rg = {0};
+            if (b->bcn || b->astc_bw) {  // blocks -> rows of blocks -> texels (bcn.c, astc.c): the level in one band
+                j.conv = b->bcn ? CV_BCN : CV_ASTC;
+                j.bpb = b->bcn ? bcn_block_bytes(b->bcn) : 16, j.d = 1;
+                j.bcn = b->bcn, j.tb = b->bcn_tb, j.abw = b->astc_bw, j.abh = b->astc_bh, j.srgb = b->astc_srgb;
+                if (cb) {
+                    s = vk_transient((uint64_t)l.w * l.h * (b->bcn ? b->bcn_tb : 4), 64);
+                    rg = (VkBufferImageCopy){.bufferOffset = s.off, .bufferRowLength = l.w, .bufferImageHeight = l.h,
+                                             .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, b->bcn ? lv - b->mip_skip : lv, layer, 1},
+                                             .imageExtent = {l.w < level_w(b, lv) ? l.w : level_w(b, lv),
+                                                             l.h < level_h(b, lv) ? l.h : level_h(b, lv), 1}};
+                }
+            } else {
+                bool expand = mf.expand_rgb && fi->bpb == 3;  // RGB8 -> RGBA8
+                j.conv = expand ? CV_RGB8 : CV_NONE;
+                out_row = (uint64_t)l.wb * (expand ? 4 : fi->bpb);
+                if (linear) step = stride ? (BAND / stride ? BAND / stride : 1) : l.hb;
+                else if (l.d == 1) step = (uint32_t)(BAND / brow ? BAND / brow : 1) * gr;
+                if (cb && b->aspect != (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {  // (packed D/S: no CPU layout)
+                    s = vk_transient(out_row * l.hb * l.d, 64);
+                    uint32_t w = l.w < level_w(b, lv) ? l.w : level_w(b, lv), hh = l.h < level_h(b, lv) ? l.h : level_h(b, lv);
+                    rg = (VkBufferImageCopy){
+                        .bufferOffset = s.off, .bufferRowLength = l.wb * fi->bw, .bufferImageHeight = l.hb * fi->bh,
+                        .imageSubresource = {b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : b->aspect, lv,
+                                             b->depth > 1 ? 0 : layer, 1},
+                        .imageExtent = {w, b->base_type == VK_IMAGE_VIEW_TYPE_1D || b->base_type == VK_IMAGE_VIEW_TYPE_1D_ARRAY ? 1 : hh,
+                                        b->depth > 1 ? l.d : 1}};
+                }
+            }
+            for (uint32_t y0 = 0; y0 < l.hb; y0 += step, nb++) {
+                if (mode == P_COUNT) continue;
+                uint32_t rows = l.hb - y0 < step ? l.hb - y0 : step;
+                j.hb = rows;
+                if (linear) j.src = src + (uint64_t)y0 * stride, j.len = (uint64_t)(rows - 1) * stride + (uint64_t)l.wb * j.bpb;
+                else j.src = src + (uint64_t)(y0 / gr) * brow, j.len = step == l.hb ? level_bytes : (rows + gr - 1) / gr * brow;
+                if (mode == P_HASH) { acc = band_mix(acc, hash_full(j.src, j.len)); continue; }
+                j.rec = rec, j.band = nb;
+                j.dst = s.ptr ? (uint8_t *)s.ptr + y0 * out_row : NULL;
+                if (!j.rec && !j.dst) continue;
+                if (async && j.len >= UP_BAND_MIN) {
+                    up_push(&j);
+                    uintptr_t a = (uintptr_t)j.src;
+                    if (!qhi || a < qlo) qlo = a;
+                    if (a + j.len > qhi) qhi = a + j.len;
+                } else run_job(&j);
+            }
+            if (s.ptr) vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+        }
+    }
+    if (qhi) up_range(qlo, qhi);
+    return mode == P_COUNT ? nb : mode == P_HASH ? band_mix(acc, nb) : 0;
+}
+
 static uint64_t full_hash_budget, full_hash_budget_frame;
+static uint64_t hl_hashed, hl_copied;  // ((debug) MHGU_HITCHLOG) what upload_texture just did: bytes hashed, uploaded
+
+// A texture whose contents change at every check, frame after frame, is uploaded whole each time: a line once (for the
+// first few such), saying what it is and who writes it.
+static void say_every_frame(NvnTexture *t, TexBackend *b, uint64_t total, uint32_t since) {
+    static int nsaid;
+    if (b->up_said || nsaid >= 8) return;
+    b->up_said = true, nsaid++;
+    uint64_t tegra = tegra_total_size(&t->layout);
+    LOG("[tex] changed and uploaded on each of %u frames in a row: fmt %#x %ux%ux%u, %u levels, %u layers, target %u, flags "
+        "%#x (%s, stride %llu), %llu bytes checked (block-linear size %llu), %u of its %llu pages written since the last "
+        "check, nvnTextureWriteTexels %u times so far, storage %llx, label '%s'\n",
+        b->up_run, t->format, t->width, t->height, t->depth, t->levels, t->layout.layers, t->target, t->flags,
+        t->flags & 0x10 ? "linear" : "block-linear", (unsigned long long)t->stride, (unsigned long long)total,
+        (unsigned long long)tegra, pages_written(t->addr, total, since),
+        (unsigned long long)((t->addr + total + PT_PAGE - 1) / PT_PAGE - t->addr / PT_PAGE),
+        t->texel_writes, (unsigned long long)t->addr, t->label);
+}
 
 static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (!t->addr || t->target == 10) return;
@@ -537,8 +889,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (b->uploaded && !b->dynamic && ((frame + ((uintptr_t)b >> 6)) & 7)) return;  // static ones: every 8th frame
     const FormatInfo *fi = t->layout.fmt;
     if (!fi || !fi->bpb) return;
-    VkFmt mf = fmt_of(t->format);
-    uint64_t total = tegra_total_size(&t->layout);
+    uint64_t total = upload_extent(t);
     b->checked_frame = frame + 1;
     if (t->flags & 0x10) b->dynamic = true;
     if (full_hash_budget_frame != frame + 1) { full_hash_budget_frame = frame + 1; full_hash_budget = 4 << 20; }
@@ -547,7 +898,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     bool periodic = frame - b->full_frame >= 120 && full_hash_budget >= total;  // (safety net: a full hash now and then)
     if (!full && periodic) { full = true; full_hash_budget -= total; }
     // page write tracking: texture memory the CPU hasn't written since the last check is not hashed at all
-    uint32_t now = 0;
+    uint32_t now = 0, since = b->wgen;
     int ch = vk_pages_changed(t->addr, total, b->wgen, &now);
     if (ch >= 0) {
         b->wgen = now;
@@ -557,80 +908,54 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
         uint64_t sh = fnv_sample(mem, total);
         if (sh == b->sample_hash) return;
     }
-    uint64_t h = hash_full(mem, total);
     b->full_frame = frame;
     b->sample_hash = fnv_sample(mem, total);
-    if (b->uploaded && h == b->data_hash) return;
-    if (b->uploaded && h != b->data_hash) b->dynamic = true;
-    b->data_hash = h;
-    b->uploaded = true;
-    if (b->format != mf.vf && !b->astc_bw && !b->bcn) return;  // unsupported format: nothing sensible to copy
-    VkCommandBuffer cb = vk_upload_cmd();
-    uint32_t layers = t->layout.layers ? t->layout.layers : 1;
-    if (layers > b->layers && b->depth == 1) layers = b->layers;
-    uint64_t layer_size = tegra_layer_size(&t->layout);
-    bool linear = (t->flags & 0x10) != 0;
-    uint32_t levels = t->layout.levels < b->levels ? t->layout.levels : b->levels;
-    for (uint32_t layer = 0; layer < layers; layer++) {
-        for (uint32_t lv = b->mip_skip; lv < levels; lv++) {
-            LevelLayout l = tegra_level(&t->layout, lv);
-            const uint8_t *src = mem + layer * layer_size + l.offset;
-            if (b->bcn) {  // blocks -> linear block rows -> texels (bcn.c)
-                uint32_t bb = bcn_block_bytes(b->bcn), tb = b->bcn_tb;
-                uint8_t *blocks = malloc((uint64_t)l.wb * l.hb * bb);
-                if (linear) for (uint32_t y = 0; y < l.hb; y++) memcpy(blocks + (uint64_t)y * l.wb * bb, src + (uint64_t)y * t->stride, l.wb * bb);
-                else tegra_deswizzle(src, blocks, l.wb, l.hb, 1, bb, l.block_height_log2, l.block_depth_log2);
-                VkSpan s = vk_transient((uint64_t)l.w * l.h * tb, 16);
-                bcn_decode(b->bcn, blocks, l.w, l.h, s.ptr, tb);
-                free(blocks);
-                VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.w, .bufferImageHeight = l.h,
-                                        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv - b->mip_skip, layer, 1},
-                                        .imageExtent = {l.w < level_w(b, lv) ? l.w : level_w(b, lv), l.h < level_h(b, lv) ? l.h : level_h(b, lv), 1}};
-                vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
-                continue;
-            }
-            if (b->astc_bw) {  // blocks -> linear block rows -> RGBA8 texels
-                uint8_t *blocks = malloc((uint64_t)l.wb * l.hb * 16);
-                if (linear) for (uint32_t y = 0; y < l.hb; y++) memcpy(blocks + (uint64_t)y * l.wb * 16, src + (uint64_t)y * t->stride, l.wb * 16);
-                else tegra_deswizzle(src, blocks, l.wb, l.hb, 1, 16, l.block_height_log2, l.block_depth_log2);
-                VkSpan s = vk_transient((uint64_t)l.w * l.h * 4, 16);
-                astc_decode_ldr(blocks, l.w, l.h, b->astc_bw, b->astc_bh, b->astc_srgb, s.ptr);
-                free(blocks);
-                VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.w, .bufferImageHeight = l.h,
-                                        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
-                                        .imageExtent = {l.w < level_w(b, lv) ? l.w : level_w(b, lv), l.h < level_h(b, lv) ? l.h : level_h(b, lv), 1}};
-                vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
-                continue;
-            }
-            uint32_t row = l.wb * fi->bpb;
-            uint64_t sz = (uint64_t)row * l.hb * l.d;
-            bool expand = mf.expand_rgb && fi->bpb == 3;
-            uint32_t out_row = expand ? l.wb * 4 : row;
-            VkSpan s = vk_transient((uint64_t)out_row * l.hb * l.d, 16);
-            uint8_t *lin = expand ? malloc(sz) : s.ptr;
-            if (linear) {
-                for (uint32_t y = 0; y < l.hb; y++) memcpy(lin + (uint64_t)y * row, src + (uint64_t)y * t->stride, row);
-            } else {
-                tegra_deswizzle(src, lin, l.wb, l.hb, l.d, fi->bpb, l.block_height_log2, l.block_depth_log2);
-            }
-            if (expand) {  // RGB8 -> RGBA8
-                uint8_t *o = s.ptr;
-                uint64_t n = (uint64_t)l.wb * l.hb * l.d;
-                for (uint64_t i = 0; i < n; i++) { o[i * 4] = lin[i * 3]; o[i * 4 + 1] = lin[i * 3 + 1]; o[i * 4 + 2] = lin[i * 3 + 2]; o[i * 4 + 3] = 255; }
-                free(lin);
-            }
-            uint32_t w = l.w, hh = l.h, d = l.d;
-            if (w > level_w(b, lv)) w = level_w(b, lv);
-            if (hh > level_h(b, lv)) hh = level_h(b, lv);
-            if (b->aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) continue;  // packed D/S: no CPU layout
-            VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.wb * fi->bw, .bufferImageHeight = l.hb * fi->bh,
-                                    .imageSubresource = {b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : b->aspect, lv,
-                                                         b->depth > 1 ? 0 : layer, 1},
-                                    .imageExtent = {w, b->base_type == VK_IMAGE_VIEW_TYPE_1D || b->base_type == VK_IMAGE_VIEW_TYPE_1D_ARRAY ? 1 : hh,
-                                                    b->depth > 1 ? d : 1}};
-            vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
-        }
+    bool fmt_ok = b->format == fmt_of(t->format).vf || b->astc_bw || b->bcn;
+    bool async = fmt_ok && !b->bcn && !b->astc_bw && total >= UP_ASYNC && up_workers();
+    if (b->uploaded) {  // a check: hashed here, and if it changed, copied (on the workers when big)
+        uint64_t h = plan(t, b, mem, P_HASH, NULL, false);
+        hl_hashed = total;
+        if (h == b->data_hash) { b->up_run = 0; return; }
+        b->dynamic = true;
+        b->data_hash = h;
+        if (!fmt_ok) return;
+        hl_copied = total;
+        plan(t, b, mem, P_UPLOAD, NULL, async);
+        b->up_run = b->up_last + 1 == frame ? b->up_run + 1 : 1;
+        b->up_last = frame;
+        if (b->up_run >= 120) say_every_frame(t, b, total, since);
+        return;
     }
+    // the first upload: each band hashed as it is copied, the hash the texture's once they are all done
+    b->uploaded = true;
+    if (fmt_ok) hl_copied = total;
+    else hl_hashed = total;
+    if (total != tegra_total_size(&t->layout)) {
+        static int nlog;
+        if (nlog++ < 8)
+            LOG("[tex] linear texture fmt %#x %ux%u, stride %llu: checked over its %llu bytes of rows (before: %llu, its "
+                "block-linear size)\n", t->format, t->width, t->height, (unsigned long long)t->stride, (unsigned long long)total,
+                (unsigned long long)tegra_total_size(&t->layout));
+    }
+    uint32_t n = (uint32_t)plan(t, b, mem, P_COUNT, NULL, false);
+    UpRec *rec = malloc(sizeof *rec + (n ? n : 1) * sizeof *rec->h);
+    if (!rec) { b->data_hash = plan(t, b, mem, P_HASH, NULL, false); if (fmt_ok) plan(t, b, mem, P_UPLOAD, NULL, false); return; }
+    rec->b = b, rec->n = n, rec->next = NULL;
+    plan(t, b, mem, P_UPLOAD, rec, async);
+    if (async) {
+        rec->next = U.recs, U.recs = rec;
+    } else {
+        b->data_hash = rec_hash(rec);
+        free(rec);
+    }
+}
+
+// ((debug) MHGU_HITCHLOG) the hitch line's word for the texture just uploaded: format, size, levels, linear
+static const char *hl_label(const NvnTexture *t) {
+    static char s[40];
+    snprintf(s, sizeof s, "fmt %#x %ux%u%s%s", t->format, t->width, t->height, t->levels > 1 ? " mips" : "",
+             t->flags & 0x10 ? " linear" : "");
+    return s;
 }
 
 TexBackend *vk_tex(NvnTexture *t, bool for_render) {
@@ -642,6 +967,11 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
         uint64_t t0 = plat_now_ns();
         upload_texture(t, b);
         stat_upload_ns += plat_now_ns() - t0;
+        if (HITCH_ON && (hl_hashed || hl_copied)) {  // ((debug) MHGU_HITCHLOG: an upload, or a whole hash; the KB of one)
+            if (hl_copied) hitch_add_label(HC_TEX_UPLOAD, plat_now_ns() - t0, hl_copied, hl_label(t), (int)(hl_copied >> 10));
+            else hitch_add(HC_TEX_HASH, plat_now_ns() - t0, hl_hashed);
+            hl_hashed = hl_copied = 0;
+        }
     }
     return b;
 }
@@ -830,8 +1160,7 @@ VkImageView vk_dummy_view(int textype) {
                             .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {1, 1, 1}, .mipLevels = 1, .arrayLayers = cube ? 6 : 1,
                             .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
                             .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL));
+    VK_CHECK(vk_create_image(&ci, &b->image, &b->mem));
     VkCommandBuffer cb = vk_upload_cmd();
     vk_image_init_layout(cb, b->image, VK_IMAGE_ASPECT_COLOR_BIT);
     VkClearColorValue zero = {{0, 0, 0, 0}};
@@ -888,10 +1217,15 @@ VkSampler vk_sampler(NvnSamplerDesc *d) {
     if (mf > 1) si.mipLodBias += g_fsr_lod_bias;  // (FSR: textures as sharp as at the output size; config.c)
     const char *force = getenv("MHGU_TEX_LOD");  // (debug) mipmapped samplers: only this level (shows mip contents)
     if (force && mf > 1) { si.minLod = si.maxLod = (float)atof(force); si.mipLodBias = 0; }
-    if (d->max_aniso > 1 && !g_config.low_end) { si.anisotropyEnable = VK_TRUE; si.maxAnisotropy = fminf(d->max_aniso, 16); }
-    if (g_config.low_end && mf > 1) {  // (one texture fetch for each: a Mali's trilinear takes two)
-        si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    }
+    // (Low-end mode: no anisotropic filtering, and one texture fetch for each: a Mali's trilinear takes two. A desktop's
+    // keeps both, without which the mip levels' steps show on every floor; Toaster leaves out the anisotropic only)
+#ifdef __ANDROID__
+    bool no_aniso = g_config.low_end != 0, nearest_mips = g_config.low_end != 0;
+#else
+    bool no_aniso = g_config.low_end == LOW_END_TOASTER, nearest_mips = false;
+#endif
+    if (d->max_aniso > 1 && !no_aniso) { si.anisotropyEnable = VK_TRUE; si.maxAnisotropy = fminf(d->max_aniso, 16); }
+    if (nearest_mips && mf > 1) si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     if (d->compare_mode) { si.compareEnable = VK_TRUE; si.compareOp = compare_op(d->compare_func); }
     VkSamplerCustomBorderColorCreateInfoEXT cb = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT};
     if (border) {  // the standard colours; others need VK_EXT_custom_border_color (else the nearest standard one)

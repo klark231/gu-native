@@ -1,6 +1,8 @@
-This program uses FFmpeg 9.0.2 (libavformat, libavcodec, libavutil) under the GNU Lesser General Public License 2.1 or
-later (below). On Android it is the separate library libmhguffmpeg.so in the APK, which can be replaced with your own
-build. Its source code is the release at https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz, configured with:
+This program uses FFmpeg 9.0.2 (libavformat, libavcodec, libavutil; Copyright (c) 2000-2026 the FFmpeg developers)
+under the GNU Lesser General Public License 2.1 or later (below). On Android it is the separate library libmhguffmpeg.so in the APK, which can be replaced with your own
+build. Its source code is the release ffmpeg-9.0.2.tar.xz, unchanged: it is attached to each release of this project that
+ships the APK (https://github.com/khorne-hub/gu-native/releases), and FFmpeg publishes it at
+https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz. It was configured with:
 --target-os=android --enable-pic --disable-everything --disable-programs --disable-doc --disable-network --disable-autodetect --disable-debug --disable-avdevice --disable-avfilter --disable-swscale --disable-swresample --enable-static --disable-shared --enable-protocol=file --enable-demuxer=mov --enable-parser=h264,aac --enable-decoder=h264,aac
 and linked whole into one shared library.
 

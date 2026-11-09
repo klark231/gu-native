@@ -3,13 +3,21 @@
 // Keyboard and mouse: the keys and mouse buttons of the settings' [Keybinds] (runtime/config.c; by default WASD left
 //   stick, Left Shift held: half tilt, walking; left click = X, right click = A, Space = B, R / middle click = Y, Q = L,
 //   E = R, Tab = ZL, T = ZR, Enter = Plus, Backspace = Minus, arrow keys = d-pad, Ctrl = left stick click, Alt = right
-//   stick click), mouse movement the camera (in a hunt its angles directly, elsewhere the right stick; click in the
-//   window to capture the mouse, Esc releases it), wheel up / down = item bar left / right (ItemLeft / ItemRight: in a
-//   hunt, one item per press or notch without holding L, runtime/hle/itembar.c). While the
-//   game shows a text entry (names, chat) the keyboard types instead
+//   stick click, I / K / J / L = the right stick all the way up / down / left / right: the camera; Combo1Key.. a combined
+//   button's buttons, [Touch] Combo1..), mouse movement the camera (in a hunt its angles directly, elsewhere the right
+//   stick; click in the window to capture the mouse, Esc releases it), wheel up / down = item bar left / right (ItemLeft
+//   / ItemRight: in a hunt, one item per press or notch without holding L, runtime/hle/itembar.c). In the game's menus
+//   and dialogs ([Controls] MouseMenus: a talk, a message, a yes / no) the mouse is free and shown and points and clicks
+//   instead: left click A (on the row or cell under it, else on what has the focus), right click B, the wheel scrolls,
+//   the side buttons turn pages (runtime/hle/mousemenu.c). On a desktop A is F and the right click, and a mouse button
+//   on A presses it out of the game's menus and dialogs only with the weapon out, an attack (mouse_a_ok). On a desktop a
+//   modifier key on a button (Ctrl, Alt) presses it when tapped alone, not in a shortcut such as Alt+Tab (mod_spent).
+//   While the game shows a text entry (names, chat) the keyboard types instead
 //   (runtime/textinput.c). / ([Controls] ChatKey) opens a line of chat, Enter sends it, also in a quest (runtime/hle/chat.c).
 //   F11 switches windowed <-> full screen, F12 saves a screenshot, Shift+F12 the next 8
-//   frames (exact rendered pixels, run\shots\), F10 dumps every render pass of the next 2 frames (debug, slow), F9 toggles how colour clears are done (debug).
+//   frames (exact rendered pixels, run\shots\), F7 tries the MSAA levels; in a test build (MHGU_DEV) F10 dumps every
+//   render pass of the next 2 frames (debug, slow), F9 toggles how colour clears are done and F8 the shadow pass's
+//   scissors (debug).
 // Gamepad (SDL): face buttons by position as on a Switch controller (the bottom one is B), or by their labels
 //   (settings FaceButtons, runtime/config.c; MHGU_PAD_POSITIONAL=0|1 overrides).
 //   Every controller is open and the one a button was last pressed on is read (a Steam Deck with a controller plugged
@@ -35,6 +43,7 @@
 #include "hle/input.h"
 #include "hle/itembar.h"
 #include "hle/mousecam.h"
+#include "hle/mousemenu.h"
 #include "overlay.h"
 #include "net/net.h"
 #include "padmap.h"
@@ -50,24 +59,56 @@ static SDL_Gamepad *pad;  // the controller read: of those open, the one a butto
 static struct { SDL_Gamepad *pad; uint64_t opened_ns; bool real; } pads[MAX_PADS];  // (real: hides the touch controls)
 static int npads;
 
-// [Keybinds] (config.h BIND_*): the Switch button each presses (-1: the left stick's directions, walking; -2: the item
-// bar, turned directly)
+// [Keybinds] (config.h BIND_*): the Switch button each presses (-1: a stick's directions, walking; -2: the item bar,
+// turned directly; -3: a combined button's buttons)
 static const int bind_buttons[BINDS] = {
     [BIND_MOVE_UP] = -1, [BIND_MOVE_DOWN] = -1, [BIND_MOVE_LEFT] = -1, [BIND_MOVE_RIGHT] = -1, [BIND_WALK] = -1,
+    [BIND_CAM_UP] = -1, [BIND_CAM_DOWN] = -1, [BIND_CAM_LEFT] = -1, [BIND_CAM_RIGHT] = -1,
     [BIND_A] = BTN_A, [BIND_B] = BTN_B, [BIND_X] = BTN_X, [BIND_Y] = BTN_Y, [BIND_L] = BTN_L, [BIND_R] = BTN_R,
     [BIND_ZL] = BTN_ZL, [BIND_ZR] = BTN_ZR, [BIND_PLUS] = BTN_PLUS, [BIND_MINUS] = BTN_MINUS, [BIND_DPAD_UP] = BTN_UP,
     [BIND_DPAD_DOWN] = BTN_DOWN, [BIND_DPAD_LEFT] = BTN_LEFT, [BIND_DPAD_RIGHT] = BTN_RIGHT, [BIND_LSTICK] = BTN_LSTICK,
     [BIND_RSTICK] = BTN_RSTICK, [BIND_ITEM_LEFT] = -2, [BIND_ITEM_RIGHT] = -2,
+    [BIND_COMBO1] = -3, [BIND_COMBO2] = -3, [BIND_COMBO3] = -3, [BIND_COMBO4] = -3, [BIND_COMBO5] = -3, [BIND_COMBO6] = -3,
 };
 static uint32_t mouse_held;  // the mouse buttons held (bit: SDL_BUTTON_*), while captured
+// (the game's menus: the buttons pressed while a menu had the mouse, or held as one took it, are the menu's until let
+// go, whatever is open then: hle/mousemenu.c)
+static uint32_t menu_held;
 // A wheel notch on a keybind other than the item bar's is a short press of it (WHEEL_PRESS_NS: long enough for the
 // game to see at 30 updates a second; notches closer together than that are one press)
 #define WHEEL_PRESS_NS 70000000ull
 static uint64_t wheel_until[2];  // up, down: pressed until then
+// A modifier key (SDL's eight in a row, Left Ctrl to Right GUI: Ctrl, Shift, Alt, the Windows key) on a keybind that
+// presses something presses it only when tapped: let go with no other key or mouse button pressed meanwhile, and then
+// for as long as a wheel notch. Pressed with another key it is a shortcut and presses nothing: Alt is the right stick's
+// click by default, and Alt+Tab and Alt+Enter turned the lock-on on and off. Shift is no shortcut key here and is held
+// as any key: it is R by default (running, held while moving). On a stick's direction (Walk, moving, the camera) every
+// key is held. (A desktop's: a phone's keyboard as before.)
+#define MOD_KEYS 8
+static bool mod_held[MOD_KEYS], mod_spent[MOD_KEYS];  // down now; another key or button went down since it did
+static uint64_t mod_until[MOD_KEYS];                  // tapped: pressed until then
+static bool is_mod(int code) { return code >= SDL_SCANCODE_LCTRL && code <= SDL_SCANCODE_RGUI; }
+static bool is_tap_mod(int code) { return is_mod(code) && code != SDL_SCANCODE_LSHIFT && code != SDL_SCANCODE_RSHIFT; }
+// A mouse button (or a wheel notch) on A presses it, out of the game's menus and dialogs, only with the weapon out (a
+// desktop's: mouse_a_ok, each update). By default A is F and the right click: with the right click talking, opening the
+// item box, gathering and picking up, and in the menus (MouseMenus) going back, the same button did two opposite things.
+// Now those are F's alone and the right click attacks. (Every ini, an older one's "A = Mouse Right, F" too.)
+static bool mouse_a = true;
+static bool is_mouse_code(int code) { return code > KEY_MOUSE && code <= KEY_WHEEL_DOWN; }
 static bool bind_held(int bind, bool wheel) {
-    uint64_t now = wheel ? plat_now_ns() : 0;
+    uint64_t now = plat_now_ns();
+#ifdef __ANDROID__
+    bool tap = false;
+#else
+    bool tap = bind_buttons[bind] != -1;  // (presses something: a modifier is a tap there)
+#endif
     for (int k = 0; k < BIND_KEYS; k++) {
         int code = config_live_bind(bind, k);
+        if (bind == BIND_A && !mouse_a && is_mouse_code(code)) continue;
+        if (tap && is_tap_mod(code)) {
+            if (now < mod_until[code - SDL_SCANCODE_LCTRL]) return true;
+            continue;
+        }
         if (code > 0 && code < SDL_SCANCODE_COUNT && keys[code]) return true;
         if (code > KEY_MOUSE && code <= KEY_MOUSE + SDL_BUTTON_X2 && (mouse_held >> (code - KEY_MOUSE) & 1)) return true;
         if (wheel && (code == KEY_WHEEL_UP || code == KEY_WHEEL_DOWN) && now < wheel_until[code - KEY_WHEEL_UP])
@@ -90,7 +131,8 @@ static void wheel_turn(int n) {
 // ---- mouse: captured (relative mode) after a click in the window, Esc lets it go. In a hunt its movement turns the
 // camera itself, a fixed angle per count (runtime/hle/mousecam.c). Elsewhere it is the right stick: the speed it moves
 // at, smoothed over a few milliseconds, as the stick's tilt (full tilt at MOUSE_FULL_SPEED counts a second, times the
-// settings' MouseSensitivity). Its buttons press what [Keybinds] says.
+// settings' MouseSensitivity). Its buttons press what [Keybinds] says. While the HUD editor is open (a desktop's:
+// runtime/touch.cpp) the mouse is its own instead: free and shown, its clicks and wheel the editor's, Esc cancels it.
 #define MOUSE_FULL_SPEED 1500.0f
 #define MOUSE_SMOOTH_S 0.025f  // (the averaging time: mice report at 125-8000 Hz, the game reads at its frame rate)
 // The camera ignores the right stick below about 39% tilt (any direction: a round dead zone; measured 2026-10-23, 38%
@@ -174,7 +216,56 @@ static void script_parse(void) {
 //   type <text>            type into the game's text entry (runtime/textinput.c); textkey enter|escape|backspace
 //   mousemove <x> <y> <ms> mouse look as if the mouse moved at that many counts a second (y down) for that long
 //   wheel <notches>        the mouse wheel turned that far (> 0 up; by default the item bar to the left)
+//   mousedown / mouseup <x> <y>, mousedrag <x> <y>, mousewheel <x> <y> <notches>: the left button held / let go at
+//                          (x, y) in the window, the pointer moved there with it held, the wheel turned over it
+//   mouse <x> <y> click|right|middle|x1|x2: the pointer to (x, y), that button pressed and let go there
+//   menutrace [updates]    log the menus' cursors, where their rows and cells are, and the pointer (hle/mousemenu.c)
+//   plpos                  log the local player's place and heading (a scripted walk in a town)
+//   menupress <hex>        those buttons in the menus' pressed word for one update, a menu open or not (2000: A;
+//                          a test of what reads it: hle/mousemenu.c)
+//   menustall <ms>         the game's next update waits that long (a slow update in a menu: hle/mousemenu.c)
+//   hudedit                the HUD editor opens, as Move the HUD does (a desktop's: runtime/touch.cpp)
+//   finger <n> down|move|up|cancel <x> <y> [ms]: a finger on the screen (n: which one, 0..15; x, y: parts of the
+//                          window's width and height), now or that many ms from now (tests: the touch controls)
+//   touchedit              the touch layout editor opens, as Customize controls and HUD does (runtime/touch.cpp)
 char g_shot_request[256];  // (runtime/nvn/vulkan/device.c saves it)
+// (tests) the fingers' events waiting for their time: pushed to SDL's queue then, as a touch screen's
+static struct {
+    uint64_t due;
+    SDL_Event e;
+} finger_wait[32];
+static void finger_due(void) {
+    uint64_t now = plat_now_ns();
+    for (int i = 0; i < 32; i++)
+        if (finger_wait[i].due && now >= finger_wait[i].due) {
+            SDL_Event e = finger_wait[i].e;
+            e.tfinger.timestamp = SDL_GetTicksNS();
+            finger_wait[i].due = 0;
+            SDL_PushEvent(&e);
+        }
+}
+static void finger_command(const char *line) {
+    int n = -1, ms = 0;
+    char what[16] = "";
+    float x = 0, y = 0;
+    if (sscanf(line, "%*s %d %15s %f %f %d", &n, what, &x, &y, &ms) < 4 || n < 0 || n > 15) {
+        LOG("[control] finger: bad line %s", line);
+        return;
+    }
+    Uint32 type = !strcmp(what, "down") ? SDL_EVENT_FINGER_DOWN : !strcmp(what, "move") ? SDL_EVENT_FINGER_MOTION
+                : !strcmp(what, "up") ? SDL_EVENT_FINGER_UP : !strcmp(what, "cancel") ? SDL_EVENT_FINGER_CANCELED : 0;
+    if (!type) { LOG("[control] finger: down, move, up or cancel, not '%s'\n", what); return; }
+    SDL_Event e = {0};
+    e.tfinger.type = type, e.tfinger.touchID = 1, e.tfinger.fingerID = 1000 + n;
+    e.tfinger.x = x, e.tfinger.y = y, e.tfinger.pressure = type == SDL_EVENT_FINGER_UP ? 0.0f : 1.0f;
+    for (int i = 0; i < 32; i++)
+        if (!finger_wait[i].due) {
+            finger_wait[i].due = plat_now_ns() + (uint64_t)(ms > 0 ? ms : 0) * 1000000ull;
+            finger_wait[i].e = e;
+            return;
+        }
+    LOG("[control] finger: too many waiting\n");
+}
 char g_burst_name[200];
 int g_burst_left, g_burst_index;
 volatile int g_dump_request;
@@ -205,6 +296,9 @@ static void control_poll(void) {
             if (!strcmp(cmd, "msaa")) { void vk_set_msaa(uint32_t); vk_set_msaa((uint32_t)atoi(arg)); continue; }
             if (!strcmp(cmd, "gpuprof")) { extern volatile int g_gpuprof_request; g_gpuprof_request = 1; continue; }
             if (!strcmp(cmd, "hudtrace")) { g_hudtrace_request = 1; continue; }
+            if (!strcmp(cmd, "menutrace")) { mousemenu_trace(atoi(arg)); continue; }  // (hle/mousemenu.c)
+            if (!strcmp(cmd, "menupress")) { mousemenu_test_press((uint32_t)strtoul(arg, NULL, 16)); continue; }
+            if (!strcmp(cmd, "menustall")) { mousemenu_test_stall(atoi(arg)); continue; }
             if (!strcmp(cmd, "dump")) { g_dump_request = atoi(arg) > 0 ? atoi(arg) : 1; continue; }
             if (!strcmp(cmd, "memsave")) {  // memsave <guest hex address> <hex bytes> <file>: raw guest memory to a file
                 char path[200] = "";
@@ -290,6 +384,15 @@ static void control_poll(void) {
                 movelog_snap(atoi(arg));
                 continue;
             }
+            if (!strcmp(cmd, "plpos")) {  // plpos: log the local player's place and heading (tests: a scripted walk in a
+                // town, frame by frame with MHGU_FPS_LIMIT=60: the house's item box; writing the place does not move it)
+                uint32_t gc = LD32(0x1a8ca48u), sp = LD32(0x1a85b58u);  // (sGameControl, sPlayer: hle/weapon.c)
+                uint32_t slot = gc ? LD32(gc + 0x30) : 9, pl = sp && slot < 4 ? LD32(sp + 0x1c + 4u * slot) : 0;
+                if (pl < 0x08000000u || (pl & 3)) { LOG("[plpos] no player\n"); continue; }
+                LOG("[plpos] player %08x (vt %08x) at %.1f %.1f %.1f heading %u\n", pl, LD32(pl), LDF(pl + 0xa0), LDF(pl + 0xa4),
+                    LDF(pl + 0xa8), LD32(pl + 0x14a0) & 0xffff);
+                continue;
+            }
             if (!strcmp(cmd, "poke")) {  // poke <guest hex address> <hex word>: write guest memory (reverse engineering)
                 uint32_t a = (uint32_t)strtoul(arg, NULL, 16) & ~3u, v = (uint32_t)strtoul(arg2, NULL, 16);
                 LOG("[poke] %08x: %08x -> %08x\n", a, LD32(a), v);
@@ -363,20 +466,44 @@ static void control_poll(void) {
                 SDL_Event event = {0}; event.type = SDL_EVENT_QUIT; SDL_PushEvent(&event);
                 continue;
             }
-            if (!strcmp(cmd, "sdlkey")) {  // sdlkey [ctrl+]<SDL key name>: a key pressed and released (Insert: Forge's menu)
-                bool ctrl = !SDL_strncasecmp(arg, "ctrl+", 5);
-                SDL_Scancode sc = SDL_GetScancodeFromName(arg + (ctrl ? 5 : 0));
+#ifndef __ANDROID__
+            if (!strcmp(cmd, "pick")) {  // pick folder|save|export|cheats|mod <path>: a desktop dialog's answer (pc_actions.c)
+                void pc_test_pick(const char *what, const char *path);
+                pc_test_pick(arg, arg2);
+                continue;
+            }
+#endif
+            if (!strcmp(cmd, "sdlkey") || !strcmp(cmd, "sdlkeydown") || !strcmp(cmd, "sdlkeyup")) {
+                // sdlkey [ctrl+|alt+|shift+]<SDL key name>: a key pressed and released, with that modifier held around it
+                // (Insert: Forge's menu; "sdlkey Left Alt": Alt alone, a tap). sdlkeydown / sdlkeyup: only pressed or
+                // only let go, to hold a key ("sdlkeydown I", later "sdlkeyup I": the camera turns meanwhile)
+                static const struct { const char *prefix; SDL_Scancode sc; SDL_Keycode key; SDL_Keymod mod; } mods[] = {
+                    {"ctrl+", SDL_SCANCODE_LCTRL, SDLK_LCTRL, SDL_KMOD_LCTRL}, {"alt+", SDL_SCANCODE_LALT, SDLK_LALT, SDL_KMOD_LALT},
+                    {"shift+", SDL_SCANCODE_LSHIFT, SDLK_LSHIFT, SDL_KMOD_LSHIFT}};
+                bool press = cmd[6] != 'u', release = cmd[6] != 'd';
+                char *text = line + strspn(line, " \t") + strlen(cmd), *name;  // (the rest of the line: names have spaces)
+                text += strspn(text, " \t");
+                text[strcspn(text, "\r\n")] = 0;
+                int m = -1;
+                for (int i = 0; i < 3; i++)
+                    if (!SDL_strncasecmp(text, mods[i].prefix, strlen(mods[i].prefix))) m = i;
+                name = text + (m >= 0 ? strlen(mods[m].prefix) : 0);
+                SDL_Scancode sc = SDL_GetScancodeFromName(name);
                 SDL_Event e = {0};
-                e.key.type = SDL_EVENT_KEY_DOWN, e.key.scancode = sc, e.key.key = SDL_GetKeyFromScancode(sc, 0, false);
-                e.key.down = true, e.key.mod = ctrl ? SDL_KMOD_LCTRL : 0;
-                SDL_PushEvent(&e);
-                e.key.type = SDL_EVENT_KEY_UP, e.key.down = false;
-                SDL_PushEvent(&e);
-                if (ctrl) {  // (then Ctrl's own release, as a keyboard sends it: no modifier left)
-                    e.key.scancode = SDL_SCANCODE_LCTRL, e.key.key = SDLK_LCTRL, e.key.mod = 0;
+                e.key.type = SDL_EVENT_KEY_DOWN, e.key.down = true;
+                if (press && m >= 0) {  // (the modifier first, as a keyboard sends it)
+                    e.key.scancode = mods[m].sc, e.key.key = mods[m].key, e.key.mod = mods[m].mod;
                     SDL_PushEvent(&e);
                 }
-                LOG("[control] key %s (%d)\n", arg, (int)sc);
+                e.key.scancode = sc, e.key.key = SDL_GetKeyFromScancode(sc, 0, false), e.key.mod = m >= 0 ? mods[m].mod : 0;
+                if (press) SDL_PushEvent(&e);
+                e.key.type = SDL_EVENT_KEY_UP, e.key.down = false;
+                if (release) SDL_PushEvent(&e);
+                if (release && m >= 0) {  // (then the modifier's own release: none left)
+                    e.key.scancode = mods[m].sc, e.key.key = mods[m].key, e.key.mod = 0;
+                    SDL_PushEvent(&e);
+                }
+                LOG("[control] key %s%s (%d)\n", text, !release ? " down" : !press ? " up" : "", (int)sc);
                 continue;
             }
             if (!strcmp(cmd, "vpad")) {  // vpad: attach an SDL virtual controller (tests: picking the controller)
@@ -407,15 +534,21 @@ static void control_poll(void) {
                 SDL_PushEvent(&e);
                 continue;
             }
-            if (!strcmp(cmd, "mouse")) {  // mouse <x> <y> [click]: the pointer to (x, y) in the window, clicked there
+            if (!strcmp(cmd, "mouse")) {  // mouse <x> <y> [click|right|middle|x1|x2]: the pointer to (x, y), clicked there
                 char arg3[16] = "";
                 sscanf(line, "%*s %*s %*s %15s", arg3);
                 SDL_Event e = {0};
                 e.motion.type = SDL_EVENT_MOUSE_MOTION, e.motion.x = (float)atof(arg), e.motion.y = (float)atof(arg2);
+                static float last_x = -1, last_y;  // (moved from there, as a mouse's motion says: input_seen)
+                e.motion.xrel = last_x < 0 ? 10 : e.motion.x - last_x, e.motion.yrel = last_x < 0 ? 0 : e.motion.y - last_y;
+                last_x = e.motion.x, last_y = e.motion.y;
                 SDL_PushEvent(&e);
-                if (!strcmp(arg3, "click")) {
+                int button = !strcmp(arg3, "click") ? SDL_BUTTON_LEFT : !strcmp(arg3, "right") ? SDL_BUTTON_RIGHT
+                           : !strcmp(arg3, "middle") ? SDL_BUTTON_MIDDLE : !strcmp(arg3, "x1") ? SDL_BUTTON_X1
+                           : !strcmp(arg3, "x2") ? SDL_BUTTON_X2 : 0;
+                if (button) {
                     SDL_Event b = {0};
-                    b.button.type = SDL_EVENT_MOUSE_BUTTON_DOWN, b.button.button = SDL_BUTTON_LEFT, b.button.down = true;
+                    b.button.type = SDL_EVENT_MOUSE_BUTTON_DOWN, b.button.button = (Uint8)button, b.button.down = true;
                     b.button.x = e.motion.x, b.button.y = e.motion.y, b.button.clicks = 1;
                     SDL_PushEvent(&b);
                     b.button.type = SDL_EVENT_MOUSE_BUTTON_UP, b.button.down = false;
@@ -423,6 +556,42 @@ static void control_poll(void) {
                 }
                 continue;
             }
+            // mousedown / mouseup <x> <y>: the left button held / let go there; mousedrag <x> <y>: the pointer moved
+            // there with it held; mousewheel <x> <y> <notches>: the wheel turned over (x, y) (tests: the HUD editor)
+            if (!strcmp(cmd, "mousedown") || !strcmp(cmd, "mouseup")) {
+                SDL_Event b = {0};
+                bool down = !strcmp(cmd, "mousedown");
+                b.button.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+                b.button.button = SDL_BUTTON_LEFT, b.button.down = down, b.button.clicks = 1;
+                b.button.x = (float)atof(arg), b.button.y = (float)atof(arg2);
+                SDL_PushEvent(&b);
+                continue;
+            }
+            if (!strcmp(cmd, "mousedrag")) {
+                SDL_Event e = {0};
+                e.motion.type = SDL_EVENT_MOUSE_MOTION, e.motion.state = SDL_BUTTON_LMASK;
+                e.motion.x = (float)atof(arg), e.motion.y = (float)atof(arg2);
+                SDL_PushEvent(&e);
+                continue;
+            }
+            if (!strcmp(cmd, "mousewheel")) {
+                char arg3[16] = "";
+                sscanf(line, "%*s %*s %*s %15s", arg3);
+                SDL_Event w = {0};
+                w.wheel.type = SDL_EVENT_MOUSE_WHEEL, w.wheel.direction = SDL_MOUSEWHEEL_NORMAL;
+                w.wheel.mouse_x = (float)atof(arg), w.wheel.mouse_y = (float)atof(arg2);
+                w.wheel.integer_y = atoi(arg3), w.wheel.y = (float)atoi(arg3);
+                SDL_PushEvent(&w);
+                continue;
+            }
+#ifndef __ANDROID__
+            if (!strcmp(cmd, "hudedit")) {  // hudedit: the HUD editor opens, as Move the HUD does from the menu (tests)
+                touch_hud_edit_begin();
+                continue;
+            }
+#endif
+            if (!strcmp(cmd, "finger")) { finger_command(line); continue; }
+            if (!strcmp(cmd, "touchedit")) { touch_edit_begin(); continue; }  // (as from the settings menu: once it is closed)
             if (!strcmp(cmd, "mousemove")) {  // mousemove <x> <y> <ms>: mouse look at that speed (counts a second)
                 char arg3[16] = "";
                 sscanf(line, "%*s %*s %*s %15s", arg3);
@@ -609,15 +778,158 @@ static bool chat_mouse(const SDL_Event *e) {
     return false;
 }
 
+// ---- the game's menus and dialogs ([Controls] MouseMenus, runtime/hle/mousemenu.c): the mouse free and shown, its
+// place given on the game's 1280x720 canvas, which covers the picture (the picture as wide as fits in its own shape,
+// centred: device.c backend_present, touch.cpp picture()); the window's points, not its pixels (a scaled desktop)
+static bool menu_mouse(void) {
+    return mousemenu_active() && !overlay_menu_open() && !chat_active() && !textinput_active()
+#ifndef __ANDROID__
+           && !touch_hud_editing()
+#endif
+        ;
+}
+static bool canvas_point(float x, float y, float *cx, float *cy) {
+    SDL_Window *w = ui_window();
+    int ww = 0, wh = 0;
+    if (!w || !SDL_GetWindowSize(w, &ww, &wh) || ww <= 0 || wh <= 0) return false;
+    float a = g_render_aspect > 0 ? g_render_aspect : (float)ww / (float)wh, pw = (float)ww, ph = (float)ww / a;
+    if (ph > (float)wh) ph = (float)wh, pw = (float)wh * a;
+    *cx = (x - ((float)ww - pw) * 0.5f) * 1280.0f / pw, *cy = (y - ((float)wh - ph) * 0.5f) * 720.0f / ph;
+    return true;
+}
+// The pointer hidden in a menu or a dialog until the mouse moves: a key or a controller was used there, or a controller
+// last as it opened (a key outside one keeps it shown: the keyboard goes with the mouse; a controller hides it for the
+// next one too), or as it closed a moment ago (a load between two windows: as it was)
+static bool menu_pointer_hidden;
+static uint64_t menu_left_ns;  // when the game's menus last let the mouse go
+#define MENU_GAP_NS 3000000000ull
+// The pointer in a menu: bronze and gold, outlined in wine-dark, as the game's own menus (a scaled desktop: bigger)
+static SDL_Cursor *menu_cursor(void) {
+    static SDL_Cursor *cur;
+    static float made_for;
+    SDL_Window *w = ui_window();
+    float k = w ? SDL_GetWindowDisplayScale(w) : 1.0f;
+    if (!(k >= 1.0f && k <= 4.0f)) k = 1.0f;
+    if (made_for == k) return cur;  // (made for this scale; NULL if that failed: the system's arrow)
+    made_for = k;
+    int n = (int)(24.0f * k + 0.5f);
+    SDL_Surface *s = SDL_CreateSurface(n, n, SDL_PIXELFORMAT_ARGB8888);
+    if (!s) return NULL;
+    // the classic arrow: tip at (0, 0), its point down the left edge, the notch at its middle (units of n / 24)
+    static const float px[] = {1.0f, 1.0f, 5.2f, 8.3f, 12.0f, 8.9f, 14.2f};
+    static const float py[] = {1.0f, 18.5f, 14.6f, 21.8f, 20.2f, 13.4f, 13.4f};
+    const int np = 7;
+    float u = (float)n / 24.0f;
+    uint32_t *pix = (uint32_t *)s->pixels;
+    for (int y = 0; y < n; y++)
+        for (int x = 0; x < n; x++) {
+            float fx = ((float)x + 0.5f) / u, fy = ((float)y + 0.5f) / u;
+            bool in = false;  // (inside the arrow: crossings)
+            float edge = 1e9f;  // (and how far from its outline)
+            for (int i = 0, j = np - 1; i < np; j = i++) {
+                if ((py[i] > fy) != (py[j] > fy) && fx < (px[j] - px[i]) * (fy - py[i]) / (py[j] - py[i]) + px[i]) in = !in;
+                float ex = px[j] - px[i], ey = py[j] - py[i], t = ((fx - px[i]) * ex + (fy - py[i]) * ey) / (ex * ex + ey * ey);
+                t = t < 0 ? 0 : t > 1 ? 1 : t;
+                float dx = fx - (px[i] + t * ex), dy = fy - (py[i] + t * ey), d = sqrtf(dx * dx + dy * dy);
+                if (d < edge) edge = d;
+            }
+            uint32_t c = 0;
+            if (in && edge > 1.0f) {  // gold above, bronze below, a lighter edge inside the outline
+                float g = fy / 21.8f;
+                int r = (int)(250 - 70 * g), gg = (int)(214 - 100 * g), b = (int)(96 - 60 * g);
+                if (edge < 1.7f) r = r + 5 > 255 ? 255 : r + 5, gg = gg + 25 > 255 ? 255 : gg + 25, b += 30;
+                c = 0xff000000u | (uint32_t)r << 16 | (uint32_t)gg << 8 | (uint32_t)b;
+            } else if (in || edge <= 1.0f) {
+                c = 0xff000000u | 0x3c << 16 | 0x0e << 8 | 0x12;  // (wine-dark)
+            }
+            pix[y * (s->pitch / 4) + x] = c;
+        }
+    SDL_Cursor *made = SDL_CreateColorCursor(s, (int)(u + 0.5f), (int)(u + 0.5f));
+    SDL_DestroySurface(s);
+    LOG("[input] the menus' pointer, %d px: %s\n", n, made ? "made" : SDL_GetError());
+    if (!made) return cur;
+    if (cur && SDL_GetCursor() != cur) SDL_DestroyCursor(cur);  // (the one shown now stays until replaced)
+    cur = made;
+    return cur;
+}
+
+// Every key and mouse button going down, whoever takes it (the menus too: Alt+F1 is a shortcut as well): it spends the
+// modifiers held, which then press nothing when let go (mod_until)
+static void mod_track(const SDL_Event *e) {
+    bool key = (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat) || e->type == SDL_EVENT_KEY_UP;
+    if ((key && e->key.down) || e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_MOUSE_WHEEL)
+        for (int i = 0; i < MOD_KEYS; i++)
+            if (mod_held[i]) mod_spent[i] = true;
+    if (!key || !is_mod(e->key.scancode)) return;
+    int i = e->key.scancode - SDL_SCANCODE_LCTRL;
+    mod_held[i] = e->key.down;
+    if (e->key.down) mod_spent[i] = false;
+}
+
+// What the player is using, for the button hints of the port's menus (overlay_last_input): a key, a mouse button or the
+// wheel, the mouse moved a few points (SDL's own motion when it warps the pointer has none: no relative movement), a
+// controller's button or a stick or trigger pushed past half way (on a controller open for half a second: as for
+// pad_pressed, one whose buttons read as held at first is not the player's), a finger
+static void input_seen(const SDL_Event *e) {
+    static float moved;  // (the mouse's travel, in the window's points, since something else was used)
+    static uint64_t moved_ns;
+    int kind = -1;
+    switch (e->type) {
+    case SDL_EVENT_KEY_DOWN: kind = USED_KEYS; break;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN: if (e->button.which != SDL_TOUCH_MOUSEID) kind = USED_MOUSE; break;
+    case SDL_EVENT_MOUSE_WHEEL: if (e->wheel.which != SDL_TOUCH_MOUSEID) kind = USED_MOUSE; break;
+    case SDL_EVENT_MOUSE_MOTION: {
+        if (e->motion.which == SDL_TOUCH_MOUSEID || overlay_last_input() == USED_MOUSE) break;
+        uint64_t now = plat_now_ns();
+        if (now - moved_ns > 300000000ull) moved = 0;  // (a nudge a while ago doesn't add up with one now)
+        moved_ns = now;
+        moved += fabsf(e->motion.xrel) + fabsf(e->motion.yrel);
+        if (moved >= 8) kind = USED_MOUSE;
+        break;
+    }
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_AXIS_MOTION: {
+        bool button = e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+        int i = find_pad(button ? e->gbutton.which : e->gaxis.which);
+        if (i < 0 || plat_now_ns() - pads[i].opened_ns < 500000000ull) break;
+        if (button || e->gaxis.value > 16384 || e->gaxis.value < -16384) kind = USED_PAD;
+        break;
+    }
+    case SDL_EVENT_FINGER_DOWN: kind = USED_TOUCH; break;
+    default: break;
+    }
+    if (kind < 0) return;
+    moved = 0;
+    overlay_input_seen(kind);
+}
+
 void host_input_event(const SDL_Event *e) {
+    input_seen(e);
+    mod_track(e);
     if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) pad_pressed(e->gbutton.which);
+    // (a key or a controller: no row is pointed at until the mouse moves; in a menu or a dialog the pointer hides too,
+    // and a controller's hides it for the next one as well)
+    bool key_down = e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat;
+    bool pad_down = e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+                    (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION && (e->gaxis.value > 16000 || e->gaxis.value < -16000));
+    if (key_down || pad_down) {
+        mousemenu_hide();
+        if (pad_down || menu_mouse()) menu_pointer_hidden = true;
+    }
     if (e->type == SDL_EVENT_FINGER_UP && textinput_active()) textinput_tap();  // (the screen keyboard, if hidden)
     if (touch_event(e)) return;  // (fingers: the touch controls, or the settings menu's mouse: runtime/touch.cpp)
     if (overlay_event(e)) return;  // (Forge's menu open: keyboard and mouse are its)
+#ifndef __ANDROID__
+    if (touch_edit_mouse(e)) return;  // (the HUD editor open: the mouse moves the HUD's parts, Esc cancels it)
+#endif
     if (chat_mouse(e)) return;  // (typing a line of chat: the mouse drags its box)
     if (textinput_event(e)) return;  // (typing into a text entry: not controller buttons)
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP:
+        // (a modifier let go that the game saw go down, with nothing pressed meanwhile: a tap. The release SDL sends for
+        // every key held as the window loses the focus, Alt+Tab's, comes right before FOCUS_LOST, which undoes it)
+        if (e->type == SDL_EVENT_KEY_UP && is_mod(e->key.scancode) && keys[e->key.scancode] &&
+            !mod_spent[e->key.scancode - SDL_SCANCODE_LCTRL])
+            mod_until[e->key.scancode - SDL_SCANCODE_LCTRL] = plat_now_ns() + WHEEL_PRESS_NS;
         if (e->key.scancode < SDL_SCANCODE_COUNT) keys[e->key.scancode] = e->type == SDL_EVENT_KEY_DOWN;
         if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat) {  // F12: screenshot, Shift+F12: 8 consecutive frames (run\shots\), F11: windowed <-> full screen
             static int nshot;
@@ -640,11 +952,12 @@ void host_input_event(const SDL_Event *e) {
                 snprintf(g_burst_name, sizeof g_burst_name, "burst_%llu_%d", (unsigned long long)t, nshot++);
                 g_burst_index = 0;
                 g_burst_left = 8;
-            } else if (e->key.scancode == SDL_SCANCODE_F10) {
-                g_dump_request = 2;  // (debug) every render pass of the next 2 frames, as "dump 2"
             } else if (e->key.scancode == SDL_SCANCODE_F7) {  // MSAA off / 2x / 4x / 8x (to compare; the settings set it)
                 void vk_cycle_msaa(void);
                 vk_cycle_msaa();
+#ifdef MHGU_DEV  // (the debug keys, F8 to F10: test builds only. The control file's "dump" works in any build)
+            } else if (e->key.scancode == SDL_SCANCODE_F10) {
+                g_dump_request = 2;  // (debug) every render pass of the next 2 frames, as "dump 2"
             } else if (e->key.scancode == SDL_SCANCODE_F8) {  // (debug) shadow-pass scissors: as set / none / mirrored
                 extern volatile int g_shadow_scissor_mode;
                 g_shadow_scissor_mode = (g_shadow_scissor_mode + 1) % 3;
@@ -653,15 +966,24 @@ void host_input_event(const SDL_Event *e) {
                 extern volatile int g_clear_draw;
                 g_clear_draw = g_clear_draw > 0 ? 0 : 1;
                 LOG("[input] F9: colour clears as %s\n", g_clear_draw ? "draws" : "vkCmdClearAttachments");
+#endif
             }
         }
         break;
     case SDL_EVENT_MOUSE_MOTION:
-        if (mouse_captured) mouse_dx += e->motion.xrel, mouse_dy += e->motion.yrel;
+        if (menu_mouse() && !mouse_captured) {  // (a menu: where it points)
+            float cx, cy;
+            if (canvas_point(e->motion.x, e->motion.y, &cx, &cy)) mousemenu_pointer(cx, cy, true);
+            menu_pointer_hidden = false;
+        } else if (mouse_captured) {
+            mouse_dx += e->motion.xrel, mouse_dy += e->motion.yrel;
+        }
         break;
-    case SDL_EVENT_MOUSE_WHEEL: {  // (what [Keybinds] says: by default the item bar)
+    case SDL_EVENT_MOUSE_WHEEL: {  // (what [Keybinds] says: by default the item bar; in a menu, the menu's)
         int n = e->wheel.integer_y * (e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1 : 1);
-        if (mouse_captured && n) wheel_turn(n);
+        float cx, cy;
+        if (n && menu_mouse() && canvas_point(e->wheel.mouse_x, e->wheel.mouse_y, &cx, &cy)) mousemenu_wheel(n, cx, cy);
+        else if (mouse_captured && n) wheel_turn(n);
         break;
     }
     case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP: {
@@ -669,6 +991,12 @@ void host_input_event(const SDL_Event *e) {
         if (btn < 1 || btn > SDL_BUTTON_X2) break;
         if (!e->button.down) {
             mouse_held &= ~(1u << btn);
+            menu_held &= ~(1u << btn);
+        } else if (menu_mouse()) {  // (a menu: a click there, never one of the game's buttons, nor a capture)
+            float cx, cy;
+            menu_held |= 1u << btn;
+            menu_pointer_hidden = false;
+            if (canvas_point(e->button.x, e->button.y, &cx, &cy)) mousemenu_pointer(cx, cy, true), mousemenu_click(btn, cx, cy);
         } else if (!mouse_captured && !mouse_no_capture) {  // (the click that captures the mouse is not a button press)
             if (!mouse_grab) LOG("[input] capturing the mouse\n");
             mouse_grab = true;
@@ -679,7 +1007,9 @@ void host_input_event(const SDL_Event *e) {
     }
     case SDL_EVENT_WINDOW_FOCUS_LOST:
         memset(keys, 0, sizeof keys);
-        mouse_held = 0, mouse_grab = false;
+        memset(mod_until, 0, sizeof mod_until);  // (Alt+Tab: its Alt was no tap)
+        memset(mod_held, 0, sizeof mod_held);
+        mouse_held = menu_held = 0, mouse_grab = false;
         config_window_focus(false);  // ([Audio] MuteInBackground)
         if (config_editable().mute_in_background) LOG("[input] window in the background: sound muted\n");
         break;
@@ -687,6 +1017,24 @@ void host_input_event(const SDL_Event *e) {
         config_window_focus(true);
         if (config_editable().mute_in_background) LOG("[input] window focused: sound back\n");
         break;
+#ifndef __ANDROID__
+    // ([Application] PauseInBackground: on a desktop the background is a minimized window; Android: runtime/ui.c's
+    // lifecycle watch)
+    case SDL_EVENT_WINDOW_MINIMIZED: {
+        void vi_set_paused(bool on);  // (runtime/hle/vi.c)
+        if (config_live_pause_background()) vi_set_paused(true);
+        break;
+    }
+    case SDL_EVENT_WINDOW_RESTORED:
+    case SDL_EVENT_WINDOW_MAXIMIZED: {
+        void vi_set_paused(bool on);
+        vi_set_paused(false);
+        break;
+    }
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:  // (the window resized, full screen or back: the picture takes its shape)
+        config_window_shape(e->window.data1, e->window.data2);
+        break;
+#endif
     case SDL_EVENT_GAMEPAD_ADDED:
         open_pad(e->gdevice.which);
         break;
@@ -708,7 +1056,18 @@ static int32_t clamp_axis(int v) { return v < -32767 ? -32767 : v > 32767 ? 3276
 
 // Capture or release the mouse as wanted, and give its movement to the hunt camera or the right stick.
 static void mouse_update(int *rx, int *ry) {
-    bool want = mouse_grab && !overlay_menu_open() && !chat_active();  // (Forge's menu, the chat box: the pointer is theirs)
+    // (Forge's menu, the chat box, a text the game asks for: the pointer is theirs)
+    bool want = mouse_grab && !overlay_menu_open() && !chat_active() && !textinput_active();
+#ifndef __ANDROID__
+    if (touch_hud_editing()) want = false;  // (and the HUD editor, from the moment it is asked for: runtime/touch.cpp)
+#endif
+    bool menu = menu_mouse();
+    if (menu) want = false;  // (and the game's menus: hle/mousemenu.c)
+    mousemenu_block(overlay_menu_open() || chat_active() || textinput_active()
+#ifndef __ANDROID__
+                    || touch_hud_editing()
+#endif
+    );
     SDL_Window *w = ui_window();
     if (want != mouse_captured && w) {
         if (SDL_SetWindowRelativeMouseMode(w, want) || !want) {
@@ -719,12 +1078,70 @@ static void mouse_update(int *rx, int *ry) {
         }
         mouse_dx = mouse_dy = 0;
     }
+    // (the game's menus and dialogs: the pointer free, in the game's colours, shown as one opens unless a controller
+    // was used last, and until a key or a controller is used in it; the buttons held as a menu takes it are its own
+    // until let go. Its place as it comes back is no movement: no row is pointed at until the mouse moves)
+    static bool menu_was, menu_shown, menu_showing;
+    if (menu != menu_was && w) {
+        menu_was = menu;
+        uint64_t now = plat_now_ns();
+        if (menu) {
+            int last = overlay_last_input();
+            if (!menu_left_ns || now - menu_left_ns >= MENU_GAP_NS) menu_pointer_hidden = false;
+            if (last == USED_PAD || last == USED_TOUCH) menu_pointer_hidden = true;
+        } else {
+            menu_left_ns = now;
+        }
+        LOG("[input] %s%s\n", menu ? "a menu of the game's has the mouse: pointer free" : "the game's menus let the mouse go",
+            !menu ? "" : menu_pointer_hidden ? " (hidden until the mouse moves)" : " and shown");
+        if (menu) {
+            menu_held |= mouse_held, mouse_held = 0;
+            float x = 0, y = 0, cx, cy;
+            SDL_GetMouseState(&x, &y);
+            if (canvas_point(x, y, &cx, &cy)) mousemenu_pointer(cx, cy, false);
+        } else if (menu_shown) {  // (back as it was: the system's arrow, hidden in full screen, shown in a window)
+            SDL_Cursor *mine = menu_cursor();
+            if (mine && SDL_GetCursor() == mine) SDL_SetCursor(SDL_GetDefaultCursor());
+            bool theirs = overlay_menu_open() || chat_active() || textinput_active()
+#ifndef __ANDROID__
+                          || touch_hud_editing()
+#endif
+                ;
+            if (!theirs && (SDL_GetWindowFlags(w) & SDL_WINDOW_FULLSCREEN)) SDL_HideCursor();
+            else if (!SDL_CursorVisible()) SDL_ShowCursor();
+            menu_shown = false;
+        }
+    }
+    if (menu && w) {
+        bool show = !menu_pointer_hidden;
+        if (show != menu_showing || !menu_shown) LOG("[input] the menus' pointer %s\n", show ? "shown" : "hidden");
+        menu_showing = show;
+        if (show) {
+            SDL_Cursor *mine = menu_cursor();
+            if (mine && SDL_GetCursor() != mine) SDL_SetCursor(mine);
+            if (!SDL_CursorVisible()) SDL_ShowCursor();
+        } else if (SDL_CursorVisible()) {
+            SDL_HideCursor();
+        }
+        menu_shown = true;
+    }
     static bool chat_pointer;  // (full screen hides the pointer: shown while the chat box can be dragged)
     if (chat_active() != chat_pointer && w) {
         chat_pointer = chat_active();
         if (chat_pointer) SDL_ShowCursor();
         else if (SDL_GetWindowFlags(w) & SDL_WINDOW_FULLSCREEN) SDL_HideCursor();
     }
+#ifndef __ANDROID__
+    // (the HUD editor's too, full screen as well: shown again whatever hid it as the menu before it closed, and hidden
+    // again once it closes, unless something else still has it)
+    static bool hud_pointer;
+    bool hud = touch_hud_editing() && !overlay_menu_open();
+    if (hud && !SDL_CursorVisible()) SDL_ShowCursor();
+    else if (!hud && hud_pointer && w && (SDL_GetWindowFlags(w) & SDL_WINDOW_FULLSCREEN) && !overlay_menu_open() &&
+             !chat_active())
+        SDL_HideCursor();
+    hud_pointer = hud;
+#endif
     static uint64_t last;
     static float vx, vy;  // the speed, smoothed: counts a second
     uint64_t now = plat_now_ns();
@@ -775,10 +1192,26 @@ static void rumble_update(void) {
     sent = v, sent_ns = now;
 }
 
+#ifndef __ANDROID__
+// A mouse button on A presses it now (mouse_a): with the weapon out (being drawn too), in a menu or a dialog of the
+// game's (MouseMenus Off: there the right click confirms as before; On: the clicks are the menu's anyway), or with no
+// hunter, no hunt camera and no town (the title, the main menu, a cutscene: their A). Not in a town nor with the weapon
+// sheathed (-1, no hunter: a Prowler, as sheathed). A left and a right click together with it sheathed: the left one
+// (X) draws it, and the right one, held, presses A as soon as it is out, a frame or two later - the next move's A, never
+// one with the weapon sheathed, which could talk, gather or pick up
+extern volatile uint64_t g_town_ns;  // (hle/quickhunt.c: a town's walking-around update)
+static bool mouse_a_ok(void) {
+    if (weapon_drawn() == 1 || mousemenu_open()) return true;
+    uint64_t town = g_town_ns;
+    return !weapon_hunter() && !mousecam_active() && !(town && plat_now_ns() - town < 1000000000ull);
+}
+#endif
+
 void host_input_update(void) {
     if (nscript < 0) script_parse(), padmap_init();
     padmap_poll();
     rumble_update();
+    finger_due();  // (tests: fingers waiting for their time, every update: their ms count)
     control_poll();
     quickhunt_poll();  // (debug, MHGU_QUICKHUNT: runtime/hle/quickhunt.c)
     textinput_update();
@@ -790,8 +1223,13 @@ void host_input_update(void) {
         memset(keys, 0, sizeof keys);  // (keys held when the entry opened are typing now, or released)
     }
 
+#ifndef __ANDROID__
+    mouse_a = mouse_a_ok();
+#endif
     for (int i = 0; i < BINDS; i++)
         if (bind_buttons[i] >= 0 && bind_held(i, true)) b |= B(bind_buttons[i]);
+    for (int i = 0; i < TOUCH_COMBOS; i++)  // (a combined button's key: its buttons, as its button on the screen)
+        if (bind_held(BIND_COMBO1 + i, true)) b |= config_live_touch_combo(i);
     static bool item_held[2];  // ItemLeft / ItemRight's keys and buttons: a press turns the item bar once
     for (int i = 0; i < 2; i++) {  // (their wheel notches turn it in wheel_turn)
         bool held = bind_held(BIND_ITEM_LEFT + i, false);
@@ -800,15 +1238,68 @@ void host_input_update(void) {
     }
     int kx = bind_held(BIND_MOVE_RIGHT, true) - bind_held(BIND_MOVE_LEFT, true);
     int ky = bind_held(BIND_MOVE_UP, true) - bind_held(BIND_MOVE_DOWN, true);
+#ifndef __ANDROID__
+    // (in the game's menus - the item box, the shops, the title - the move keys are the d-pad, which moves their cursor
+    // a step at a time where the left stick does not, as the touch controls' stick there: runtime/touch.cpp game_menu).
+    // Not left / right while a list that only the stick moves sideways runs (hle/mousemenu.c menu_stick_sideways: a
+    // menu's tabs, which a controller's stick turns and its d-pad does not): the stick's there, the arrow keys the d-pad.
+    // In a town's menu (the item box, a shop, the quest counter and its board: the town goes on under them, the hunter
+    // only turns) the d-pad and the left stick both, as before the d-pad (the quest board's lists, which the stick moves
+    // where the d-pad doesn't), as long as the hunter goes nowhere with them (the pause menu, the pouch: the game's menus
+    // there don't read the stick and the hunter walks - from then the d-pad alone until the menu closes). And a list's
+    // cursor running in a town while the picture shows no menu window, or a menu or a dialog the game's updates say is
+    // open (hle/mousemenu.c mousemenu_open: the quest counter's talk and its board): the d-pad too. Each change in the log
+    static bool was_menu, walks;
+    static float mx, mz;
+    static int said = -1;
+    bool in_menu = touch_game_menu();
+    uint64_t town_ns = g_town_ns;
+    bool town = town_ns && plat_now_ns() - town_ns < 500000000ull;
+    bool cursor = !in_menu && town && (menu_cursor_age() <= 2 || mousemenu_open());
+    if (in_menu != was_menu) {  // (a menu opened or closed: where the hunter stood as it opened)
+        was_menu = in_menu;
+        walks = in_menu && !player_place(&mx, &mz);
+    }
+    if (kx || ky) {
+        float px, pz;
+        if (in_menu && town && !walks && player_place(&px, &pz) && hypotf(px - mx, pz - mz) > 2.0f) walks = true;
+        bool both = cursor || (in_menu && town && !walks);  // the d-pad and the stick
+        bool side = kx && in_menu && menu_stick_sideways();  // left / right the stick's alone
+        int st = (int)in_menu | (int)cursor << 1 | (int)town << 2 | (int)both << 3 | (int)side << 4 | (int)walks << 5;
+        if (st != said) {
+            if (in_menu || cursor)
+                LOG("[input] the move keys in %s%s: the d-pad%s%s (a list's cursor %u updates ago)\n",
+                    in_menu ? "a menu" : "a list's cursor or a dialog (no menu window)", town ? " in a town" : "",
+                    both ? " and the left stick" : walks ? " alone (the hunter walked with the stick)" : " alone",
+                    side ? ", left / right the stick's alone" : "", menu_cursor_age());
+            else if (said > 0)
+                LOG("[input] the move keys: the left stick (a list's cursor %u updates ago)\n", menu_cursor_age());
+            said = st;
+        }
+        if (in_menu || cursor) {
+            if (kx && !side) b |= B(kx > 0 ? BTN_RIGHT : BTN_LEFT);
+            if (ky) b |= B(ky > 0 ? BTN_UP : BTN_DOWN);
+            if (!both) {
+                if (!side) kx = 0;
+                ky = 0;
+            }
+        }
+    }
+#endif
     int k = bind_held(BIND_WALK, true) ? 16000 : 32767;
     if (kx && ky) k = k * 7071 / 10000;  // diagonals: same length as straight
     lx += kx * k, ly += ky * k;
+    int cx = bind_held(BIND_CAM_RIGHT, true) - bind_held(BIND_CAM_LEFT, true);  // (the camera's keys: the right stick
+    int cy = bind_held(BIND_CAM_UP, true) - bind_held(BIND_CAM_DOWN, true);     // all the way, the hunt camera's turn)
+    int ck = cx && cy ? 23170 : 32767;
+    rx += cx * ck, ry += cy * ck;
     float tdx = 0, tdy = 0;  // (the touch controls: buttons, the stick, and a drag that turns the camera as the mouse)
     touch_input(real_pad_connected(), typing, &b, &lx, &ly, &tdx, &tdy);  // (a real controller open hides them)
     if (tdx != 0 || tdy != 0) mouse_dx += tdx, mouse_dy += tdy, touch_cam_ns = plat_now_ns();
     bool mouse_moved = mouse_dx != 0 || mouse_dy != 0;  // (the mouse or a finger turning the camera: the lock-on waits)
     mouse_update(&rx, &ry);
 
+    uint64_t before_pad = b;  // (what the controller adds: an editor's B and +, below)
     if (pad) {
         // combined buttons on the controller's own ([Touch] Combo*Pad): that button is theirs now, not what it was
         static const SDL_GamepadButton pad_of[PADB_COUNT] = {
@@ -895,6 +1386,7 @@ void host_input_update(void) {
         static bool scanned;  // (controllers present at startup send no ADDED event to a loop that started after them)
         if (!scanned) scanned = true, pick_pad();
     }
+    uint64_t pad_b = b & ~before_pad;  // (the controller's own: its B cancels an editor, below)
 
     uint64_t frame = g_present_count;
     for (int i = 0; i < nscript; i++) {
@@ -913,6 +1405,10 @@ void host_input_update(void) {
     rstick_was = rstick;
     if (rstick) b &= ~B(BTN_RSTICK);
     b |= touch_lock_buttons(b, mouse_moved || (int64_t)rx * rx + (int64_t)ry * ry > 12000LL * 12000);  // (round: as the game's)
+    b = touch_lock_shot(b);  // (with the lock-on on, a bowgun's shot is aimed first, whatever fires it: runtime/touch.cpp)
+    // (the touch controls' menu pad: what it alone presses the game reads only while a menu takes input, hle/input.c)
+    uint64_t menu_only = touch_menu_buttons() & ~b;
+    b |= menu_only;
 
     // A controller can reach host settings without needing a keyboard.
     static bool settings_chord;
@@ -977,5 +1473,25 @@ void host_input_update(void) {
         else if (down & B(BTN_B)) textinput_key(TI_CANCEL);
         b &= ~(B(BTN_PLUS) | B(BTN_B));
     }
+    // An editor open (runtime/touch.cpp: the touch layout's, worked with fingers; on a desktop the HUD's, worked with the
+    // mouse, Esc cancels it): a controller's B cancels it too, or a player with a controller alone had no way out. Not +:
+    // Start reads as confirm, the panel's own + sizes what is picked, and Start + Back opens the settings. The game gets
+    // neither B nor + while it is open, nor one still held as it closes, however it closed, until let go (the keyboard's
+    // keys for them are held back too: Esc is the keyboard's there)
+    static uint64_t pad_was, ed_held;
+    static bool ed_was;
+    uint64_t pad_down = pad_b & ~pad_was;
+    pad_was = pad_b;
+#ifndef __ANDROID__
+    touch_hud_pad(pad != NULL);  // (a controller read: its B shows on the HUD editor's Cancel)
+#endif
+    ed_held &= b;
+    bool ed = touch_editor_open() && !menu;
+    if (ed && (pad_down & B(BTN_B))) touch_editor_cancel(), ed = false;
+    if (ed) b &= ~(B(BTN_B) | B(BTN_PLUS));
+    else if (ed_was) ed_held |= b & (B(BTN_B) | B(BTN_PLUS));
+    ed_was = ed;
+    b &= ~ed_held;
+    input_stage_menu_only(menu_only & b);
     input_set(b, clamp_axis(lx), clamp_axis(ly), clamp_axis(rx), clamp_axis(ry));
 }

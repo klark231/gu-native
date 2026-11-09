@@ -1,4 +1,5 @@
-// SHA-256 (FIPS 180-4): the check of a downloaded release against its GitHub asset digest.
+// SHA-256 (FIPS 180-4), from the original project's updater: here only runtime/net/ldn.c uses it, to hash the hub's
+// matchmaking key. (This project has no updater.)
 #include <stdio.h>
 #include <string.h>
 

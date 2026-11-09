@@ -144,7 +144,9 @@ static uint32_t *glsl_compile(const char *src, size_t srclen, int stage, const c
     if (!g_vk.api12) h ^= 0x5D1F0B2C7A914E63ull;  // (SPIR-V 1.3, not 1.5: other entries in the disk cache)
     static int nocache = -1;
     if (nocache < 0) nocache = getenv("MHGU_VK_NO_SPIRV_CACHE") != NULL;
+    uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
     uint32_t *out = nocache ? NULL : cache_load(h, nwords);
+    if (out && HITCH_ON) hitch_add(HC_SPIRV_DISK, plat_now_ns() - t0, *nwords * 4);
     if (out) return out;
     static __thread shaderc_compiler_t comp;
     if (!comp) comp = shaderc_compiler_initialize();
@@ -179,6 +181,7 @@ static uint32_t *glsl_compile(const char *src, size_t srclen, int stage, const c
         if (!nocache) cache_store(h, out, *nwords);
     }
     shaderc_result_release(r);
+    if (HITCH_ON) hitch_add(HC_SPIRV_COMPILE, plat_now_ns() - t0, srclen);
     return out;
 }
 

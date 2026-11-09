@@ -37,6 +37,12 @@ static void list_mods(void) {
     if (!stat(path, &st)) LOG("[mods] %d mod(s) loading, in the order of %s\n", g_nmods, path);
 }
 
+bool mods_loaded(const char *name) {  // (the list made at the start, fixed from then on)
+    for (int i = 0; i < g_nmods; i++)
+        if (!strcmp(g_names[i], name)) return true;
+    return false;
+}
+
 int mods_romfs_layers(const char **out, int max) {
     list_mods();
     int k = 0;

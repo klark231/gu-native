@@ -18,7 +18,7 @@ on:
       flavor:
         description: 'Which package to build'
         type: choice
-        options: [standard, antutu, ludashi, all]
+        options: [standard, antutu, ludashi, alt, all]
         default: standard
       note:
         description: 'Label added to the APK name (optional, letters/digits/-)'
@@ -100,7 +100,7 @@ jobs:
           FLAVOR: ${{ github.event.inputs.flavor }}
         run: |
           chmod +x gradlew
-          case "$FLAVOR" in all|"") LIST="standard antutu ludashi";; *) LIST="$FLAVOR";; esac
+          case "$FLAVOR" in all|"") LIST="standard antutu ludashi alt";; *) LIST="$FLAVOR";; esac
           [ "$FLAVOR" = "" ] && LIST=standard
           TASKS=""
           for f in $LIST; do TASKS="$TASKS assemble$(printf %s "${f:0:1}" | tr a-z A-Z)${f:1}Release"; done

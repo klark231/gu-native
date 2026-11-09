@@ -46,6 +46,16 @@ bool plat_committed(uint64_t addr, uint64_t *end);int plat_written_pages(uint64_
 // ---- time
 uint64_t plat_now_ns(void);                // monotonic
 void plat_sleep_until_ns(uint64_t t);      // precise wait for plat_now_ns() >= t
+#ifdef _WIN32
+// An event waited for with a precise timeout (nvn/vulkan/exec.c: a draw's short wait for its shader build;
+// runtime/kernel.c kwait: a guest thread's waits). winpthreads' timed waits end on the system's 15.6 ms tick whatever
+// is asked (a 1 ms pthread_cond_timedwait took 13-17 ms, timeBeginPeriod(1) or not); this one waits on the thread's
+// high-resolution timer.
+void *plat_event_new(void);                       // auto-reset: a set wakes one waiter, or the next wait if none waits
+void plat_event_set(void *e);
+// Until set (true, and it is reset), or plat_now_ns() >= t (false); t past: only a look; t UINT64_MAX: no timeout.
+bool plat_event_wait_until(void *e, uint64_t t);
+#endif
 
 // ---- process
 void plat_init(void);
@@ -62,8 +72,53 @@ bool plat_user_dir(char *buf, size_t size);
 // The files in a folder and its subfolders, 0 if it can't be read (main.c: whether the player's romfs is complete;
 // the system's own listing, not a stat per file: ~80 ms for the game's 35531 on Windows).
 int plat_count_files(const char *dir);
+// A UTF-8 path (SDL's dialogs, game_folder.txt) in the spelling the runtime's file functions take: Windows' narrow
+// ones use the system's code page, so a path it can't spell comes back in its 8.3 short form (that path must exist).
+bool plat_path_from_utf8(const char *utf8, char *out, size_t size);
+// The other way: a path of the runtime's (the system's code page on Windows) in UTF-8, for SDL's file functions.
+bool plat_path_to_utf8(const char *native, char *out, size_t size);
 void plat_error_box(const char *msg);
 void plat_fatal_notice(void);
+// A thread running fn(arg) with stack bytes of stack, nobody waiting for it (runtime/kernel.c: a guest thread); 0 or
+// the error. Windows only reserves the stack and commits it as it is used: pthread_create committed all of it.
+int plat_thread_create(void *(*fn)(void *), void *arg, size_t stack);
+#ifdef _WIN32
+void plat_thread_below_normal(void);  // the calling thread gives way to the game's (nvn/vulkan/exec.c: shader builds)
+#endif
+const char *rt_out_of_memory_text(void);  // (runtime/kernel.c) the message when the system has no memory left
+
+// ---- thread priorities (Windows, runtime/platform/windows.c; elsewhere every thread keeps the system's default)
+// The calling thread's priority for what it does: PLAT_PRIO_BACKGROUND below normal (shader and pipeline builds, the
+// log's writer, the readout's sampler: nothing waits for them this frame), PLAT_PRIO_HIGH above normal (the game's update
+// thread, the presenting one, the vsync tick, the audio mixer). It is a floor: it never takes a guest thread under its
+// guest priority's level, and a later SetThreadPriority from the game never takes the thread under it. false: nothing
+// changed (MHGU_PRIO=0, or not Windows).
+enum { PLAT_PRIO_NONE = -128, PLAT_PRIO_BACKGROUND = -1, PLAT_PRIO_NORMAL = 0, PLAT_PRIO_HIGH = 1 };
+// A guest thread's Horizon priority (0 highest .. 63; the game's main thread runs at 44), for the calling thread: up to
+// 43 above normal, 44 and past it normal, never under (runtime/kernel.c: at its start and when it changes).
+// A thread waiting on a guest mutex lends the owner its level (runtime/kernel.c prio_lend), as Horizon raises an owner
+// to its highest waiter's priority: plat_prio_self is the calling thread's record for that (NULL: nothing is lent,
+// MHGU_PRIO=0 or MHGU_PRIO_LEND=0), plat_prio_level a record's level (the highest of its guest priority's, its floor and
+// what it is lent), plat_prio_lend the level lent to it now, PLAT_PRIO_NONE for none (> 0: its level rose, < 0: fell;
+// the calling thread's own fall waits for plat_prio_sync, called once it holds the kernel's lock no more), plat_prio_end
+// the calling thread's last call, once nothing can lend to it any more.
+#ifdef _WIN32
+bool plat_thread_priority(int level);
+void plat_guest_priority(int prio);
+void *plat_prio_self(void);
+int plat_prio_level(void *who);
+int plat_prio_lend(void *who, int level);
+void plat_prio_sync(void);
+void plat_prio_end(void);
+#else
+static inline bool plat_thread_priority(int level) { (void)level; return false; }
+static inline void plat_guest_priority(int prio) { (void)prio; }
+static inline void *plat_prio_self(void) { return NULL; }
+static inline int plat_prio_level(void *who) { (void)who; return PLAT_PRIO_NONE; }
+static inline int plat_prio_lend(void *who, int level) { (void)who, (void)level; return 0; }
+static inline void plat_prio_sync(void) {}
+static inline void plat_prio_end(void) {}
+#endif
 
 // ---- diagnostics
 const char *plat_symbol(uint64_t pc, uint64_t *offset);
@@ -74,11 +129,12 @@ void plat_crash_handler_install(void);
 extern void (*plat_touch_hook)(uint64_t guest_addr, int write);
 void rt_fault_report(const char *what, uint64_t fault_addr, uint64_t host_pc, uint64_t host_lr) __attribute__((noreturn));
 
-#ifdef __ANDROID__
-// ---- performance hints (runtime/platform/android_perf.c: an ADPF session for the threads the frame rate rests on)
+#if defined(__ANDROID__) || defined(_WIN32)
+// ---- performance hints (runtime/platform/android_perf.c: an ADPF session for the threads the frame rate rests on;
+// Windows, runtime/platform/win_stats.c: the game and render threads whose time per frame the performance readout shows)
 enum { PERF_GAME, PERF_RENDER, PERF_SUBMIT };
-void perf_hint_thread(int role);  // the calling thread is that one (after its first call: a thread-local load; for
-                                  // PERF_SUBMIT also a store: the frames it submits in)
+void perf_hint_thread(int role);  // the calling thread is that one (after its first call: a thread-local load, Windows
+                                  // its id against the role's; for PERF_SUBMIT also a store: the frames it submits in)
 void perf_hint_frame(void);       // a frame was presented (the presenting thread, once per frame)
 #endif
 

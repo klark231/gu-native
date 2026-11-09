@@ -7,18 +7,27 @@
 #include "../kernel.h"
 #include "chat.h"
 #include "input.h"
+#include "mousemenu.h"
 #include "../net/discord.h"
 #include "../net/net.h"
 
 static volatile uint64_t g_buttons;
+static volatile uint64_t g_menu_only, g_menu_next;  // (input_stage_menu_only: of g_buttons, the menu pad's alone)
 static volatile int32_t g_sticks[4];  // lx, ly, rx, ry (-32767..32767, y up)
 static int64_t sampling;
 
 volatile uint64_t g_a_pressed_ns;
 
+void input_stage_menu_only(uint64_t buttons) { g_menu_next = buttons; }
+
 void input_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     if ((buttons & ~g_buttons) & (1ull << BTN_A)) g_a_pressed_ns = plat_now_ns();
-    g_buttons = buttons;
+    // (the game's thread reads the two apart: a button the menu pad alone presses is never in g_buttons without being
+    // in g_menu_only, neither as it comes nor as it goes)
+    uint64_t next = g_menu_next;
+    __atomic_store_n(&g_menu_only, g_menu_only | next, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&g_buttons, buttons, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&g_menu_only, next, __ATOMIC_SEQ_CST);
     g_sticks[0] = lx, g_sticks[1] = ly, g_sticks[2] = rx, g_sticks[3] = ry;
 }
 
@@ -30,7 +39,15 @@ void input_get(uint64_t *buttons, int32_t sticks[4]) {
 // The state of player 1's pad as GetNpadState gives it: the buttons (a stick tilted past half is also a button, bits
 // 16-23) and the four sticks
 uint64_t input_npad_state(int32_t sticks[4]) {
-    uint64_t b = g_buttons;
+    uint64_t menu_only = __atomic_load_n(&g_menu_only, __ATOMIC_SEQ_CST);
+    uint64_t b = __atomic_load_n(&g_buttons, __ATOMIC_SEQ_CST);
+    uint64_t held_back = b & menu_only && !menu_takes_input() ? b & menu_only : 0;
+    b &= ~held_back;  // (the menu pad's: only while a menu takes input)
+    static uint64_t said;  // (MHGU_TOUCH_LOG: as it changes)
+    if (held_back != said && ENV("MHGU_TOUCH_LOG")) {
+        if (held_back) LOG("[input] the menu pad's %llx held back: no menu's cursor ran in the last update\n", (unsigned long long)held_back);
+        said = held_back;
+    }
     int32_t lx = g_sticks[0], ly = g_sticks[1], rx = g_sticks[2], ry = g_sticks[3];
     if (lx < -16000) b |= 1ull << 16;
     if (ly > 16000) b |= 1ull << 17;

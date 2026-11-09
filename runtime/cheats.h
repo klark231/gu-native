@@ -14,6 +14,10 @@ const char *cheats_file(int i);
 bool cheats_master(int i);
 bool cheats_on(int i);
 bool cheats_set(const bool *on, int n, char *err, size_t errsz);
+// The file (cheats_file's spelling) was removed (a desktop's Cheats tab): its cheats stop at the next frame, their
+// changes to the game's code undone as when turned off, and from then on they are off and left out of cheats/_off.txt
+void cheats_drop_file(const char *file);
+bool cheats_dropped(int i);
 #ifdef __cplusplus
 }
 #endif

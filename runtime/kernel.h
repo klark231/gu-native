@@ -23,6 +23,12 @@ struct KThread {
     uint64_t id;
     uint32_t handle;
     int prio, core;
+    int host_prio;  // (Windows) the guest priority the host thread's was last set from: by itself (kernel.c prio_follow)
+    // (Windows) the host thread's priority record, the level the threads waiting on its mutexes lend it (PLAT_PRIO_NONE:
+    // none), and since when that raises it ((debug) MHGU_HITCHLOG): kernel.c prio_lend, under g_klock
+    void *host_rec;
+    int host_lent;
+    uint64_t lent_ns;
     bool cancel, in_sync_wait;
     uint32_t sync_handles, sync_count;  // (debug dump) what WaitSynchronization waits on
     // wait state (protected by g_klock)
@@ -32,6 +38,9 @@ struct KThread {
     KThread *wnext;
     KThread *snext;        // in WaitSynchronization (g_syncwaiters)
     pthread_cond_t cond;   // each thread sleeps on its own condition; wakers signal it directly
+#ifdef _WIN32
+    void *wake_ev;         // its auto-reset event, slept on instead of cond (NULL: cond): kernel.c kwait
+#endif
     jmp_buf unwind;        // svcExitThread: back to thread_main
     bool started, finished;
     KThread *anext;        // every thread (g_klock)

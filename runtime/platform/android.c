@@ -697,6 +697,9 @@ static int count_files(const char *dir, int depth) {
     return n;
 }
 int plat_count_files(const char *dir) { return count_files(dir, 0); }
+// (paths are UTF-8 here already)
+bool plat_path_from_utf8(const char *utf8, char *out, size_t size) { return snprintf(out, size, "%s", utf8) < (int)size; }
+bool plat_path_to_utf8(const char *native, char *out, size_t size) { return snprintf(out, size, "%s", native) < (int)size; }
 
 void plat_error_box(const char *msg) {
     fprintf(stderr, "\n*** %s\n", msg);
@@ -729,6 +732,17 @@ static bool crash_screen(void) {
     if (cls) (*env)->DeleteLocalRef(env, cls);
     (*env)->DeleteLocalRef(env, act);
     return ok;
+}
+
+int plat_thread_create(void *(*fn)(void *), void *arg, size_t stack) {
+    pthread_attr_t attr;
+    pthread_t th;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, stack);  // (mapped, not committed: pages come as the stack grows)
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);  // (nobody joins it: its stack goes when it ends)
+    int err = pthread_create(&th, &attr, fn, arg);
+    pthread_attr_destroy(&attr);
+    return err;
 }
 
 void plat_fatal_notice(void) {

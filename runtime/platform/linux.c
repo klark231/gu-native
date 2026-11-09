@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <execinfo.h>
 #include <limits.h>
+#include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdatomic.h>
@@ -232,6 +233,9 @@ static int count_files(const char *dir, int depth) {
 }
 int plat_count_files(const char *dir) { return count_files(dir, 0); }
 
+bool plat_path_from_utf8(const char *utf8, char *out, size_t size) { return snprintf(out, size, "%s", utf8) < (int)size; }
+bool plat_path_to_utf8(const char *native, char *out, size_t size) { return snprintf(out, size, "%s", native) < (int)size; }
+
 void plat_error_box(const char *msg) {
     fprintf(stderr, "\n*** %s\n", msg);
     // Best effort, and only when there is a display server to ask. Children are reaped by SIG_IGN, so this can't
@@ -260,6 +264,17 @@ void plat_error_box(const char *msg) {
         argv[5] = NULL;
     }
     posix_spawnp(&pid, argv[0], NULL, NULL, argv, environ);  // (detached: nobody waits for the box to close)
+}
+
+int plat_thread_create(void *(*fn)(void *), void *arg, size_t stack) {
+    pthread_attr_t attr;
+    pthread_t th;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, stack);  // (mapped, not committed: pages come as the stack grows)
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);  // (nobody joins it: its stack goes when it ends)
+    int err = pthread_create(&th, &attr, fn, arg);
+    pthread_attr_destroy(&attr);
+    return err;
 }
 
 void plat_fatal_notice(void) {
