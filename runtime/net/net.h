@@ -48,6 +48,15 @@ enum { HUB_UNKNOWN, HUB_CHECKING, HUB_OFF, HUB_ONLINE, HUB_NOT_FOUND, HUB_UNREAC
        HUB_BUSY, HUB_VERSION, HUB_REFUSED };
 int ldn_hub_status(const char *server, const char *key, int *ms, int *hubs);  // HUB_*
 void ldn_hub_check(const char *server, const char *key);  // asks the server for its hubs, in a thread
+// The Join Hub screen's lists of hubs (more found than the game shows at once): runtime/touch.cpp's number strip and
+// host_input.c's Retry for the player use these.
+bool ldn_hub_browsing(void);
+int ldn_hub_lists(void);
+int ldn_hub_list_chosen(void);
+bool ldn_hub_list_pending(void);
+bool ldn_hub_list_goto(int n);
+bool ldn_hub_list_step(int dir);
+void ldn_hub_list_range(int *first, int *last, int *total);
 // The room connections the saved crossplay settings keep (for the settings menu): ROOMS_YUZU, ROOMS_CITRA -> ROOM_*
 enum { ROOMS_YUZU, ROOMS_CITRA };
 enum { ROOM_OFF, ROOM_JOINING, ROOM_IN };

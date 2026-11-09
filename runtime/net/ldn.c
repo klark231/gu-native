@@ -250,7 +250,7 @@ static struct {
 } L = {.mu = PTHREAD_MUTEX_INITIALIZER, .listen_s = BADSOCK, .disc_s = BADSOCK, .us = BADSOCK};
 
 // Scan results: where each found network's host is (hub: on the hub server at addr, 0: the host's own address).
-#define MAX_FOUND 32
+#define MAX_FOUND 96  // (the LAN's, the hub server's and the rooms' together: the game is given one list of them at a time)
 static struct { uint8_t bssid[6], session[16]; struct sockaddr_in addr; uint64_t hub; uint8_t info[NETINFO_SIZE]; int ryu; bool room, citra; } found[MAX_FOUND];
 static int nfound;
 
@@ -2320,6 +2320,76 @@ static bool filter_ok(const uint8_t *info, const uint8_t *f) {
     return true;
 }
 
+// The Join Hub screen has room for `max` hubs (18). With more found, they are split into lists of that many, and
+// runtime/touch.cpp's number strip (or host_input.c's Retry after a tap) chooses which one the next Scan gives the game.
+// Read from the UI threads while the game thread scans: the plain ints are only ever whole values.
+static pthread_mutex_t hl_mu = PTHREAD_MUTEX_INITIALIZER;
+static struct {
+    int per, total, chosen;  // hubs per list (the game's max), hubs found, the chosen list
+    int shown;               // the list the last Scan gave the game
+    uint64_t scan_ns;        // when the last Scan ended (0: never)
+} HL = {18, 0, 0, 0, 0};
+
+static int hl_lists_locked(void) { return HL.total > HL.per ? (HL.total + HL.per - 1) / HL.per : 1; }
+
+bool ldn_hub_browsing(void) {  // on the search's list: a station that scanned a moment ago and hasn't joined
+    pthread_mutex_lock(&hl_mu);
+    bool on = HL.scan_ns && plat_now_ns() - HL.scan_ns < 60ull * 1000000000ull;
+    pthread_mutex_unlock(&hl_mu);
+    return on && L.state == ST_STATION;
+}
+
+int ldn_hub_lists(void) {
+    pthread_mutex_lock(&hl_mu);
+    int n = hl_lists_locked();
+    pthread_mutex_unlock(&hl_mu);
+    return n;
+}
+
+int ldn_hub_list_chosen(void) {
+    pthread_mutex_lock(&hl_mu);
+    int c = HL.chosen;
+    pthread_mutex_unlock(&hl_mu);
+    return c;
+}
+
+bool ldn_hub_list_pending(void) {  // chosen, but the game still shows another list (a Retry brings it)
+    pthread_mutex_lock(&hl_mu);
+    bool p = HL.chosen != HL.shown;
+    pthread_mutex_unlock(&hl_mu);
+    return p;
+}
+
+bool ldn_hub_list_goto(int n) {
+    pthread_mutex_lock(&hl_mu);
+    int lists = hl_lists_locked();
+    if (n < 0) n = 0;
+    if (n >= lists) n = lists - 1;
+    bool changed = n != HL.chosen;
+    HL.chosen = n;
+    pthread_mutex_unlock(&hl_mu);
+    return changed;
+}
+
+bool ldn_hub_list_step(int dir) {  // (wraps around, as ZL / ZR would)
+    pthread_mutex_lock(&hl_mu);
+    int lists = hl_lists_locked(), n = ((HL.chosen + dir) % lists + lists) % lists;
+    bool changed = n != HL.chosen;
+    HL.chosen = n;
+    pthread_mutex_unlock(&hl_mu);
+    return changed;
+}
+
+void ldn_hub_list_range(int *first, int *last, int *total) {  // the chosen list's hubs, counted from 1
+    pthread_mutex_lock(&hl_mu);
+    int a = HL.chosen * HL.per, b = a + HL.per;
+    if (b > HL.total) b = HL.total;
+    if (first) *first = HL.total ? a + 1 : 0;
+    if (last) *last = b;
+    if (total) *total = HL.total;
+    pthread_mutex_unlock(&hl_mu);
+}
+
 // Scan(NetworkInfo *out, int *count, int max, const ScanFilter &, int channel)
 HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan) { NTRACE();
     uint32_t out = ARG(0), pcount = ARG(1);
@@ -2386,6 +2456,14 @@ HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan)
             citra_of[n++] = true;
         }
     }
+    int usable = 0;
+    for (int i = 0; i < n; i++) usable += info_sane(infos[i]) && filter_ok(infos[i], filter);
+    pthread_mutex_lock(&hl_mu);
+    HL.per = max > 0 ? max : 18;
+    HL.total = usable;
+    if (HL.chosen >= hl_lists_locked()) HL.chosen = hl_lists_locked() - 1;
+    int list = HL.chosen, skip = list * HL.per;
+    pthread_mutex_unlock(&hl_mu);
     nfound = 0;
     for (int i = 0; i < n; i++) {
         if (!info_sane(infos[i]) || !filter_ok(infos[i], filter)) continue;
@@ -2396,15 +2474,18 @@ HLE_FUNC("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_scan)
         memcpy(found[nfound].bssid, infos[i] + NI_BSSID, 6);
         memcpy(found[nfound].session, infos[i] + NI_SESSION_ID, 16);
         found[nfound].hub = hubs[i];
-        found[nfound++].addr = addrs[i];
-        if (k < max) memcpy((uint8_t *)G2H(out) + (size_t)k++ * NETINFO_SIZE, infos[i], NETINFO_SIZE);
+        found[nfound++].addr = addrs[i];  // (every list's: joining looks a hub up here by its BSSID)
+        if (nfound > skip && k < max) memcpy((uint8_t *)G2H(out) + (size_t)k++ * NETINFO_SIZE, infos[i], NETINFO_SIZE);
     }
     if (pcount) ST32(pcount, k);
+    pthread_mutex_lock(&hl_mu);
+    HL.shown = list, HL.scan_ns = plat_now_ns();
+    pthread_mutex_unlock(&hl_mu);
     static int last = -1, last_online = -1, last_max = -1;
     int listed = asked && online.state == HUB_ONLINE ? online.n : 0;
     if (nfound != last || listed != last_online || max != last_max) {
-        LOG("[ldn] scan: %d network(s) found (%d listed on the hub server), %d given to the game (room for %d)\n",
-            nfound, listed, k, max);
+        LOG("[ldn] scan: %d network(s) found (%d listed on the hub server), %d given to the game (room for %d, list %d)\n",
+            nfound, listed, k, max, list + 1);
         last = nfound, last_online = listed, last_max = max;
     }
     RET(0);
