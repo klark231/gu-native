@@ -35,7 +35,6 @@
 #include <SDL3/SDL.h>
 
 #include "config.h"
-#include "settings_locale.h"
 #include "menu_confirm.h"
 #include "forge.h"
 #include "haptics.h"
@@ -45,16 +44,15 @@
 #include "hle/mousecam.h"
 #include "hle/mousemenu.h"
 #include "overlay.h"
-#include "net/net.h"
 #include "padmap.h"
 #include "rt.h"
-#include "settings_panel.h"
 #include "textinput.h"
 #include "touch.h"
 
 #define B(x) (1ull << (x))
 
 static bool keys[SDL_SCANCODE_COUNT];
+static SDL_Gamepad *gyro_pad;  // (the controller whose gyroscope is read while aiming: gyro_update)
 static SDL_Gamepad *pad;  // the controller read: of those open, the one a button was last pressed on
 #define MAX_PADS 8
 static struct { SDL_Gamepad *pad; uint64_t opened_ns; bool real; } pads[MAX_PADS];  // (real: hides the touch controls)
@@ -123,7 +121,8 @@ static void wheel_turn(int n) {
     for (int i = 0; i < BINDS; i++)
         for (int k = 0; k < BIND_KEYS; k++) {
             if (config_live_bind(i, k) != code) continue;
-            if (i == BIND_ITEM_LEFT || i == BIND_ITEM_RIGHT) itembar_scroll((i == BIND_ITEM_LEFT ? -1 : 1) * abs(n));
+            if (i == BIND_ITEM_LEFT || i == BIND_ITEM_RIGHT)  // (a Prowler's: its Support Moves, runtime/touch.cpp)
+                for (int k2 = 0; k2 < abs(n) && k2 < 4; k2++) touch_item_step(i == BIND_ITEM_LEFT ? -1 : 1);
             else wheel_until[code - KEY_WHEEL_UP] = plat_now_ns() + WHEEL_PRESS_NS;
             break;
         }
@@ -147,12 +146,16 @@ static uint64_t touch_cam_ns;  // when a finger last turned the camera (runtime/
 // (tests: the control file's "mousemove <x> <y> <ms>", a mouse moving at that many counts a second, captured or not)
 static float test_vx, test_vy;
 static uint64_t test_until;
+static float gyro_test_r, gyro_test_u;  // (control "gyro <right> <up> <ms>": a turn of that many degrees a second)
+static uint64_t gyro_test_until;
 
 // ---- scripted input
 typedef struct { uint64_t start, len; uint64_t buttons; int stick, x, y; } ScriptStep;
 #define MAX_STEPS 4096
 static ScriptStep script[MAX_STEPS];
 static int nscript = -1;
+static uint64_t script_end;  // (the presented frame the last step ends at: host_input_busy)
+static bool out_busy;         // (the last update gave the game a button or a stick: host_input_busy)
 
 static const char *const button_names[] = {"A", "B", "X", "Y", "LSTICK", "RSTICK", "L", "R", "ZL", "ZR", "PLUS",
                                            "MINUS", "LEFT", "UP", "RIGHT", "DOWN"};
@@ -181,6 +184,7 @@ static bool add_step(const char *name, uint64_t start, uint64_t len) {
         if (nscript == MAX_STEPS) return false;
     }
     script[nscript++] = st;
+    if (st.start + st.len > script_end) script_end = st.start + st.len;
     return true;
 }
 
@@ -212,7 +216,8 @@ static void script_parse(void) {
 //   burst <n> <name>       save the next n presented frames as shots/<name>_<i>.png
 //   dump [n]               save colour target 0 (or the depth of a depth-only pass) of every render pass of the next
 //                          frame (shots/pass_*.png), or of the next n frames (shots/f<i>_pass_*.png for i >= 1)
-//   hudtrace               log every HUD quad of the next frame: its layer, place, and where 16:10 / ultrawide moved it
+//   hudtrace               log every HUD quad of the next frame: its layer, place, and where 16:10 / ultrawide moved it;
+//                          and each pass (targets, stand-ins, area), draw (program, viewport, scissor, textures), copy and dispatch
 //   frame                  log the current frame number
 //   type <text>            type into the game's text entry (runtime/textinput.c); textkey enter|escape|backspace
 //   mousemove <x> <y> <ms> mouse look as if the mouse moved at that many counts a second (y down) for that long
@@ -229,6 +234,8 @@ static void script_parse(void) {
 //   finger <n> down|move|up|cancel <x> <y> [ms]: a finger on the screen (n: which one, 0..15; x, y: parts of the
 //                          window's width and height), now or that many ms from now (tests: the touch controls)
 //   touchedit              the touch layout editor opens, as Customize controls and HUD does (runtime/touch.cpp)
+//   fakewindow <ms>        the touch controls see a window of the game's menus drawn for that long (a chat bubble: a
+//                          window that comes by itself; runtime/touch.cpp)
 char g_shot_request[256];  // (runtime/nvn/vulkan/device.c saves it)
 // (tests) the fingers' events waiting for their time: pushed to SDL's queue then, as a touch screen's
 static struct {
@@ -295,7 +302,15 @@ static void control_poll(void) {
             if (sscanf(line, "%31s %255s %199s", cmd, arg, arg2) < 1) continue;
             if (!strcmp(cmd, "crash")) raise(SIGILL);  // (tests: the error screen, runtime/platform/android.c)
             if (!strcmp(cmd, "msaa")) { void vk_set_msaa(uint32_t); vk_set_msaa((uint32_t)atoi(arg)); continue; }
+#ifdef __ANDROID__
+            if (!strcmp(cmd, "prerotate")) {  // prerotate 0|1: the window image drawn turned for the panel or not, the
+                extern int g_prerotate_test;  // swapchain made again (tests: nvn/vulkan/device.c MHGU_PERF_PREROTATE, the
+                g_prerotate_test = atoi(arg) ? 1 : 0;  // same held frame both ways)
+                continue;
+            }
+#endif
             if (!strcmp(cmd, "gpuprof")) { extern volatile int g_gpuprof_request; g_gpuprof_request = 1; continue; }
+            if (!strcmp(cmd, "devicelost")) { extern volatile int g_fake_lost; g_fake_lost = 1; continue; }  // (tests: exec.c lost_report)
             if (!strcmp(cmd, "hudtrace")) { g_hudtrace_request = 1; continue; }
             if (!strcmp(cmd, "menutrace")) { mousemenu_trace(atoi(arg)); continue; }  // (hle/mousemenu.c)
             if (!strcmp(cmd, "menupress")) { mousemenu_test_press((uint32_t)strtoul(arg, NULL, 16)); continue; }
@@ -593,11 +608,19 @@ static void control_poll(void) {
 #endif
             if (!strcmp(cmd, "finger")) { finger_command(line); continue; }
             if (!strcmp(cmd, "touchedit")) { touch_edit_begin(); continue; }  // (as from the settings menu: once it is closed)
+            if (!strcmp(cmd, "fakewindow")) { touch_test_window(atoi(arg)); continue; }  // fakewindow <ms> (runtime/touch.cpp)
             if (!strcmp(cmd, "mousemove")) {  // mousemove <x> <y> <ms>: mouse look at that speed (counts a second)
                 char arg3[16] = "";
                 sscanf(line, "%*s %*s %*s %15s", arg3);
                 test_vx = (float)atof(arg), test_vy = (float)atof(arg2);
                 test_until = plat_now_ns() + (uint64_t)atoi(arg3) * 1000000ull;
+                continue;
+            }
+            if (!strcmp(cmd, "gyro")) {  // gyro <right> <up> <ms>: the gyroscope turned that fast (degrees a second)
+                char arg3[16] = "";
+                sscanf(line, "%*s %*s %*s %15s", arg3);
+                gyro_test_r = (float)atof(arg), gyro_test_u = (float)atof(arg2);
+                gyro_test_until = plat_now_ns() + (uint64_t)atoi(arg3) * 1000000ull;
                 continue;
             }
             if (!strcmp(cmd, "wheel")) {  // wheel <notches>: the mouse wheel turned (< 0 down), captured or not
@@ -667,6 +690,8 @@ static bool real_pad_connected(void) {  // (from the open pads every call: follo
         if (pads[i].real) return true;
     return false;
 }
+static SDL_AtomicInt real_pad_seen;  // (host_input_real_pad: real_pad_connected at the last update, for other threads)
+bool host_input_real_pad(void) { return SDL_GetAtomicInt(&real_pad_seen) != 0; }
 
 static void open_pad(SDL_JoystickID id) {
     if (find_pad(id) >= 0) return;
@@ -698,6 +723,7 @@ static void close_pad(SDL_JoystickID id) {
     const char *name = SDL_GetGamepadName(pads[i].pad);  // (its id is gone already: log_pad would find nothing)
     LOG("[input] gamepad removed%s: %s\n", was ? " (it was in use)" : "", name ? name : "?");
     bool real = pads[i].real;
+    if (pads[i].pad == gyro_pad) gyro_pad = NULL;  // (its gyro was read: gone with it)
     SDL_CloseGamepad(pads[i].pad);
     pads[i] = pads[--npads];
     if (!real) LOG("[input] (it was not a controller for the touch controls)\n");
@@ -724,14 +750,13 @@ static void joystick_seen(SDL_JoystickID id) {
         name ? name : "?", SDL_GetJoystickVendorForID(id), SDL_GetJoystickProductForID(id));
     if (name && (SDL_strcasestr(name, "consumer control") || SDL_strcasestr(name, "virtual") || SDL_strcasestr(name, "uinput")))
         return;  // (not a controller in the player's hands: pad_is_real)
-    const int lang = config_language();
-    const bool es = lang == MENU_LANG_ES;
+    bool es = config_language() == 1;
     char text[200];
     snprintf(text, sizeof text,
              es ? "%s: para usarlo, configúralo en el engranaje, Controles, Mapear un mando."
-                : settings_text(lang, "%s: to use it, set it up under the gear, Controls, Map a controller."),
-             name ? name : (es ? "Un mando" : settings_text(lang, "A controller")));
-    overlay_notice(es ? "Mando sin configurar" : settings_text(lang, "Controller not set up"), text);
+                : "%s: to use it, set it up under the gear, Controls, Map a controller.",
+             name ? name : (es ? "Un mando" : "A controller"));
+    overlay_notice(es ? "Mando sin configurar" : "Controller not set up", text);
 }
 
 static void pick_pad(void) {  // over every controller SDL sees now: those MHGU_PAD allows (all without it), first in use
@@ -916,8 +941,7 @@ void host_input_event(const SDL_Event *e) {
         mousemenu_hide();
         if (pad_down || menu_mouse()) menu_pointer_hidden = true;
     }
-    if (e->type == SDL_EVENT_FINGER_UP && (textinput_active() || settings_panel_typing(NULL)))
-        textinput_tap();  // (the screen keyboard, if hidden: the game's entry or the menu's text page)
+    if (e->type == SDL_EVENT_FINGER_UP && textinput_active()) textinput_tap();  // (the screen keyboard, if hidden)
     if (touch_event(e)) return;  // (fingers: the touch controls, or the settings menu's mouse: runtime/touch.cpp)
     if (overlay_event(e)) return;  // (Forge's menu open: keyboard and mouse are its)
 #ifndef __ANDROID__
@@ -1057,6 +1081,67 @@ void host_input_event(const SDL_Event *e) {
 static int32_t clamp_axis(int v) { return v < -32767 ? -32767 : v > 32767 ? 32767 : v; }
 
 // Capture or release the mouse as wanted, and give its movement to the hunt camera or the right stick.
+// ---- Aiming with the gyro ([Controls] GyroAim): while a bow or a bowgun aims (weapon_gyro_aiming; not a locked shot's
+// own aim), the phone's gyroscope - a controller's, if the one read has one - turns the aim as a drag does, added to it:
+// the angle turned since the aim began, times GyroSensitivity, in the mouse's counts (the hunt camera's GYRO_COUNT_DEG
+// each; with a gun's or a bow's own camera up, mouse_update's stick). The sensor is open only while aiming. The
+// phone's axes go by the display's quarter turns from the device's natural orientation (a phone's portrait, an Anbernic
+// RG406V's landscape). The MH4U port's the same (app_native/controls.cpp)
+const float GYRO_COUNT_DEG = 0.08f;   // (hle/mousecam.c: the hunt camera's turn for a count)
+const float GYRO_DEADBAND = 0.01f;    // (radians a second: the gyroscope's own drift, at rest)
+static SDL_Sensor *gyro_dev;
+static bool gyro_on;
+static int gyro_turns;
+static uint64_t gyro_ns;
+bool touch_lock_assist(void);  // (runtime/touch.cpp: a locked shot's own aim)
+static int display_quarter(SDL_DisplayOrientation o) {  // (the device turned this many quarters counterclockwise)
+    return o == SDL_ORIENTATION_LANDSCAPE ? 1 : o == SDL_ORIENTATION_PORTRAIT_FLIPPED ? 2 : o == SDL_ORIENTATION_LANDSCAPE_FLIPPED ? 3 : 0;
+}
+static void gyro_off(void) {
+    if (gyro_dev) SDL_CloseSensor(gyro_dev), gyro_dev = NULL;
+    if (gyro_pad) SDL_SetGamepadSensorEnabled(gyro_pad, SDL_SENSOR_GYRO, false), gyro_pad = NULL;
+    if (gyro_on) LOG("[gyro] off\n");
+    gyro_on = false, gyro_ns = 0;
+}
+static void gyro_update(void) {
+    uint64_t now = plat_now_ns();
+    if (!config_live_gyro_aim() || !weapon_gyro_aiming(weapon_hunter(), now) || touch_lock_assist()) {
+        if (gyro_on) gyro_off();
+        return;
+    }
+    if (!gyro_on) {  // (the aim begins: where it is now is the middle, the phone's pose with it)
+        gyro_on = true, gyro_ns = 0;
+        SDL_Gamepad *p = pad && SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) ? pad : NULL;
+        if (p && SDL_SetGamepadSensorEnabled(p, SDL_SENSOR_GYRO, true)) gyro_pad = p;
+        int n = 0;
+        SDL_SensorID *ids = gyro_pad ? NULL : SDL_GetSensors(&n);
+        for (int i = 0; ids && i < n && !gyro_dev; i++)
+            if (SDL_GetSensorTypeForID(ids[i]) == SDL_SENSOR_GYRO) gyro_dev = SDL_OpenSensor(ids[i]);
+        SDL_free(ids);
+        SDL_DisplayID d = SDL_GetPrimaryDisplay();
+        gyro_turns = (display_quarter(SDL_GetCurrentDisplayOrientation(d)) - display_quarter(SDL_GetNaturalDisplayOrientation(d)) + 4) % 4;
+        LOG("[gyro] on: %s (the display %d quarter turns from the device's own orientation)\n",
+            gyro_pad ? SDL_GetGamepadName(gyro_pad) : gyro_dev ? SDL_GetSensorName(gyro_dev) : "no gyroscope", gyro_turns);
+    }
+    float g[3] = {0, 0, 0}, right = 0, up = 0;  // (radians a second: the aim's turn right, up)
+    if (gyro_pad && SDL_GetGamepadSensorData(gyro_pad, SDL_SENSOR_GYRO, g, 3)) {
+        right = -g[1], up = g[0];  // (SDL's: a controller held before you, x right, y up, z toward you)
+    } else if (gyro_dev && SDL_GetSensorData(gyro_dev, g, 3)) {
+        // (the device's natural axes: x right, y up, z out of the screen; the screen's up and right in them, by quarter turn)
+        static const float ux[4] = {0, 1, 0, -1}, uy[4] = {1, 0, -1, 0}, rx[4] = {1, 0, -1, 0}, ry[4] = {0, -1, 0, 1};
+        int k = gyro_turns;
+        right = -(g[0] * ux[k] + g[1] * uy[k]), up = g[0] * rx[k] + g[1] * ry[k];
+    }
+    if (fabsf(right) < GYRO_DEADBAND) right = 0;
+    if (fabsf(up) < GYRO_DEADBAND) up = 0;
+    if (now < gyro_test_until) right = gyro_test_r * 0.0174533f, up = gyro_test_u * 0.0174533f;
+    float dt = gyro_ns ? (float)(now - gyro_ns) * 1e-9f : 0.0f;
+    gyro_ns = now;
+    if (dt > 0.1f) dt = 0.1f;
+    float k = config_live_gyro_sensitivity() * 57.29578f / GYRO_COUNT_DEG * dt;  // (radians -> degrees -> counts)
+    if ((right != 0 || up != 0) && k > 0) mouse_dx += right * k, mouse_dy -= up * k, touch_cam_ns = now;
+}
+
 static void mouse_update(int *rx, int *ry) {
     // (Forge's menu, the chat box, a text the game asks for: the pointer is theirs)
     bool want = mouse_grab && !overlay_menu_open() && !chat_active() && !textinput_active();
@@ -1170,46 +1255,28 @@ static void mouse_update(int *rx, int *ry) {
     *rx += (int)(x * t * 32767.0f), *ry += (int)(y * t * 32767.0f);
 }
 
-// The game's rumble (input_rumble) to the controller. It starts and stops at once; in between a new strength goes out
-// only when a motor moved by RUMBLE_STEP, at most every RUMBLE_CHANGE_NS (twice that on a wireless controller). The
-// game sends a value every 5 ms and a roar's changes nearly every time, while each new strength is an output report
-// that SDL's rumble thread writes holding the controller (HIDAPI: DualSense, DualShock 4...): its input is not read
-// meanwhile, and a Bluetooth write is slow. A new strength every 16 ms left the sticks stale and lost button presses
-// for the whole roar. Renewed while it lasts with the strength last sent (SDL sends no report for the same strength:
-// only its stop time moves).
-#define RUMBLE_STEP 0x0C00            // (of 0xFFFF: ~5%; the DualSense's motors take 8 bits)
-#define RUMBLE_CHANGE_NS 50000000ull
+// The game's rumble (input_rumble) to the controller: on a change, at most every 16 ms (the game sends a value every
+// 5 ms, and a DualSense over Bluetooth takes a packet per call), renewed while it lasts, stopped at once. And to the
+// phone's own vibrator, with or without a controller ([Controls] PhoneRumble, runtime/haptics.c).
 static void rumble_update(void) {
-    static uint32_t sent, peak, sends;
+    static uint32_t sent, peak;
     static uint64_t sent_ns, on_ns;
     static SDL_Gamepad *sent_pad;
-    static bool wireless;
     uint32_t v = input_rumble();
     haptics_rumble(v);
     uint64_t now = plat_now_ns();
-    if (v && !on_ns) on_ns = now, peak = 0, sends = 0;  // (the log: each rumble's length, strongest motor values, reports)
+    if (v && !on_ns) on_ns = now, peak = 0;  // (the log: each rumble's length and strongest motor values)
     if (v) peak = ((v >> 16) > (peak >> 16) ? v & 0xFFFF0000u : peak & 0xFFFF0000u) | ((v & 0xFFFF) > (peak & 0xFFFF) ? v & 0xFFFF : peak & 0xFFFF);
     if (!v && on_ns) {
-        LOG("[input] rumble %.0f ms, low %u high %u, %u strength(s) sent%s\n", (now - on_ns) / 1e6, peak >> 16, peak & 0xFFFF,
-            sends, pad ? (wireless ? " (wireless)" : "") : " (no controller)");
+        LOG("[input] rumble %.0f ms, low %u high %u%s\n", (now - on_ns) / 1e6, peak >> 16, peak & 0xFFFF, pad ? "" : " (no controller)");
         on_ns = 0;
     }
     if (!pad) { sent_pad = NULL; return; }
-    if (pad != sent_pad)
-        sent = 0, sent_pad = pad, wireless = SDL_GetGamepadConnectionState(pad) == SDL_JOYSTICK_CONNECTION_WIRELESS;
-    bool change;
-    if (!v || !sent) {
-        change = v != sent;  // (start, stop)
-    } else {
-        int dl = abs((int)(v >> 16) - (int)(sent >> 16)), dh = abs((int)(v & 0xFFFF) - (int)(sent & 0xFFFF));
-        change = (dl >= RUMBLE_STEP || dh >= RUMBLE_STEP) && now - sent_ns >= RUMBLE_CHANGE_NS * (wireless ? 2 : 1);
-    }
-    bool renew = v && now - sent_ns >= 100000000ull;
+    if (pad != sent_pad) sent = 0, sent_pad = pad;
+    bool change = v != sent && (v == 0 || now - sent_ns >= 16000000ull), renew = v && now - sent_ns >= 100000000ull;
     if (!change && !renew) return;
-    uint32_t out = change ? v : sent;
-    SDL_RumbleGamepad(pad, (Uint16)(out >> 16), (Uint16)out, out ? 200 : 0);
-    if (change && v) sends++;
-    sent = out, sent_ns = now;
+    SDL_RumbleGamepad(pad, (Uint16)(v >> 16), (Uint16)v, v ? 200 : 0);
+    sent = v, sent_ns = now;
 }
 
 #ifndef __ANDROID__
@@ -1253,7 +1320,7 @@ void host_input_update(void) {
     static bool item_held[2];  // ItemLeft / ItemRight's keys and buttons: a press turns the item bar once
     for (int i = 0; i < 2; i++) {  // (their wheel notches turn it in wheel_turn)
         bool held = bind_held(BIND_ITEM_LEFT + i, false);
-        if (held && !item_held[i]) itembar_scroll(i ? 1 : -1);
+        if (held && !item_held[i]) touch_item_step(i ? 1 : -1);  // (a Prowler's: its Support Moves, runtime/touch.cpp)
         item_held[i] = held;
     }
     int kx = bind_held(BIND_MOVE_RIGHT, true) - bind_held(BIND_MOVE_LEFT, true);
@@ -1314,8 +1381,12 @@ void host_input_update(void) {
     int ck = cx && cy ? 23170 : 32767;
     rx += cx * ck, ry += cy * ck;
     float tdx = 0, tdy = 0;  // (the touch controls: buttons, the stick, and a drag that turns the camera as the mouse)
-    touch_input(real_pad_connected(), typing, &b, &lx, &ly, &tdx, &tdy);  // (a real controller open hides them)
+    bool real_pad = real_pad_connected();
+    SDL_SetAtomicInt(&real_pad_seen, real_pad);
+    touch_input(real_pad, typing, &b, &lx, &ly, &tdx, &tdy);  // (a real controller open hides them)
+    touch_right_stick(&rx, &ry);  // (a Hunter Art tapped that the game's controls put on the right stick)
     if (tdx != 0 || tdy != 0) mouse_dx += tdx, mouse_dy += tdy, touch_cam_ns = plat_now_ns();
+    gyro_update();  // (aiming a bow or a bowgun: the gyroscope's turn, as a drag)
     bool mouse_moved = mouse_dx != 0 || mouse_dy != 0;  // (the mouse or a finger turning the camera: the lock-on waits)
     mouse_update(&rx, &ry);
 
@@ -1417,15 +1488,25 @@ void host_input_update(void) {
         if (st->stick == 1) rx = st->x, ry = st->y;
     }
 
-    // The right stick's click in a hunt turns the lock-on on or off (the camera kept on the target, as in the newer
-    // games: runtime/touch.cpp); elsewhere it is the game's
+    // The right stick's click in a hunt turns the lock-on on or off (the camera kept on the monster, as in the newer
+    // games: runtime/touch.cpp); elsewhere it is the game's. With the game's Control Type 3, whose click changes the
+    // target (hle/mousecam.c mousecam_target_buttons), the click stays the game's and holding it turns the lock-on
     static bool rstick_was;
+    static uint64_t rstick_hold;  // (Control Type 3: when the click held turns the lock-on; 0 none)
     bool rstick = (b & B(BTN_RSTICK)) && mousecam_active() && config_live_lock_on();
-    if (rstick && !rstick_was) touch_lock_toggle();
+    bool r3_targets = rstick && (mousecam_target_buttons() & B(BTN_RSTICK)) != 0;
+    if (rstick && !rstick_was) {
+        if (r3_targets) rstick_hold = plat_now_ns() + 600000000ull;  // (as the touch controls' long press on L)
+        else touch_lock_toggle(), rstick_hold = 0;
+    }
+    if (!rstick) rstick_hold = 0;
+    if (rstick_hold && plat_now_ns() >= rstick_hold) touch_lock_toggle(), rstick_hold = 0;
     rstick_was = rstick;
-    if (rstick) b &= ~B(BTN_RSTICK);
+    if (rstick && !r3_targets) b &= ~B(BTN_RSTICK);
     b |= touch_lock_buttons(b, mouse_moved || (int64_t)rx * rx + (int64_t)ry * ry > 12000LL * 12000);  // (round: as the game's)
-    b = touch_lock_shot(b);  // (with the lock-on on, a bowgun's shot is aimed first, whatever fires it: runtime/touch.cpp)
+    // (with the lock-on on, a bowgun's shot is aimed first, whatever fires it: runtime/touch.cpp; standing still, no stick
+    // past a quarter, as 0.1.8 aimed it)
+    b = touch_lock_shot(b, (int64_t)lx * lx + (int64_t)ly * ly < 8192LL * 8192);
     // (the touch controls' menu pad: what it alone presses the game reads only while a menu takes input, hle/input.c)
     uint64_t menu_only = touch_menu_buttons() & ~b;
     b |= menu_only;
@@ -1460,27 +1541,6 @@ void host_input_update(void) {
         const uint64_t face_mask = B(BTN_A) | B(BTN_B) | B(BTN_X) | B(BTN_Y);
         b = menu_release_buttons(b, face_mask, &menu_face_release);
     }
-    // On the Join Hub screen a tap on a list's number (runtime/touch.cpp) chooses the list of hubs (the game shows 18 at
-    // a time); a moment after the last tap the game's Retry (X) is pressed for the player, so the chosen list is on the
-    // screen without a Retry of their own.
-    static int hub_seen = -1;
-    static uint64_t hub_retry_at, hub_x_until;
-    if (ldn_hub_browsing()) {
-        uint64_t now_ns = SDL_GetTicksNS();
-        int chosen = ldn_hub_list_pending() ? ldn_hub_list_chosen() : -1;
-        if (chosen != hub_seen) {  // (a new choice: wait a moment for another tap)
-            hub_seen = chosen;
-            if (chosen >= 0) hub_retry_at = now_ns + 300ull * 1000000ull;
-        }
-        if (chosen >= 0 && now_ns >= hub_retry_at) {  // (Retry for them; again after a while if the search did not come)
-            hub_x_until = now_ns + 120ull * 1000000ull;
-            hub_retry_at = now_ns + 2500ull * 1000000ull;
-        }
-        if (now_ns < hub_x_until) b |= B(BTN_X);
-    } else {
-        hub_seen = -1;
-        hub_x_until = 0;
-    }
     static uint64_t was;
     uint64_t down = b & ~was;
     was = b;
@@ -1514,4 +1574,37 @@ void host_input_update(void) {
     b &= ~ed_held;
     input_stage_menu_only(menu_only & b);
     input_set(b, clamp_axis(lx), clamp_axis(ly), clamp_axis(rx), clamp_axis(ry));
+    out_busy = b || lx || ly || rx || ry || rstick_hold;
+}
+
+// (MHGU_PERF_INPUT_WAKE, runtime/ui.c) Something that goes on by the clock, not by an event: then the window loop keeps its
+// 3 ms pace. A button or a stick given to the game at the last update (a touch press, a locked run, a key, a scripted
+// step), a controller SDL reads only as the loop polls (HIDAPI's: a device path; a virtual one: bus 0. Android's own, a
+// handheld's built-in buttons too, have neither and come as events from the system's input thread: SDL gives them all
+// the Bluetooth bus), a scripted press or a test finger waiting, the game's rumble, the settings menu, a text being typed,
+// a controller being mapped, or the touch controls' own timers (touch_busy). Otherwise nothing changes until an event, a
+// frame or a rumble wakes the loop (ui_loop_wake).
+int host_input_busy(void) {  // (which, for the log: HIB_*, 0 none)
+    if (out_busy) return HIB_OUTPUT;
+    if (padmap_active()) return HIB_PADMAP;
+    if (g_present_count < script_end || plat_now_ns() < test_until) return HIB_SCRIPT;
+    for (int i = 0; i < npads; i++) {
+        SDL_Joystick *j = SDL_GetGamepadJoystick(pads[i].pad);
+        SDL_GUID g = j ? SDL_GetJoystickGUID(j) : (SDL_GUID){{0}};
+        const char *path = SDL_GetGamepadPath(pads[i].pad);
+        bool events = j && !path && g.data[0] == 0x05 && !g.data[1];  // (SDL_HARDWARE_BUS_BLUETOOTH, SDL_sysjoystick.h)
+        static SDL_Gamepad *said;
+        if (said != pads[i].pad) {
+            LOG("[perf] input loop: %s %s (bus %02x%02x, %s)\n", SDL_GetGamepadName(pads[i].pad),
+                events ? "sends events: the loop waits between them" : "is read by polling: 3 ms", g.data[1], g.data[0],
+                path ? path : "no path");
+            said = pads[i].pad;
+        }
+        if (!events) return HIB_PAD;
+    }
+    for (int i = 0; i < 32; i++)
+        if (finger_wait[i].due) return HIB_SCRIPT;
+    if (input_rumble()) return HIB_RUMBLE;
+    if (overlay_menu_open() || textinput_active() || chat_active()) return HIB_MENU;
+    return touch_busy() ? HIB_TOUCH : 0;
 }

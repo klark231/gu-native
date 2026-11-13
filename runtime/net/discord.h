@@ -1,6 +1,7 @@
 // Discord Rich Presence: what the player is doing, on their Discord profile (ini [Discord]). discord.c talks to the
 // Discord app on this computer; runtime/hle/presence.c reads the game and says what to show.
 #pragma once
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -21,6 +22,7 @@ typedef struct {
 } DiscordActivity;
 
 void discord_init(void);
+bool discord_running(void);  // its thread runs (Android with MHGU_PERF_NODISCORD=1: it never starts)
 // Called whenever the game's state may have changed (cheap when nothing did): sent to Discord at once, or as soon
 // as Discord's rate limit allows. NULL: nothing is shown.
 void discord_set_activity(const DiscordActivity *a);

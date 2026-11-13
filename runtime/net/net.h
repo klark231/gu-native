@@ -53,6 +53,8 @@ void ldn_send_aux(const void *data, uint32_t len);  // the port's own message to
 // from a search, a hosted hub or a check; ms: the answer's round trip, hubs: listed for the key (-1: not known).
 enum { HUB_UNKNOWN, HUB_CHECKING, HUB_OFF, HUB_ONLINE, HUB_NOT_FOUND, HUB_UNREACHABLE, HUB_LOST, HUB_NO_ANSWER,
        HUB_BUSY, HUB_VERSION, HUB_REFUSED };
+// The server an ini Server names: "" the default (LDN_DEFAULT_SERVER), "Off" none (false, out empty)
+bool ldn_server_name(const char *setting, char *out, size_t size);
 int ldn_hub_status(const char *server, const char *key, int *ms, int *hubs);  // HUB_*
 void ldn_hub_check(const char *server, const char *key);  // asks the server for its hubs, in a thread
 // The Join Hub screen's lists of hubs (more found than the game shows at once): runtime/touch.cpp's number strip and

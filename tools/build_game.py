@@ -88,12 +88,86 @@ def check_game(game):
     return game
 
 
+# The game's exefs is LZ4-compressed: the translator (nso.py) reads it with the lz4 package. A Python too new for it (no
+# ready-made lz4 for it yet, and nothing to build one with: gu-native #173, Python 3.15 on Windows) gets this reader
+# instead, the LZ4 block format as the package decodes it: the same bytes, slower (seconds). It is handed to the
+# translator's runs as a package of its own in the work folder (lz4_env), so the translator itself never changes.
+LZ4_FALLBACK = '''"""The LZ4 block format, decoded in Python (MHGU's build_game.py, when the lz4 package can't be had)."""
+
+
+def decompress(source, uncompressed_size=-1, **_):
+    src = bytes(source)
+    out = bytearray()
+    i, n = 0, len(src)
+    while i < n:
+        token = src[i]
+        i += 1
+        run = token >> 4
+        if run == 15:
+            while True:
+                b = src[i]
+                i += 1
+                run += b
+                if b != 255:
+                    break
+        out += src[i:i + run]
+        i += run
+        if i >= n:
+            break
+        offset = src[i] | src[i + 1] << 8
+        i += 2
+        length = token & 15
+        if length == 15:
+            while True:
+                b = src[i]
+                i += 1
+                length += b
+                if b != 255:
+                    break
+        length += 4
+        if offset == 0 or offset > len(out):
+            raise ValueError('corrupt LZ4 data')
+        start = len(out) - offset
+        if offset >= length:
+            out += out[start:start + length]
+        else:  # (the copy runs into what it writes: the last `offset` bytes, repeated)
+            piece = out[start:]
+            whole, rest = divmod(length, offset)
+            out += piece * whole + piece[:rest]
+    if uncompressed_size >= 0 and len(out) != uncompressed_size:
+        raise ValueError(f'LZ4: {len(out)} bytes decoded where {uncompressed_size} were expected')
+    return bytes(out)
+'''
+
+
 def ensure_lz4():
+    """True: the lz4 package is there (or was installed now); False: the tool's own reader is used (lz4_env)."""
+    probe = [sys.executable, '-c', 'import lz4.block']
+    if subprocess.run(probe, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+        return True
+    say('Installing the lz4 Python package...')
     try:
-        import lz4.block  # noqa: F401
-    except ImportError:
-        say('Installing the lz4 Python package...')
         subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--user', 'lz4'])
+        if subprocess.run(probe, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+            return True
+    except (subprocess.CalledProcessError, OSError):
+        pass
+    say(f'The lz4 package could not be installed for this Python ({platform.python_version()}): the tool reads the game '
+        f'code with its own LZ4 reader instead. The result is the same; it only takes a few seconds more.')
+    return False
+
+
+def lz4_env(work):
+    """The environment for the translator's runs, with the tool's own lz4 package first on its path."""
+    pkg = os.path.join(work, 'pylib', 'lz4')
+    os.makedirs(pkg, exist_ok=True)
+    with open(os.path.join(pkg, '__init__.py'), 'w', encoding='utf-8') as f:
+        f.write('from . import block  # noqa: F401\n')
+    with open(os.path.join(pkg, 'block.py'), 'w', encoding='utf-8') as f:
+        f.write(LZ4_FALLBACK)
+    env = dict(os.environ)
+    env['PYTHONPATH'] = os.path.dirname(pkg) + (os.pathsep + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
+    return env
 
 
 def host_tag():
@@ -185,8 +259,8 @@ def find_llvm_mingw(given):
     return mine
 
 
-def run(cmd, cwd=None):
-    r = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
+def run(cmd, cwd=None, env=None):
+    r = subprocess.run(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
     return r.returncode, r.stdout
 
 
@@ -281,7 +355,7 @@ def main():
     if not todo:
         say('Nothing to do.')
         return
-    ensure_lz4()
+    have_lz4 = ensure_lz4()
     # the compilers first: a missing download stops the run before the long part
     exe = '.exe' if platform.system() == 'Windows' else ''
     tools = {}
@@ -303,6 +377,7 @@ def main():
     if shutil.disk_usage(work).free < 3 << 30:
         fail('at least 3 GB of free disk space are needed.')
     say(f'Working in {work}')
+    gen_env = None if have_lz4 else lz4_env(work)
     steps = 1 + len(todo)
 
     say(f'Step 1 of {steps}: translating the game code...')
@@ -310,7 +385,7 @@ def main():
     hle = os.path.join(ROOT, 'runtime', 'hle', 'hle_symbols.txt')
     for cmd in ([sys.executable, 'gen.py', 'sdk', os.path.join(game, 'exefs', 'sdk'), '0x02400000', os.path.join(gen, 'sdk'), '--hle', hle],
                 [sys.executable, 'gen.py', 'main', os.path.join(game, 'exefs', 'main'), '0x00200000', os.path.join(gen, 'main')]):
-        code, out = run(cmd, cwd=TOOLS)
+        code, out = run(cmd, cwd=TOOLS, env=gen_env)
         if code:
             fail('the translation failed:\n' + out[-2000:])
 

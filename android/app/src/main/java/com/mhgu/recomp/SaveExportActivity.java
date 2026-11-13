@@ -43,7 +43,7 @@ public class SaveExportActivity extends Activity {
     private TextView status;
     private Button main;
 
-    private File saves() { return new File(SaveImportActivity.home(this), "MHGURecomp/save/save_0"); }
+    private File saves() { return SaveFolder.active(this); }  // (the save folder's, when one is chosen)
 
     private int dp(int v) {
         return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());

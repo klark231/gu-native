@@ -12,8 +12,9 @@ uint32_t vi_vsync_handle(void) { return vsync_r; }
 volatile uint64_t g_vsync_count;
 uint32_t g_native_window;
 
-// Frame rate. The engine paces itself (frame limiter at main 0xda5d00: sleeps until a frame period has passed, then
-// derives its frame delta, which game logic scales by): the target is a float at +0x3c of its main system object
+// Frame rate. The engine paces itself (frame limiter at main 0xda5d00: sleeps to a millisecond or two before a frame
+// period has passed and reads the clock in a loop until it has, runtime/hle/limiter.c; then derives its frame delta,
+// which game logic scales by): the target is a float at +0x3c of its main system object
 // (pointer in the global at 0x2326764, the same field theboy181's 60fps patch sets). The game puts 30.0 there at
 // start and resets it at some transitions, so every presented frame writes the chosen rate back (the 90 / 120 fps
 // cheat codes write this same field). The frame delta is in 60 fps frames, measured: walking speed is the same at 30,
@@ -39,6 +40,7 @@ void vi_apply_framerate(void) {  // (also per presented frame: vi_frame_presente
 static pthread_mutex_t pause_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t pause_cond = PTHREAD_COND_INITIALIZER;
 static volatile int pause_wanted, pause_parked;  // the app is in the background; the update thread waits
+static volatile int menu_hold;                   // the settings menu holds the game (vi_menu_hold)
 static volatile uint64_t pause_since;            // when it left (plat_now_ns)
 // The guest's clock: plat_now_ns less the time it stood still (clock_held), or clock_frozen while it stands (0: it
 // runs). clock_gen is odd while they change (only the update thread changes them, under pause_lock), so a reader
@@ -81,6 +83,7 @@ void vi_set_paused(bool on) {
 
 // Should the presenting / vsync / audio threads stop now? (cheap while the app is in front: one load)
 bool vi_paused(void) {
+    if (__atomic_load_n(&menu_hold, __ATOMIC_ACQUIRE)) return true;
     if (!__atomic_load_n(&pause_wanted, __ATOMIC_ACQUIRE)) return false;
     return __atomic_load_n(&pause_parked, __ATOMIC_ACQUIRE) ||
            plat_now_ns() - __atomic_load_n(&pause_since, __ATOMIC_RELAXED) >= PAUSE_GRACE_NS;
@@ -90,7 +93,7 @@ bool vi_paused(void) {
 void vi_pause_wait(void) {
     if (!vi_paused()) return;
     pthread_mutex_lock(&pause_lock);
-    while (pause_wanted) pthread_cond_wait(&pause_cond, &pause_lock);
+    while (pause_wanted || menu_hold) pthread_cond_wait(&pause_cond, &pause_lock);
     pthread_mutex_unlock(&pause_lock);
 }
 
@@ -112,14 +115,36 @@ void vi_pause_game(void) {
     if (!pause_wanted) { pthread_mutex_unlock(&pause_lock); return; }
     uint64_t t0 = plat_now_ns(), frozen = t0 - __atomic_load_n(&clock_held, __ATOMIC_RELAXED);
     if (!frozen) frozen = 1;  // (0 means running)
-    clock_set(frozen, __atomic_load_n(&clock_held, __ATOMIC_RELAXED));
+    bool held = menu_hold;  // (the menu holds the clock already: it stays as it is, the menu lets it go)
+    if (!held) clock_set(frozen, __atomic_load_n(&clock_held, __ATOMIC_RELAXED));
     __atomic_store_n(&pause_parked, 1, __ATOMIC_RELEASE);
     while (pause_wanted) pthread_cond_wait(&pause_cond, &pause_lock);
     uint64_t t1 = plat_now_ns();
-    clock_set(0, t1 - frozen);  // (the clock goes on from where it stood)
+    if (!held) clock_set(0, t1 - frozen);  // (the clock goes on from where it stood)
     __atomic_store_n(&pause_parked, 0, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&pause_lock);
     LOG("[app] game clock held %.1f s\n", (t1 - t0) / 1e9);
+}
+
+// ---- the settings menu open while playing alone ([Application] PauseInMenu: runtime/overlay.cpp, Android): the update
+// thread stays in the overlay's frame, drawing the menu over the last picture (vk_present_again), while the game stands
+// still: its clock held as in the background, and the presenting, vsync and audio threads waiting (vi_pause_wait).
+// The update thread only.
+void vi_menu_hold(bool on) {
+    pthread_mutex_lock(&pause_lock);
+    if (on && !menu_hold) {
+        uint64_t frozen = plat_now_ns() - __atomic_load_n(&clock_held, __ATOMIC_RELAXED);
+        clock_set(frozen ? frozen : 1, __atomic_load_n(&clock_held, __ATOMIC_RELAXED));
+        __atomic_store_n(&menu_hold, 1, __ATOMIC_RELEASE);
+        LOG("[app] the game waits while the menu is open\n");
+    } else if (!on && menu_hold) {
+        uint64_t frozen = __atomic_load_n(&clock_frozen, __ATOMIC_RELAXED);
+        clock_set(0, plat_now_ns() - frozen);  // (the clock goes on from where it stood)
+        __atomic_store_n(&menu_hold, 0, __ATOMIC_RELEASE);
+        pthread_cond_broadcast(&pause_cond);
+        LOG("[app] the game goes on\n");
+    }
+    pthread_mutex_unlock(&pause_lock);
 }
 
 // (debug) MHGU_STEPLOG=1: every 5 s, the frames presented a second and the game's frame steps (+0x68 of the frame rate
@@ -156,6 +181,7 @@ void vi_frame_presented(void) {  // (runtime/nvn/vulkan/device.c, per presented 
 // The display's vsync event: 60 Hz, or the frame rate target when that is higher (the game waits for it per frame).
 static void *vsync_thread(void *arg) {
     (void)arg;
+    plat_thread_name("vsync");
     plat_thread_priority(PLAT_PRIO_HIGH);  // (Windows: above normal, a tick late is the game's frame late)
     uint64_t next = plat_now_ns();
     for (;;) {

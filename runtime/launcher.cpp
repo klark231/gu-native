@@ -24,6 +24,10 @@ const ImU32 PANEL = IM_COL32(50, 25, 24, 255), HEADER = IM_COL32(108, 46, 46, 25
             BRONZE_LIT = IM_COL32(150, 98, 46, 255), RED_RULE = IM_COL32(176, 34, 30, 255), GREEN_RULE = IM_COL32(80, 142, 54, 255);
 int lang;
 const char *T(const char *en) { return settings_text(lang, en); }
+// the guide's PC step 2, which makes mhgugame.dll: README.md's second "Step 2" heading (GitHub numbers it -1), or
+// README.es.md's second "Paso 2" for a Spanish screen
+const char *const GUIDE_EN = "https://github.com/khorne-hub/gu-native#step-2-create-the-game-code-1",
+                  *const GUIDE_ES = "https://github.com/khorne-hub/gu-native/blob/main/README.es.md#paso-2-crea-el-c%C3%B3digo-del-juego-1";
 
 struct Pick {
     std::atomic<int> state{0};  // 0 idle, 1 the dialog is open, 2 a folder came back, 3 checking, 4 checked
@@ -81,15 +85,16 @@ extern "C" int launcher_choose_folder(const char *problem, char *native, size_t 
 
     std::string status = problem && *problem ? problem : "";
     bool status_bad = !status.empty();
+    bool no_lib = gamefolder_lib_missing(status.c_str(), lang);  // (mhgugame.dll missing: the guide's button too)
     int result = 0;
     bool running = true;
     std::thread checker;
-    // (tests: MHGU_LAUNCHER_SHOT=<file.png> saves the screen after a moment and leaves; MHGU_LAUNCHER_PICK=<folder> answers
-    // the folder dialog with that folder)
+    // (tests: MHGU_LAUNCHER_SHOT=<file.png> saves the screen after a moment, once a folder being checked is done, and
+    // leaves; MHGU_LAUNCHER_PICK=<folder> answers the folder dialog with that folder, once)
     const char *test_shot = SDL_getenv("MHGU_LAUNCHER_SHOT"), *test_pick = SDL_getenv("MHGU_LAUNCHER_PICK");
     int frame = 0;
     while (running) {
-        if (test_pick && *test_pick && frame == 20) P.picked = test_pick, P.state = 2;
+        if (test_pick && *test_pick && frame == 20) P.picked = test_pick, P.state = 2, test_pick = NULL;
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             ImGui_ImplSDL3_ProcessEvent(&e);
@@ -111,7 +116,7 @@ extern "C" int launcher_choose_folder(const char *problem, char *native, size_t 
         }
         if (P.state == 2) {  // (a folder came back from the dialog: checked away from this loop, romfs is 35,531 files)
             P.state = 3;
-            status = T("Checking the files..."), status_bad = false;
+            status = T("Checking the files..."), status_bad = false, no_lib = false;
             if (checker.joinable()) checker.join();
             checker = std::thread([] {
                 char utf8[1100], nat[1100], why[700];
@@ -127,7 +132,7 @@ extern "C" int launcher_choose_folder(const char *problem, char *native, size_t 
                 SDL_strlcpy(native, P.native.c_str(), native_size);
                 result = 1, running = false;
             } else {
-                status = P.why, status_bad = true;
+                status = P.why, status_bad = true, no_lib = gamefolder_lib_missing(P.why.c_str(), lang);
             }
         }
         ImGui_ImplSDLRenderer3_NewFrame();
@@ -172,9 +177,9 @@ extern "C" int launcher_choose_folder(const char *problem, char *native, size_t 
         ImGui::Spacing();
         ImGui::PushTextWrapPos(W - pad);
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(DIM));
-        ImGui::TextUnformatted(T("mhgugame.dll and mhgugame.id are made once on this PC from your own files with the guide's tool, the "
-                                 "same run that makes the phone's: python build_game.py <your folder>. Nothing is copied: the game reads "
-                                 "that folder."));
+        ImGui::TextUnformatted(T("mhgugame.dll and mhgugame.id don't come in the download: they are made once on this PC from your own "
+                                 "files with the guide's tool (step 2 of its PC setup): python build_game.py --pc <your folder>. "
+                                 "Nothing is copied: the game reads that folder."));
         ImGui::PopStyleColor();
         ImGui::Spacing();
         if (!status.empty()) {
@@ -183,8 +188,9 @@ extern "C" int launcher_choose_folder(const char *problem, char *native, size_t 
             ImGui::PopStyleColor();
         }
         ImGui::PopTextWrapPos();
-        // the buttons at the bottom
-        float bh = f * 2.2f, bw = (W - pad * 3) * .5f, by = vp->Size.y - pad - bh;
+        // the buttons at the bottom (a third between them, the guide's step that makes mhgugame.dll, when that is missing)
+        int nb = no_lib ? 3 : 2;
+        float bh = f * 2.2f, bw = (W - pad * (nb + 1)) / nb, by = vp->Size.y - pad - bh;
         ImGui::SetCursorPos(ImVec2(pad, by));
         bool busy = P.state != 0;
         ImGui::BeginDisabled(busy);
@@ -195,14 +201,22 @@ extern "C" int launcher_choose_folder(const char *problem, char *native, size_t 
             SDL_ShowOpenFolderDialog(picked, NULL, win, start[0] ? start : NULL, false);
         }
         ImGui::EndDisabled();
-        ImGui::SameLine(pad * 2 + bw);
+        if (no_lib) {
+            ImGui::SameLine(pad * 2 + bw);
+            if (button(T("Open the guide"), ImVec2(bw, bh), false)) {
+                const char *url = lang == 1 ? GUIDE_ES : GUIDE_EN;
+                if (!SDL_OpenURL(url) && status.find(url) == std::string::npos)
+                    status += std::string("\n\n") + T("The browser didn't open. The guide is at:") + "\n" + url;
+            }
+        }
+        ImGui::SameLine(pad * nb + bw * (nb - 1));
         if (button(T("Exit"), ImVec2(bw, bh), false)) running = false;
         ImGui::End();
         ImGui::Render();
         SDL_SetRenderDrawColor(ren, 50, 25, 24, 255);
         SDL_RenderClear(ren);
         ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), ren);
-        if (test_shot && *test_shot && ++frame == 45) {
+        if (test_shot && *test_shot && P.state != 3 && ++frame == 45) {
             SDL_Surface *s = SDL_RenderReadPixels(ren, NULL);
             if (s) SDL_SavePNG(s, test_shot), SDL_DestroySurface(s);
             running = false;

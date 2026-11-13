@@ -11,6 +11,7 @@ Hecho con Claude Code (Opus 5.5). Muchas de las decisiones fueron propias, porqu
 [Read this guide in English](README.md)
 
 La versión más nueva está en [Releases](../../releases/latest): el APK para Android y `MHGU-PC-<versión>.zip` para PC.
+Habla con otros jugadores y pide ayuda en el [Discord](https://discord.gg/sk5xEjEMwF) de la comunidad.
 
 ## Contenido
 
@@ -33,36 +34,36 @@ La versión más nueva está en [Releases](../../releases/latest): el APK para A
 
 #### Cacería con controles táctiles
 
-- **Movimiento:** un pad fijo, que no se mueve con el dedo. Arrastra más allá de su borde para correr; con el arma desenfundada eso se desactiva, para que no salgas corriendo en plena pelea
+- **Movimiento:** un pad fijo, que no se mueve con el dedo. Arrastra más allá de su borde para correr; con el arma desenvainada eso se desactiva, para que no salgas corriendo en plena pelea. Desliza hacia arriba hasta el círculo chico con un candado que aparece encima del pad, que se ilumina, y levanta el pulgar ahí: la carrera se fija y el cazador sigue corriendo hacia adelante, y giras con la cámara, hasta que vuelvas a tocar el pad o el círculo, desenvaines o abras un menú. Para correr solo mientras mantienes un botón: en el engranaje, **Controles**, **Botones en la pantalla**, desactiva **Correr con la palanca**, y aparece un botón **Correr** sobre los ataques
 - **Cámara:** arrastra en cualquier parte de la pantalla para girarla, como en un juego de teléfono. Con un doble toque se centra
-- **Fijar al monstruo:** toca el ícono del objetivo y la cámara lo sigue hasta que lo vuelvas a tocar, como en los Monster Hunter más nuevos. Solo sigue a un monstruo de tu misma zona. Se puede desactivar en el engranaje, **Controles**, **Fijar objetivo**: entonces el ícono gira la cámara una vez, como en el juego original
-- **Layout propio para arcos y ballestas:** con uno en la mano, en una cacería, los controles cambian solos: un disparo grande bajo el pulgar, recarga, mira con un toque o apuntado rápido si lo mantienes, fuego agachado, y flechas para la munición. Si arrastras sobre el disparo mientras lo mantienes, también apuntas. Respeta la opción Bow Controls del juego y se acomoda aparte en el editor
-- **Cambiar munición al deslizar:** además de las flechas, desliza hacia arriba o abajo sobre la barra de ítems. La lista del juego ahora se ve completa, con los nombres de cada munición
-- **Disparos con el monstruo fijado:** salen hacia el centro de su cuerpo, también si está más alto o más bajo que tú. Para elevar el tiro, una ballesta entra un momento en apuntado rápido. Sin fijarlo, apuntas como siempre
-- **Objetos:** la barra queda abajo al centro. Tócala para usar el objeto y deslízala para cambiarlo; un deslizamiento rápido ya no lo usa por error. También puedes activar flechas a sus lados: en el engranaje, **Controles**, **Botones en pantalla**, **Flechas de ítems**
-- **Hunter Arts:** toca el panel de cada una para usarla
-- **Ataques:** tres disposiciones a elegir: píldora dividida en diagonal, botones separados o una banda en U en la esquina de la pantalla
-- **Otros botones:** esquivar, cubrirse y enfundar el arma, cada uno con su ícono
-- **Disposición tradicional:** en el engranaje, **Controles**, **Disposición táctil**. En vez de que los controles cambien según lo que haces (los de los menús, los de arcos y ballestas), tienes los de un emulador: A B X Y en rombo, L R ZL ZR, + y -, la cruceta y el stick, siempre iguales, con botones de letras. Tiene su propia disposición en el editor (`touch_layout_traditional.txt`), aparte de la Adaptable. En los menús, muévete con la cruceta y confirma con A
+- **Fijar al monstruo:** toca el candado junto a **L**, o mantén apretado **L**, y la cámara sigue girando hacia el monstruo hasta que lo vuelvas a hacer, como en los Monster Hunter más nuevos y en el port de MH4U. Sigue al monstruo que eligió la cámara objetivo del juego, o al más cercano si no eligió ninguno; el botón de objetivo (**ZL**, o el que use tu opción **Tipos de controles** del juego) lo cambia al otro monstruo. Con las **Funciones de los botones L/R** del juego cambiadas, el botón de objetivo y el de **L** se cambian como en el juego: la letra de cada uno muestra qué aprieta. Girar la cámara tú mismo, o apretar **L**, solo la pausa un momento, y solo sigue a un monstruo de tu misma zona. Se puede desactivar en el engranaje, **Controles**, **Fijar objetivo (mantener L)**
+- **Diseño propio para arcos y ballestas:** con uno en la mano, en una cacería, los controles cambian solos: un disparo grande bajo el pulgar, recarga, mira con un toque o apuntado rápido si lo mantienes, fuego agachado, y flechas para la munición (mantén una para seguir cambiando). Si arrastras sobre el disparo mientras lo mantienes, también apuntas. Respeta la opción Bow Controls del juego y se acomoda aparte en el editor
+- **Cambiar munición al deslizar:** además de las flechas, desliza hacia arriba o abajo sobre la barra de objetos. La lista del juego ahora se ve completa, con los nombres de cada munición
+- **Disparos con el monstruo fijado:** un disparo desde la postura normal sale hacia el centro de su cuerpo, también si está más alto o más bajo que tú. Para elevar el tiro, una ballesta entra un momento en apuntado rápido. Tu propio apuntado, el fuego agachado y los movimientos de los estilos quedan en tus manos, y sin fijarlo apuntas como siempre
+- **Objetos:** la barra queda abajo al centro. Tócala para usar el objeto y deslízala para cambiarlo; un deslizamiento rápido ya no lo usa por error. Mantén el dedo sobre ella para ver los objetos anterior y siguiente, como los muestra el juego mientras se mantiene L: desliza mientras tanto para girarla, y levanta el dedo para cerrarla sin usar nada. Las flechas a sus lados también la giran (para ocultarlas: en el engranaje, **Controles**, **Botones en la pantalla**, **Flechas de la barra de objetos**). En modo gatador, las flechas y el deslizamiento cambian el movimiento de apoyo
+- **Hunter Arts:** toca el panel de cada una para usarla. Aprieta lo que usa para esa técnica tu opción **Tipos de controles** del juego (tipos 1 a 4, y también **Funciones de los botones L/R** y **Funciones palanca derecha**), y funciona también con un mando conectado
+- **Ataques:** tres disposiciones a elegir: píldora dividida en diagonal, botones separados o una banda en U en la esquina de la pantalla. Con **Seguir en guardia al deslizar** activado (en **Botones en la pantalla**), un pulgar que se desliza de la guardia a los ataques sigue en guardia, para movimientos como el contraataque de la lanza
+- **Otros botones:** evasión, guardia y envainar el arma, cada uno con su ícono
 
 #### Menús y comodidad
 
-- **Menús pensados para el pulgar:** al abrirse un menú del juego el diseño no cambia: aparece un pad chico que mueve el cursor, con los botones de página encima. La palanca de movimiento sigue caminando (donde el cazador no puede caminar, como en la caja de objetos de un pueblo o en una tienda, mueve el cursor), A y B quedan donde están, y arrastrar en la pantalla también mueve el cursor. El pad se mueve y se cambia de tamaño en el editor como los demás botones. Para ocultarlo: en el engranaje, **Controles**, **Botones en pantalla**, **Pad de menú**
-- El teclado del teléfono sirve para escribir el nombre de tu personaje
+- **Menús pensados para el pulgar:** al abrirse un menú del juego el diseño no cambia: aparece un pad chico que mueve el cursor, con los botones de página encima. La palanca de movimiento sigue caminando (donde el cazador no puede caminar, como en la caja de objetos de un pueblo o en una tienda, mueve el cursor; donde el juego muestra un modelo, como en la herrería, la palanca y arrastrar lo giran, como con un mando), A y B quedan donde están, y arrastrar en la pantalla también mueve el cursor. El pad se mueve y se cambia de tamaño en el editor como los demás botones. Para ocultarlo: en el engranaje, **Controles**, **Botones en la pantalla**, **Pad de menú**
+- El teclado del teléfono sirve para escribir el nombre de tu personaje, y los textos del menú de opciones con **Teclado del teléfono** (Enter acepta; Atrás oculta el teclado y deja lo escrito); las teclas del propio menú quedan para el mando
 - El menú de opciones se usa con el dedo y tiene el estilo visual del juego
 - **Beber y comer más rápido:** dos trucos opcionales, apagados por defecto, en el engranaje, **Trucos**. Aceleran la animación x1,7 o x2,5, pero no permiten caminar mientras bebes
 - **Tus propios trucos y mods:** mira [Trucos y mods](#trucos-y-mods)
 - Importa tu partida desde un emulador, desde otro dispositivo o desde el juego de PC, y expórtala para llevarla ahí: mira [Partidas](#partidas)
-- El juego se pausa solo cuando sales de la app
+- El juego se pausa solo cuando sales de la app, y mientras el menú de opciones está abierto si juegas solo
 - Vibración al tocar los botones y vibración del juego en el teléfono, con o sin mando
 
 #### Personalización
 
 - Mantén apretado el engranaje para abrir el editor (o **Controles**, **Personalizar controles y HUD**): mueve y cambia el tamaño de cada botón, y mueve, cambia el tamaño u oculta cada parte del HUD del juego: el reloj, la vida y la resistencia, el filo y los indicadores, el grupo, el mapa, la cámara de objetivo, la barra de objetos y las Artes de caza. Fuera de una cacería, unos marcos muestran dónde va cada parte, cada uno con su nombre. Una parte que pongas sobre un botón se marca en rojo, y el botón también; el diseño por defecto no muestra nada en rojo. La barra de objetos no se puede ocultar ahí: es la forma de elegir y usar objetos con los dedos
+- El panel del editor se aparta de lo que estás colocando: arrástralo por su título (las agarraderas de sus extremos). Toca su título y - / + o un pellizco lo achican, hasta un 60 %. Queda donde lo dejes, y del mismo tamaño
 - Una parte que moviste queda donde la pusiste: una línea de chat, el apuntado de un arco o de una ballesta y el sello de Quest Complete ya no la devuelven al lugar del juego, y no salta cuando se abre un menú del juego. Una parte que quedaría sobre la ventana de ese menú se oculta hasta que el menú se cierra
 - La interfaz del juego se reacomoda para no quedar bajo los pulgares (**Acomodar el HUD para el táctil**). Desactivado, el HUD es el mismo que con un mando. El botón **HUD: mando** del editor acomoda el HUD que se ve con un mando, sin conectar uno, y la B de un mando cierra el editor sin guardar
 - Opacidad de los controles y velocidad de la cámara ajustables
-- **Botones en pantalla:** en el engranaje, **Controles**, **Botones en pantalla**, elige cuáles se ven. Puedes sumar L, ZL, ZR, -, la cruceta y los clics de las palancas, que vienen ocultos. En el pueblo ZL aparece siempre, porque abre el menú multijugador. En los menús del juego también puedes sumar ZL y ZR (**ZL en los menús**, **ZR en los menús**), que algunos menús usan para cambiar de sección o ver más información
+- **Botones en pantalla:** en el engranaje, **Controles**, **Botones en la pantalla**, elige cuáles se ven. Puedes sumar L, ZL, ZR, -, la cruceta y los clics de las palancas, que vienen ocultos (la cruceta deja su lugar al pad de menú mientras hay un menú del juego abierto). En el pueblo ZL aparece siempre, porque abre el menú multijugador. En los menús del juego también puedes sumar ZL y ZR (**ZL en los menús**, **ZR en los menús**), que algunos menús usan para cambiar de sección o ver más información
 - **Botones combinados:** en esa misma pantalla, crea hasta 6 botones propios que aprietan varios a la vez, como A+X. Se ubican con el editor y también se pueden asignar a un botón del mando
 
 #### Pantalla y rendimiento
@@ -72,8 +73,9 @@ La versión más nueva está en [Releases](../../releases/latest): el APK para A
 - Resolución 3D ajustable, hasta el 25 %, para ganar rendimiento en equipos modestos
 - **Sombras:** apágalas para ganar velocidad, en el engranaje, **Gráficos y audio**, **Sombras**. En un Moto g06 bajó cerca de un 15 % el trabajo de la GPU por cuadro en una cacería
 - **Modo gama baja:** para teléfonos débiles. Apaga el bloom, el desenfoque de profundidad y las sombras, usa texturas más livianas y mantiene el HUD nítido sobre una imagen 3D más chica
-- **Modo tostadora:** la tercera opción del modo gama baja, para los teléfonos más débiles y para la batería: resolución 3D al 25 %, 30 fps, sin reverberación, y el HUD y las texturas todavía más livianos. En un Moto g06 se mantuvo en 30 fps y gastó cerca de un tercio menos de energía que el modo gama baja a 60 fps
+- **Modo tostadora:** la tercera opción del modo gama baja, para los teléfonos más débiles y para la batería: resolución 3D al 25 %, 30 fps, sin reverberación ni pasto, y el HUD y las texturas todavía más livianos. En un Moto g06 se mantuvo en 30 fps y gastó cerca de un tercio menos de energía que el modo gama baja a 60 fps
 - **Bloom y desenfoque de profundidad** y **Reverberación** (engranaje, **Gráficos y audio**): interruptores propios. Apagados, la GPU o el procesador trabajan menos
+- **Pasto** (engranaje, **Gráficos y audio**): apagado, se omiten el pasto alto y el follaje de los mapas; más rápido donde hay mucho (la zona 8 del Pantano)
 - Contador opcional de FPS y temperatura
 - Usa menos memoria en dispositivos con GPU Mali y en teléfonos con poca RAM
 - La pantalla sigue tu límite de FPS: a 60 FPS corre a 60 Hz aunque admita 120
@@ -86,7 +88,7 @@ La versión más nueva está en [Releases](../../releases/latest): el APK para A
 
 - Los controles táctiles se ocultan apenas conectas uno y vuelven cuando lo desconectas, sin reiniciar
 - El engranaje queda siempre en pantalla, así que siempre puedes abrir las opciones. También puedes apretar **+** y **-** juntos
-- El clic del stick derecho fija al monstruo. Mientras está fijado, aparece un candado junto al ícono del objetivo, y los disparos de una ballesta apuntan al cuerpo del monstruo, igual que con los controles táctiles
+- El clic de la palanca derecha fija al monstruo (con el **Tipo de control 3** del juego, cuyo clic cambia el objetivo, mantenla apretada). Mientras está fijado, aparece un candado junto al ícono del objetivo, y los disparos de una ballesta apuntan al cuerpo del monstruo, igual que con los controles táctiles
 - **Cualquier mando:** si el juego no lee bien el tuyo, entra al engranaje, **Controles**, **Mapear un mando**, y aprieta cada botón una vez. Queda guardado para ese modelo. Si un mando no se puede leer hasta mapearlo, la app te avisa al conectarlo
 
 ### ¿Qué tan bien corre?
@@ -211,6 +213,26 @@ La partida es la misma en los dos, así que puedes llevarla en cualquier sentido
 
 Importar reemplaza todos los personajes del dispositivo al que llega, y la partida que reemplaza queda en una copia, como arriba.
 
+#### Elegir dónde se guarda tu partida
+
+La partida está en la carpeta propia de la app, salvo que elijas otra; por ejemplo, una carpeta que una app de
+sincronización (Syncthing, FolderSync y similares) comparta con tus otros dispositivos. Ve al engranaje, **Opciones del
+menú**, **Carpeta de partidas**, y elige la carpeta:
+
+- Tu partida va en una carpeta llamada `MHGU save` dentro de la que elijas, así una sola carpeta compartida sirve para la de
+  MHGU y la de MH4U para Android (`MH4U save`). Una carpeta que ya tiene una partida, como la que hace **Exportar partida**,
+  se usa tal cual.
+- Tu partida se copia ahí antes de cambiar nada. Si la carpeta ya tiene una partida, eliges cuál se queda; la otra queda
+  guardada en una copia, en `save_backups`, en la carpeta propia de la app.
+- El juego se reinicia para usar la carpeta: guarda antes. **Usar la carpeta propia del juego**, en la misma pantalla, vuelve
+  atrás.
+- En dos dispositivos, caza en uno a la vez y deja que la app de sincronización termine antes de abrir el juego en el otro.
+
+Al arrancar, el juego revisa la carpeta. Si no llega a ella, si está vacía pero tenía una partida, si la app de
+sincronización guardó dos versiones de la partida o si otro dispositivo tiene el juego abierto, te lo dice y te deja elegir
+qué hacer. Si al guardar no se puede llegar a la carpeta, esa partida queda en el dispositivo y el próximo arranque te
+pregunta cuál conservar.
+
 ### Trucos y mods
 
 - **Trucos:** archivos `.txt` en el formato de Atmosphere, para la versión 1.4.0 (su id de compilación es `FB08F1D20FD1204F`). En el engranaje, **Trucos**, **Agregar trucos**, elige el archivo y activa cada uno en esa misma página. Entran apagados.
@@ -227,37 +249,37 @@ Dos dispositivos en el mismo Wi-Fi pueden jugar juntos:
 1. Los dos van al pueblo, tocan **ZL** y eligen **Connect**.
 2. Uno (el anfitrión) elige **Create Hub** y confirma con **X**.
 3. El otro elige **Search Hubs** y elige esa sala.
-4. Si la sala no aparece: en el engranaje, **Red**, **Buscar servidores**, escribe la IP del anfitrión y busca de nuevo.
+4. Si la sala no aparece: en el engranaje, **Multijugador**, **Buscar servidores**, escribe la IP del anfitrión y busca de nuevo.
 
 Se probó crear la sala, encontrarla y entrar en un Motorola y una Anbernic, pero todavía no una misión completa.
 
 #### Por internet
 
-Para jugar con amigos lejos hace falta un servidor de salas. Este proyecto no tiene uno propio; cualquiera de ustedes puede alojarlo con el programa chico de la carpeta `server` (un puerto, el 39510 por defecto; ver `server/README.md`).
+La app ya trae un servidor de salas puesto, `hunterhubid-gu-hub.duckdns.org`, que mantienen jugadores de la comunidad (no
+este proyecto). Todos los que usan el mismo servidor encuentran las salas de los demás, sin abrir puertos.
 
-Por defecto el juego usa dos servidores públicos, `hunterhubid-gu-hub.duckdns.org` y `morerokk-mhgurecomp-ldnserver.duckdns.org`: tus salas se listan en los dos y la búsqueda muestra las salas de ambos.
+1. Se juega como en [Juego local](#juego-local): uno crea la sala y los demás la buscan. Las salas de internet aparecen junto
+   a las de tu Wi-Fi.
+2. Para jugar solo con tus amigos: en el engranaje, **Multijugador**, todos ponen la misma **Clave de emparejamiento**. Solo
+   los jugadores con esa clave ven sus salas.
+3. **Servidor de salas** elige otro servidor: **Otro...** para escribirlo (un nombre o una IP, y `:puerto` si no es el 39510;
+   el programa chico de la carpeta `server` aloja uno, ver `server/README.md`), o **Ninguno** para jugar solo en tu red local.
+   **Comprobar servidor de salas** dice si responde y cuántas salas muestra.
+4. Los servidores y las claves que escribes y guardas quedan en sus listas, el último primero (hasta 24), para elegirlos de
+   nuevo; la **×** a su lado lo quita.
 
-1. En el engranaje, **Red**, **Salas por internet**, **Servidores de salas** lista los servidores uno por fila: cambia uno, quítalo o **Agrega un servidor** (hasta 8; un nombre o una IP, y `:puerto` si no es el 39510).
-2. **Comprobar servidor de salas** te dice si responden.
-3. **Conexiones directas** (activadas por defecto): si los dos jugadores las tienen y el servidor lo admite, sus juegos se envían los paquetes directamente, con menos ping, y vuelven al servidor cuando los routers no lo permiten. El juego del otro jugador ve entonces tu dirección IP; desactívalas para pasar siempre por el servidor.
-3. Opcional: todos ponen la misma **Clave de emparejamiento**, así solo tu grupo ve sus salas.
-4. Después se juega como en [Juego local](#juego-local): uno crea la sala y los demás la buscan.
+La primera vez que juegas en línea, un cartel dice a qué servidor se conecta el juego: como cualquier servidor de internet,
+ve tu dirección IP.
 
 Sin servidor: pon todos los dispositivos en la misma VPN (por ejemplo Tailscale o ZeroTier) y escribe la IP del anfitrión en esa VPN en **Buscar servidores**.
 
-El juego por internet todavía no se probó en Android.
-
-Un teléfono y una PC deberían poder jugar en la misma sala si los dos tienen la misma versión, pero todavía no se probó.
-
-El juego habla las versiones de enlace 2 (gu-native) y 3 (la versión de PC de MHGURecomp) y lista tu sala con las dos, así que los jugadores de cualquiera la encuentran. Sin clave de emparejamiento tu sala también se lista en la sala pública de teléfonos (`public-phone`, enlace 3).
-
-#### Juego cruzado con emuladores
-
-En el engranaje, **Red**, **Juego cruzado**: **Ryujinx** (servidores RyuLdn), **Sala Yuzu** (Eden, Suyu, Yuzu, Citron), **Mixto**, **Sala Citra** (salas de Azahar / Citra, con jugadores de Monster Hunter XX en 3DS) o **Todas las salas**. Cada familia de salas tiene su submenú con un buscador de salas. La pequeña sincronización de monstruos y el escalado de vida se apagan en esas salas.
+Los teléfonos y las PC con 0.1.6 o posterior se encuentran en las mismas salas, por el servidor o en la misma Wi-Fi. Probado
+en 0.1.9: dos teléfonos en una sala por el servidor predeterminado con una clave de emparejamiento, y una PC entrando a la sala
+de un teléfono por el servidor y en la misma Wi-Fi; todavía no una misión completa juntos.
 
 #### Vida de los monstruos y misiones de aldea en sala
 
-La vida de los monstruos ajustable (engranaje, **Varios**) y las misiones de aldea en sala (engranaje, **Red**) vienen de
+La vida de los monstruos ajustable (engranaje, **Juego**) y las misiones de aldea en sala (engranaje, **Multijugador**) vienen de
 MHGURecomp, el proyecto en el que se basa este. Todavía no se probaron a fondo en Android.
 
 ### Dónde se guarda cada cosa
@@ -265,7 +287,7 @@ MHGURecomp, el proyecto en el que se basa este. Todavía no se probaron a fondo 
 | Qué | Dónde |
 |---|---|
 | Ajustes, la posición de los controles táctiles y del HUD, el mapeo de mandos, el registro | `Android/data/com.mhgu.recomp/files`: `mhgurecomp.ini`, `touch_layout.txt`, `gamepad_mappings.txt`, `log.txt` (el de la sesión anterior: `log_prev.txt`) |
-| Partidas | `Android/data/com.mhgu.recomp/files/MHGURecomp/save`. La partida que reemplaza una importación queda en `save_backups`, al lado |
+| Partidas | `Android/data/com.mhgu.recomp/files/MHGURecomp/save`, o la carpeta que elegiste en **Carpeta de partidas**. La partida que reemplaza una importación queda en `save_backups`, en `MHGURecomp` |
 | Trucos y mods que agregues | Las carpetas `cheats` y `mods` de tu carpeta del juego |
 
 ### Actualizar a una versión nueva
@@ -304,22 +326,29 @@ puntos, **Añadir juegos**.
 | Problema | Qué hacer |
 |---|---|
 | `python` no se reconoce | Instala Python de nuevo, marca **Add python.exe to PATH** y abre otra terminal |
+| "Failed to build installable wheels" para lz4 | La herramienta desde la 0.1.9 lee el código del juego sin el paquete lz4 cuando tu Python no puede instalarlo: descárgala de nuevo |
 | "there is no exefs/main" | La ruta debe ser la carpeta que contiene `exefs` y `romfs` |
 | "Este exefs no es de la versión 1.4.0" | Usa el `exefs` con la actualización 1.4.0 |
 | "romfs está incompleto" | Usa el `romfs` del juego base con la actualización aplicada. Tiene 35.531 archivos |
 | "Falta libmhgugame.so" | Haz el paso 2 y copia los dos archivos nuevos a la carpeta de tu dispositivo |
 | "Este libmhgugame.so es de otra versión" | Una versión nueva de la app lo necesita otra vez: repite el paso 2 con la nueva descarga |
+| La pantalla de archivos del juego dice "EACCES" u "open failed" | Otra app (un administrador de archivos, por ejemplo con Shizuku) creó la carpeta de la app en `Android/data`. Desde la 0.1.9 la app la recupera, o guarda sus archivos en su carpeta privada y lo avisa |
 | El juego se cierra solo | Cierra otras apps y baja la Resolución 3D. Suele ser falta de memoria |
 | Pantalla negra con solo los controles táctiles, o se cierra al presionar A | La copia de `romfs` a tu dispositivo no terminó. Cópiala de nuevo y revisa que ocupe 12,3 GB |
+| El juego dice **Archivos del juego incompletos** | Algunos archivos de `romfs` se cortaron al copiarlos, y el juego puede cerrarse o verse en negro donde los lee. Copia `romfs` de nuevo y revisa que ocupe 12,3 GB |
 | Se cierra después de unos minutos de juego | Actualiza a la 0.1.6 o una más nueva: usa la memoria de video de otra forma en GPU PowerVR. Si sigue pasando, comparte el registro: anota la memoria cada minuto |
 | En un teléfono débil va lento | Activa el modo gama baja, apaga **Sombras** y prueba la resolución 3D al 33 % o al 25 %. Si sigue lento: modo gama baja, **Tostadora** |
 
-Si sigue fallando, abre un [issue](../../issues) y adjunta el registro. Si el juego se cierra por un error, aparece una pantalla para
-compartirlo; si no, está en el engranaje, **Opciones del menú**, **Compartir registro**. No adjuntes archivos del juego.
+Si sigue fallando, pregunta en el [Discord](https://discord.gg/sk5xEjEMwF) o abre un [issue](../../issues) y adjunta el registro. Si el juego se cierra por un error, aparece una pantalla para
+compartirlo; si no, está en el engranaje, **Opciones del menú**, **Compartir registro**. Si la pantalla se queda en negro y no llegas al
+engranaje, mantén pulsado el ícono de la app: también ofrece **Compartir registro**. No adjuntes archivos del juego.
 
 ## PC (Windows)
 
 La misma carpeta del juego sirve en una PC con Windows: `MHGU.exe` corre tu juego de forma nativa.
+
+La descarga trae solo el programa: el código del juego (`mhgugame.dll` y `mhgugame.id`) se crea una vez a partir de tu propia
+copia, en el [paso 2 de la instalación](#paso-2-crea-el-código-del-juego-1).
 
 ### Qué ofrece
 
@@ -332,8 +361,8 @@ La misma carpeta del juego sirve en una PC con Windows: `MHGU.exe` corre tu jueg
 - **Todas las teclas se pueden cambiar,** hasta dos por botón, también los botones del mouse: **F1**, **Controles**,
   **Asignación de teclas**. La cámara y tus botones combinados también pueden ir en teclas
 - **Fijar al monstruo:** un toque de Alt (R3) deja la cámara fija en el monstruo, y aparece un candado junto al ícono del
-  objetivo. Los disparos de una ballesta apuntan entonces al cuerpo del monstruo. Se puede desactivar: **F1**, **Controles**,
-  **Fijar objetivo**
+  objetivo. Un disparo desde la postura normal apunta entonces al cuerpo del monstruo; tu propio apuntado, el fuego
+  agachado y los movimientos de los estilos quedan en tus manos. Se puede desactivar: **F1**, **Controles**, **Fijar objetivo**
 - **Escribe con tu teclado:** el nombre de tu personaje, y una línea de chat en una sala con **/**, también en una misión
 - **Una pantalla táctil:** en una PC con una, los controles táctiles del teléfono aparecen cuando la tocas (**Controles**,
   **Controles táctiles**), y **Personalizar controles y HUD** los ubica
@@ -389,7 +418,7 @@ Más en [Gráficos y FPS](#gráficos-y-fps).
 #### Con un mando
 
 - Conéctalo y juega. **F1**, o **+** y **-** juntos, abren los ajustes
-- El clic del stick derecho fija al monstruo
+- El clic de la palanca derecha fija al monstruo
 - **Cualquier mando:** si el juego no lee bien el tuyo, entra a **F1**, **Controles**, **Mapear un mando**, y aprieta cada
   botón una vez. Queda guardado para ese modelo
 - El menú de opciones puede mostrar los botones con el estilo de tu mando (**Controles**, **Iconos del mando**)
@@ -398,7 +427,7 @@ Más en [Gráficos y FPS](#gráficos-y-fps).
 
 Si la app de Discord está abierta en la misma PC, tu perfil muestra lo que estás haciendo: dónde estás, los monstruos que
 cazas, el mapa y la zona, cuántos cazadores te acompañan, tu arma, y el nombre y el RC de tu cazador. Viene activado. Para
-apagarlo: **F1**, **Red**, **Presencia en Discord**. Para no mostrar tu nombre ni tu RC: **Mostrar nombre y RC del cazador**.
+apagarlo: **F1**, **Multijugador**, **Presencia en Discord**. Para no mostrar tu nombre ni tu RC: **Mostrar nombre y RC del cazador**.
 El juego solo habla con la app de Discord de tu PC.
 
 ### ¿Qué tan bien corre?
@@ -514,7 +543,7 @@ El zip tiene una carpeta con los archivos del programa y nada del juego:
 - **Teclado y mouse:** WASD para moverte (en los menús del juego, como la caja de objetos, una tienda o el mostrador de
   misiones, mueve el cursor), Shift izquierdo corre (R), Ctrl izquierdo camina. Clic izquierdo o R es X, F es A (hablar,
   abrir, recoger, levantar objetos, confirmar), el clic derecho también es A pero solo con el arma desenfundada (un ataque:
-  nunca habla, abre ni recoge), Espacio B, E o el botón del medio Y (enfundar, usar un objeto), Q es L, Tab y T son ZL y ZR,
+  nunca habla, abre ni recoge), Espacio B, E o el botón del medio Y (envainar, usar un objeto), Q es L, Tab y T son ZL y ZR,
   Enter es +, Retroceso −, las flechas son la cruceta, M el minimapa (L3), un toque de Alt el bloqueo en el monstruo (R3) e
   I, J, K, L giran la cámara. La rueda del mouse gira la barra de objetos. Haz clic en la ventana para girar la cámara con el
   mouse; Esc suelta el mouse. Todas las teclas se pueden cambiar: **F1**, **Controles**, **Asignación de teclas**.
@@ -593,20 +622,21 @@ Desde **F1**, **Opciones del menú**:
 ### Multijugador
 
 El juego local y las salas por internet funcionan como en el teléfono, con el mismo código y las mismas opciones, en **F1**,
-**Red**: mira [Juego local](#juego-local) y [Por internet](#por-internet). En el pueblo, presiona ZL (Tab) y elige
+**Multijugador**: mira [Juego local](#juego-local) y [Por internet](#por-internet). En el pueblo, presiona ZL (Tab) y elige
 **Connect**.
 
 - **Create Hub** se confirma con X: R en el teclado.
 - La primera vez que creas una sala, el Firewall de Windows pregunta si MHGU puede usar la red. Permítelo, o nadie podrá
   encontrar tu sala ni entrar. Solo lo necesita el anfitrión. Si dijiste que no: Seguridad de Windows, **Firewall y protección
   de red**, **Permitir una aplicación a través del firewall**.
-- La búsqueda solo pregunta en la red principal de la PC. Por una VPN, como Tailscale o ZeroTier, escribe la IP del anfitrión
-  en **Buscar servidores** y reinicia el juego.
-- Una PC y un teléfono deberían poder jugar en la misma sala si los dos tienen la misma versión.
-- La vida de los monstruos ajustable (**Varios**, con la vida de misiones concretas en **Ajustes por misión**) y las misiones
-  de aldea en sala (**Red**) vienen de MHGURecomp.
+- La búsqueda pregunta en todas las redes de la PC. Por una VPN, como Tailscale o ZeroTier, también puedes escribir la IP del
+  anfitrión en **Buscar servidores** y reiniciar el juego.
+- Una PC y un teléfono juegan en la misma sala (0.1.6 o posterior en los dos).
+- La vida de los monstruos ajustable (**Juego**, con la vida de misiones concretas en **Ajustes por misión**) y las misiones
+  de aldea en sala (**Multijugador**) vienen de MHGURecomp.
 
-Nada de esto se probó todavía en PC, ni una PC con un teléfono.
+Probado en PC: entrar a la sala de un teléfono por el servidor de salas y en la misma Wi-Fi. Todavía no: crear una sala en la
+PC (necesita el permiso del firewall) y una misión completa.
 
 ### Dónde se guarda cada cosa
 
@@ -650,7 +680,7 @@ Para abrir `%APPDATA%`, escríbelo en la barra de direcciones del Explorador de 
 | "romfs está incompleto" | Usa el `romfs` del juego base con la actualización aplicada. Tiene 35.531 archivos |
 | "no se encontró SDL3.dll" | Descomprime primero el zip entero en una carpeta: `MHGU.exe` no arranca desde dentro del zip |
 | El Control inteligente de aplicaciones lo bloqueó | Bloquea los programas sin firma, sin **Ejecutar de todas formas**, y `MHGU.exe` no está firmado: solo arranca con el Control inteligente de aplicaciones desactivado (Seguridad de Windows, **Control de aplicaciones y navegador**, **Configuración de Control inteligente de aplicaciones**). Piénsalo antes: en muchas versiones de Windows no se puede volver a activar sin reinstalar Windows |
-| "En esa carpeta falta mhgugame.dll" | Haz de nuevo el paso 2 con tu carpeta: agrega el código del juego para PC |
+| "En esa carpeta falta mhgugame.dll" | La descarga no lo trae: haz el [paso 2 de la instalación](#paso-2-crea-el-código-del-juego-1) (`python build_game.py --pc <tu carpeta>`) y elige esa carpeta |
 | "Este mhgugame.dll es de otra versión" | Una versión nueva de PC lo necesita de nuevo: repite el paso 2 con la descarga nueva |
 | "A este procesador le faltan instrucciones que necesita el código del juego" | El juego de PC necesita un procesador con SSE4.2: mira [Qué necesitas](#qué-necesitas-1) |
 | "Este programa tiene que llamarse MHGU.exe" | Vuelve a ponerle `MHGU.exe` |
@@ -664,7 +694,7 @@ Para abrir `%APPDATA%`, escríbelo en la barra de direcciones del Explorador de 
 
 El registro está en **F1**, **Opciones del menú**, **Carpeta del registro** (`log.txt`; si el juego se cerró y lo volviste a
 abrir, el de esa sesión es `log_prev.txt`): adjúntalo a un [issue](../../issues) con el procesador y la tarjeta gráfica de tu
-PC. No adjuntes archivos del juego.
+PC. No adjuntes archivos del juego. También puedes preguntar en el [Discord](https://discord.gg/sk5xEjEMwF).
 
 ## Legal
 
@@ -688,7 +718,8 @@ Android de la misma forma.
 
 MHGU para Android es gratis, igual que su versión de PC. Las únicas descargas oficiales son los links que da khorne-hub,
 empezando por las [Releases](https://github.com/khorne-hub/gu-native/releases) de este repositorio. Si la bajaste de otro
-lado, pagaste por ella o tu copia vino con publicidad, no es la oficial.
+lado, pagaste por ella o tu copia vino con publicidad, no es la oficial. En la app, el botón de GitHub arriba en el menú de
+opciones, junto a **Guardar**, abre esta página en tu navegador, y el botón de Discord a su lado el [Discord](https://discord.gg/sk5xEjEMwF) de la comunidad.
 
 Todos los APK oficiales están firmados con la misma clave. La huella SHA-256 de su certificado es:
 
@@ -697,7 +728,12 @@ D7:2F:6F:F1:55:E0:31:2C:9C:74:86:C5:30:64:60:38:E4:24:94:C0:AD:7C:D6:5F:4B:19:FF
 ```
 
 Para revisar un APK: `apksigner verify --print-certs MHGU-<versión>.apk` (build-tools del SDK de Android). Una copia firmada
-con otra clave tampoco se puede instalar encima de la app oficial.
+con otra clave tampoco se puede instalar encima de la app oficial. Desde la 0.1.9 la app también lo revisa: una copia
+firmada con otra clave lo avisa una vez al arrancar.
+
+La app también te avisa cuando sale una versión nueva. Como mucho una vez al día le pregunta a GitHub cuál es la última
+versión de este repositorio (no se envía nada más, ni siquiera el modelo del teléfono), y al abrir el juego te ofrece abrir
+su página. Nunca descarga ni instala nada por su cuenta. Engranaje, **Opciones del menú**, **Buscar actualizaciones** lo apaga.
 
 La versión de PC no tiene esa firma: cada versión publica el SHA-256 de su zip. Para revisar el tuyo en Windows, abre una
 terminal en su carpeta y ejecuta `certutil -hashfile <archivo> SHA256`; el resultado tiene que coincidir con el de la versión.

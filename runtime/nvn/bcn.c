@@ -103,6 +103,12 @@ static struct {
 
 static void *bcn_worker(void *unused) {
     (void)unused;
+    {
+        static _Atomic int n;
+        char name[16];
+        snprintf(name, sizeof name, "bcn-%d", atomic_fetch_add(&n, 1));
+        plat_thread_name(name);
+    }
     uint64_t seen = 0;
     pthread_mutex_lock(&P.mu);
     for (;;) {

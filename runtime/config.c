@@ -15,7 +15,6 @@
 #include <SDL3/SDL.h>
 
 #include "config.h"
-#include "settings_locale.h"
 #include "rt.h"
 
 #include "keymap.h"
@@ -62,21 +61,21 @@ _Static_assert(BIND_COMBO6 - BIND_COMBO1 + 1 == TOUCH_COMBOS, "a keybind for eac
 #else
 #define CONFIG_DEFAULT_FXAA 1
 #endif
-#define CONFIG_DEFAULT_VALUES DISPLAY_BORDERLESS, CONFIG_DEFAULT_SIZE, 0, 0, 60, 1, 1, CONFIG_DEFAULT_FXAA, FACE_POSITION, 39500, "", 0, 0, 1, 1, {{1, 1, 1, 1}, 2}, 1.0f, 0.0f, 1.0f, UI_CENTER, 1, 100, 0, MENU_LANG_AUTO, 100, MENU_CONFIRM_ORIGINAL, 1, 0, FSR_NATIVE, 0.8f, 1, 0.9f, 1, FSR_UP_3, UPDATES_ASK, 1, 1.0f, 0, COMBO_LENIENT, "", "", "/", FXAA_ORIGINAL, 0, DEFAULT_BINDS, THEME_HUNTER, 1, 1, 1, TOUCH_AUTO, 1, 1.0f, 0.8f, 100, 1, 1, 0, 1, 0, 1, \
-    1, 0, 1, 1, TOUCH_SHOW_DEFAULT, 0, {{0}}, {PADB_NONE}, "Auto", 0, 1, 1, \
-    .touch_scheme = TS_ADAPTIVE, .touch_show_trad = TOUCH_SHOW_TRAD_DEFAULT, .touch_auto_run = 0, .ldn_direct = 1, \
-    .crossplay = XP_OFF, .ryu_servers = "", .ryu_host = 0, .ryu_port = 30456, .ryu_password = "", \
+#define CONFIG_DEFAULT_VALUES DISPLAY_BORDERLESS, CONFIG_DEFAULT_SIZE, 0, 0, 60, 1, 1, CONFIG_DEFAULT_FXAA, FACE_POSITION, 39500, "", 0, 1, 1, {{1, 1, 1, 1}, 2}, 1.0f, 0.0f, 1.0f, UI_CENTER, 1, 100, 0, 0, 100, MENU_CONFIRM_ORIGINAL, 1, 0, FSR_NATIVE, 0.8f, 1, 0.9f, 1, FSR_UP_3, UPDATES_ON, 1, 1.0f, 0, COMBO_LENIENT, "", "", "/", FXAA_ORIGINAL, 0, DEFAULT_BINDS, THEME_HUNTER, 1, 1, 1, TOUCH_AUTO, 1, 1.0f, 0.8f, 100, 1, 1, 0, 1, 0, 1, \
+    1, 0, 1, 1, TOUCH_SHOW_DEFAULT, 0, {{0}}, {PADB_NONE}, "Auto", 0, 1, 1, 1, 0, 1, {{0}}, {{0}}, 0, 1.0f, \
+    .touch_scheme = TS_ADAPTIVE, .touch_show_trad = TOUCH_SHOW_TRAD_DEFAULT, .touch_auto_run = 0, .share_urgent = 1, .hub_full_list = 0, .crossplay = XP_OFF, .ryu_servers = "", .ryu_host = 0, .ryu_port = 30456, .ryu_password = "", \
     .room_server = "", .room_host = 0, .room_port = 24872, .room_name = "MHGU", .room_password = "", \
     .web_api_url = WEB_API_DEFAULT_URL, \
     .citra_web_api_url = CITRA_WEB_API_DEFAULT_URL, .citra_web_api_url_2 = CITRA_WEB_API_DEFAULT_URL_2
 // (in Config's order, config.h: a new field there needs its value here, in its place - shadows, adreno_fix, bloom, reverb before
 // touch_show: without them the touch buttons' defaults moved two places and most buttons were off; after touch_show the
-// thank-you not shown yet, then the combined buttons, none, gpu, the menu's hint not seen yet, and the mouse in the game's
-// menus. hub_full_list is the 0 after the empty ldn_join text. The Traditional layout's and crossplay's fields come last and
-// are set by name)
+// thank-you not shown yet, then the combined buttons, none, gpu, the menu's hint not seen yet, the mouse in the game's
+// menus, the grass, the lock-on's buttons shown, the notice about playing online not shown yet, the pause in the menu, and
+// no hub server or matchmaking key remembered yet; the gyro's aim off, at its usual sensitivity)
 Config g_config = {CONFIG_DEFAULT_VALUES};
 Config config_defaults(void) { Config c = {CONFIG_DEFAULT_VALUES}; return c; }
 uint32_t g_render_size[2] = {1920, 1080};
+uint32_t g_gpu_pool_size = 0x35200000u;  // the game's GPU pool for render targets and textures (gen.py PATCHES)
 float g_render_aspect = 16.0f / 9.0f;
 float g_fov_scale = 1.0f;
 uint32_t g_ui_size[2] = {1280, 720};
@@ -239,8 +238,8 @@ static const char DEFAULT_INI[] =
 #ifdef __ANDROID__
     "; Off, On or Toaster. On, for a weak phone: no bloom or depth of field, cheaper and smaller textures, and the HUD stays\n"
     "; sharp over a smaller 3D picture. Toaster: all of that and more, for speed and the battery before looks: the HUD at\n"
-    "; most 540 lines tall and lighter textures still. It does not change the resolution, the frame rate, Shadows, Bloom or\n"
-    "; Reverb by itself: the menu's switch does that\n"
+    "; most 540 lines tall and lighter textures still. It does not change the resolution, the frame rate, Shadows, Grass,\n"
+    "; Bloom or Reverb by itself: the menu's switch does that\n"
 #else  // (a PC's GPU takes the game's BC textures as they are: textures.c makes smaller only those it decodes, a Mali's)
     "; Off, On or Toaster, for a weak GPU such as integrated graphics. On: no MSAA or FSR (FXAA, texture filtering and\n"
     "; the rest stay as set). Toaster, for the weakest: no FXAA either, and cheaper texture filtering. The menu's switch\n"
@@ -257,6 +256,11 @@ static const char DEFAULT_INI[] =
     "; The glow around lights and the blur of what is far away (bloom and depth of field). Off: faster on a weak GPU\n"
     "; Default: On\n"
     "Bloom = On\n"
+    "\n"
+    "; The grass fields of the maps, as the tall grass of the Marshland's area 8 (the plants that are part of a map's\n"
+    "; ground stay). Off: faster where there is a lot of it on a weak GPU\n"
+    "; Default: On\n"
+    "Grass = On\n"
     "\n"
     "; An Adreno GPU with a Vulkan 1.1 driver can show the 3D picture repeated in a grid below 720 lines without MSAA.\n"
     "; Auto keeps 2x MSAA there; Off leaves MSAA as set (faster, and some of those drivers look better without it)\n"
@@ -306,10 +310,19 @@ static const char DEFAULT_INI[] =
     "; Default: On\n"
     "PhoneRumble = On\n"
     "\n"
-    "; The lock-on, as in the newer games: the target icon or the right stick's click keep the camera on the monster,\n"
-    "; and a bow's or a bowgun's shots go to it. Off: the icon turns the camera to it once, as in the original game\n"
+    "; The lock-on, as in the newer games: the camera keeps turning to the monster the game's Target Cam has chosen (or\n"
+    "; the nearest), and a bow's or a bowgun's shot from a normal stance goes to it (the player's own aim, crouching fire\n"
+    "; and the styles' moves are left alone). The padlock by L or a long press on L turn it on and off, as the right\n"
+    "; stick's click does (held, with the game's Control Type 3, whose click changes the target)\n"
     "; Default: On\n"
     "LockOn = On\n"
+    "\n"
+    "; Aiming a bow or a bowgun (a gun's aim, its scope, crouching fire; a bow's aiming mode), turning the phone turns the\n"
+    "; aim too, from where it was as the aim began, with what the fingers or the sticks do; a controller with a gyro is\n"
+    "; read instead of the phone. The gyroscope is read only while aiming. Sensitivity: 0.2 to 3.0\n"
+    "; Default: Off, 1.0\n"
+    "GyroAim = Off\n"
+    "GyroSensitivity = 1.0\n"
 #ifndef __ANDROID__  // (runtime/hle/mousemenu.c)
     "\n"
     "; In the game's menus (the item box, the pouch, the pause menu) and while someone talks to you or the game asks\n"
@@ -359,12 +372,31 @@ static const char DEFAULT_INI[] =
     "ShowPlus = On\n"
     "ShowMinus = Off\n"
     "ShowDpad = Off\n"
-    "ShowL = Off\n"
-    "ShowZL = Off\n"
+    "ShowL = On\n"
+    "ShowZL = On\n"
     "ShowZR = Off\n"
     "ShowL3 = Off\n"
     "ShowR3 = Off\n"
     "ShowStick = On\n"
+    "\n"
+    "; On: push the movement stick past its edge to run, as before. Slide it up onto the small circle with a padlock that\n"
+    "; shows above it, which lights up, and lift your thumb there: the run locks and the hunter keeps running forward\n"
+    "; (steer with the camera), until you touch the stick or the circle again, draw the weapon or open a menu. Off: the\n"
+    "; stick only walks, and a Run button shows above the attacks instead: it runs while held\n"
+    "; Default: On\n"
+    "StickRun = On\n"
+    "\n"
+    "; On: with the weapon out, a thumb that lands on Guard and slides onto the attacks keeps guarding (R held), for the\n"
+    "; moves that need R and an attack together, like a lance's counter or a shield's thrust; slid onto the item bar, it\n"
+    "; presses R and Y together. Off: the slide lets go of R\n"
+    "; Default: Off\n"
+    "GuardSlide = Off\n"
+    "\n"
+    "; L and the target button (ZL) were turned on once for the lock-on: the padlock by L and a long press on L turn it on\n"
+    "; and off, and the target button moves it to another monster. Written by the app; Off, a file of an older version\n"
+    "; (where both were off by default) gets them on at the next start\n"
+    "; Default: On\n"
+    "LockOnButtons = On\n"
     "\n"
     "; While a menu of the game's is open, a small pad shows that moves its cursor, with the page buttons above it (L and R,\n"
     "; or ZL and ZR if the game's options turn pages with them). The movement stick keeps walking and the other buttons stay\n"
@@ -398,8 +430,8 @@ static const char DEFAULT_INI[] =
     "ShowAmmo = On\n"
     "\n"
     "; Arrows beside the item bar. A swipe on the bar turns it too\n"
-    "; Default: Off\n"
-    "ShowItemArrows = Off\n"
+    "; Default: On\n"
+    "ShowItemArrows = On\n"
     "\n"
     "; Buttons of your own, each pressing several of the game's together: A+X, ZL+R, L+Up...\n"
     "; A B X Y L R ZL ZR Plus Minus Up Down Left Right L3 R3, joined by +\n"
@@ -518,6 +550,7 @@ static const char DEFAULT_INI[] =
     "\n"
     "; Matchmaking key: hubs are only seen by players with the same key, so friends who all enter the same key\n"
     "; only see each other's hubs. Empty: public, your hubs are seen by (and you see) everyone without a key.\n"
+    "; The keys you type and save stay in the menu's list, the last one first (up to 24: RecentKey1 and on).\n"
     "; Default:\n"
     "Key =\n"
     "\n"
@@ -603,10 +636,11 @@ static const char DEFAULT_INI[] =
     "LastCitraRoom =\n"
     "LastCitraRoomName =\n"
     "\n"
-    "; Sync small monsters between players in multiplayer.\n"
-    "; (Currently off by default, pending a bug investigation where small monsters may refuse to attack players)\n"
-    "; Default: Off\n"
-    "SyncSmallMonsters = Off\n"
+    "; Clearing an Urgent quest posted by someone else also counts for you, if you have unlocked it yourself. The\n"
+    "; original game only counts it for the hunter who posted it. This only changes your own save, the others in the\n"
+    "; quest have their own setting.\n"
+    "; Default: On\n"
+    "ShareUrgentCredit = On\n"
     "\n"
     "; Join Hub search: a hub server answers each search with only part of its hubs, so the list grows as you press Retry.\n"
     "; On: each search asks every hub server several times at once and shows nearly all the hubs straight away.\n"
@@ -614,12 +648,10 @@ static const char DEFAULT_INI[] =
     "; Default: Off\n"
     "FullHubList = Off\n"
     "\n"
-    "; Direct = On: in an internet hub, your game and the host's send their packets straight to each other when both\n"
-    "; routers let them (the hub server helps them find each other), for a lower ping; else they go through the hub\n"
-    "; server. Direct means the other player's game sees your IP address (as on the Switch). Off: always through the hub\n"
-    "; server, nobody sees your address. Both ends need it On for a direct connection.\n"
-    "; Default: On\n"
-    "Direct = On\n"
+    "; Sync small monsters between players in multiplayer.\n"
+    "; (Currently off by default, pending a bug investigation where small monsters may refuse to attack players)\n"
+    "; Default: Off\n"
+    "SyncSmallMonsters = Off\n"
     "\n"
     "[Monster HP]\n"
     "; Playercount-specific HP multipliers for monsters in Hub quests.\n"
@@ -683,15 +715,21 @@ static const char DEFAULT_INI[] =
     "; minimized), so it uses no battery there; it goes on where it was when you come back\n"
     "; Default: On\n"
     "PauseInBackground = On\n"
+#ifdef __ANDROID__  // (runtime/overlay.cpp)
+    "\n"
+    "; The game waits while the settings menu is open, when you play alone (with others it goes on)\n"
+    "; Default: On\n"
+    "PauseInMenu = On\n"
+#endif
     "\n"
     "; Ask before the game window closes (closing does not save the game)\n"
     "; Default: On\n"
     "ConfirmExit = On\n"
     "\n"
-    "; Language of the settings menu (F1, or Minus + Plus on a controller). Auto: the phone's (Chinese, Spanish, else English)\n"
-    "; Auto, English, Spanish, Chinese\n"
-    "; Default: Auto\n"
-    "Language = Auto\n"
+    "; Language of the settings menu (F1, or Minus + Plus on a controller)\n"
+    "; English, Spanish, Chinese, or Auto (the phone's)\n"
+    "; Default: English\n"
+    "Language = English\n"
     "\n"
     "; Button icons in the settings menu\n"
     "; Xbox, Switch, PlayStation\n"
@@ -713,11 +751,11 @@ static const char DEFAULT_INI[] =
     "; Default: Off\n"
     "ThanksShown = Off\n"
     "\n"
-    "; Not used: MHGU has no updater, and starting the game never looks for or installs a new version (the setting was\n"
-    "; for the original project's updater).\n"
-    "; Ask, Auto, Off\n"
-    "; Default: Ask\n"
-    "Updates = Ask\n"
+    "; Android: at most once a day, the app asks GitHub for the latest release of khorne-hub/gu-native (nothing else is\n"
+    "; sent) and says so at the next start when there is a newer version. It never downloads or installs anything.\n"
+    "; On, Off\n"
+    "; Default: On\n"
+    "Updates = On\n"
 #ifndef __ANDROID__  // (runtime/overlay.cpp menu_hint; settings_panel.cpp turns it On)
     "\n"
     "; The notice at the start that says F1 (or Minus + Plus on a controller) opens the settings menu shows until the menu\n"
@@ -830,13 +868,13 @@ static bool parse_aspect(const char *v, float *out) {
 #define ERR_FSR "Invalid FSR quality, provider, sharpness or reactive mask."
 #define ERR_NET "Invalid port or Join address list (no newlines, ';' or '#')."
 #define ERR_SERVER "Invalid hub server or matchmaking key (no newlines, ';' or '#')."
-#define ERR_XP "Invalid crossplay mode, port, server, room name, password or Web API URL (no newlines, ';' or '#')."
 #define ERR_HP "HP factors must be 0.05-20."
 #define ERR_VILLAGE "Invalid village HP or quest override count."
 #define ERR_CONFIRM "Invalid menu confirmation policy."
 #define ERR_SCALE "Invalid interface scale."
 #define ERR_ICONS "Invalid button icon layout."
 #define ERR_LANGUAGE "Invalid menu language."
+#define ERR_XP "Invalid crossplay mode, port, server, room name, password or Web API URL (no newlines, ';' or '#')."
 #define ERR_UPDATES "Invalid update setting."
 #define ERR_DRAW "Draw distance must be 0-10 (0: no limit)."
 #define ERR_KEYS "Invalid keybind."
@@ -893,13 +931,28 @@ const ConfigSetting g_settings[] = {
     {"Mouse", "MouseSensitivity", SET_FLOAT, F(mouse_sensitivity), 0, 0.1f, 10.0f, NULL, NULL, false, ERR_VIEW},
     ON_OFF("Controls", "PhoneRumble", phone_rumble, false),
     ON_OFF("Controls", "LockOn", lock_on, false),
+    ON_OFF("Controls", "GyroAim", gyro_aim, false),
+    {"Controls", "GyroSensitivity", SET_FLOAT, F(gyro_sensitivity), 0, 0.2f, 3.0f, NULL, NULL, false, ERR_VIEW},
 #ifndef __ANDROID__
     ON_OFF("Controls", "MouseMenus", mouse_menus, false),
 #endif
     {"Touch", "Controls", SET_CHOICE, F(touch_controls), 0, 0, 0, "Auto,On,Off", NULL, false, ERR_MISC},
-    {"Touch", "Layout", SET_CHOICE, F(touch_scheme), 0, 0, 0, "Adaptive|adaptive|0,Traditional|tradicional|1", NULL, false, ERR_MISC},
     ON_OFF("Touch", "MoveHUD", touch_hud, false),
+    {"Touch", "Layout", SET_CHOICE, F(touch_scheme), 0, 0, 0, "Adaptive|adaptive|0,Traditional|tradicional|1", NULL, false, ERR_MISC},
     ON_OFF("Touch", "AutoRun", touch_auto_run, false),
+    ON_OFF("Touch", "TradShowAttacks", touch_show_trad[TB_ATTACKS], false),
+    ON_OFF("Touch", "TradShowDodge", touch_show_trad[TB_DODGE], false),
+    ON_OFF("Touch", "TradShowGuard", touch_show_trad[TB_GUARD], false),
+    ON_OFF("Touch", "TradShowSheathe", touch_show_trad[TB_SHEATHE], false),
+    ON_OFF("Touch", "TradShowPlus", touch_show_trad[TB_PLUS], false),
+    ON_OFF("Touch", "TradShowMinus", touch_show_trad[TB_MINUS], false),
+    ON_OFF("Touch", "TradShowDpad", touch_show_trad[TB_DPAD], false),
+    ON_OFF("Touch", "TradShowL", touch_show_trad[TB_L], false),
+    ON_OFF("Touch", "TradShowZL", touch_show_trad[TB_ZL], false),
+    ON_OFF("Touch", "TradShowZR", touch_show_trad[TB_ZR], false),
+    ON_OFF("Touch", "TradShowL3", touch_show_trad[TB_L3], false),
+    ON_OFF("Touch", "TradShowR3", touch_show_trad[TB_R3], false),
+    ON_OFF("Touch", "TradShowStick", touch_show_trad[TB_STICK], false),
     ON_OFF("Touch", "ShowAttacks", touch_show[TB_ATTACKS], false),
     ON_OFF("Touch", "ShowDodge", touch_show[TB_DODGE], false),
     ON_OFF("Touch", "ShowGuard", touch_show[TB_GUARD], false),
@@ -916,19 +969,7 @@ const ConfigSetting g_settings[] = {
     ON_OFF("Touch", "ShowL3", touch_show[TB_L3], false),
     ON_OFF("Touch", "ShowR3", touch_show[TB_R3], false),
     ON_OFF("Touch", "ShowStick", touch_show[TB_STICK], false),
-    ON_OFF("Touch", "TradShowAttacks", touch_show_trad[TB_ATTACKS], false),
-    ON_OFF("Touch", "TradShowDodge", touch_show_trad[TB_DODGE], false),
-    ON_OFF("Touch", "TradShowGuard", touch_show_trad[TB_GUARD], false),
-    ON_OFF("Touch", "TradShowSheathe", touch_show_trad[TB_SHEATHE], false),
-    ON_OFF("Touch", "TradShowPlus", touch_show_trad[TB_PLUS], false),
-    ON_OFF("Touch", "TradShowMinus", touch_show_trad[TB_MINUS], false),
-    ON_OFF("Touch", "TradShowDpad", touch_show_trad[TB_DPAD], false),
-    ON_OFF("Touch", "TradShowL", touch_show_trad[TB_L], false),
-    ON_OFF("Touch", "TradShowZL", touch_show_trad[TB_ZL], false),
-    ON_OFF("Touch", "TradShowZR", touch_show_trad[TB_ZR], false),
-    ON_OFF("Touch", "TradShowL3", touch_show_trad[TB_L3], false),
-    ON_OFF("Touch", "TradShowR3", touch_show_trad[TB_R3], false),
-    ON_OFF("Touch", "TradShowStick", touch_show_trad[TB_STICK], false),
+    ON_OFF("Touch", "LockOnButtons", lock_buttons, false),  // (written by the app: config_load)
     ON_OFF("Touch", "ShowRanged", touch_show[TB_RANGED], false),
     ON_OFF("Touch", "ShowFire", touch_show[TB_FIRE], false),
     ON_OFF("Touch", "ShowSecond", touch_show[TB_SECOND], false),
@@ -936,6 +977,8 @@ const ConfigSetting g_settings[] = {
     ON_OFF("Touch", "ShowRangedSpecial", touch_show[TB_RSPECIAL], false),
     ON_OFF("Touch", "ShowAmmo", touch_show[TB_AMMO], false),
     ON_OFF("Touch", "ShowItemArrows", touch_show[TB_ITEM_ARROWS], false),
+    ON_OFF("Touch", "StickRun", touch_show[TB_STICK_RUN], false),
+    ON_OFF("Touch", "GuardSlide", touch_show[TB_GUARD_SLIDE], false),
 #define COMBO(n) {"Touch", "Combo" #n, SET_TEXT, F(touch_combo[n - 1]), sizeof g_config.touch_combo[0], 0, 0, NULL, NULL, false, ERR_MISC}, \
     {"Touch", "Combo" #n "Pad", SET_CHOICE, F(touch_combo_pad[n - 1]), 0, 0, 0, \
      "None,L3,R3,Minus,Guide,Misc,Paddle1,Paddle2,Paddle3,Paddle4,Touchpad", NULL, false, ERR_MISC}
@@ -979,8 +1022,10 @@ const ConfigSetting g_settings[] = {
     {"Multiplayer", "LastCitraRoom", SET_TEXT, F(last_citra_room), sizeof g_config.last_citra_room, 0, 0, NULL, NULL, false, ERR_XP},
     {"Multiplayer", "LastCitraRoomName", SET_TEXT, F(last_citra_room_name), sizeof g_config.last_citra_room_name, 0, 0, NULL, NULL, false, ERR_XP},
     ON_OFF("Multiplayer", "SyncSmallMonsters", sync_small_monsters, true),
+    ON_OFF("Multiplayer", "ShareUrgentCredit", share_urgent, false),
     ON_OFF("Multiplayer", "FullHubList", hub_full_list, false),
-    ON_OFF("Multiplayer", "Direct", ldn_direct, false),
+    ON_OFF("Multiplayer", "SyncSmallMonsters", sync_small_monsters, true),
+    ON_OFF("Multiplayer", "OnlineNoticeShown", online_notice, false),  // (written as the notice closes: settings_panel.cpp)
     {"Monster HP", "1Player|1Players", SET_FACTOR, F(hp.scale[0]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, true, ERR_HP},
     {"Monster HP", "2Players|2Player", SET_FACTOR, F(hp.scale[1]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, true, ERR_HP},
     {"Monster HP", "3Players|3Player", SET_FACTOR, F(hp.scale[2]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, true, ERR_HP},
@@ -994,13 +1039,14 @@ const ConfigSetting g_settings[] = {
     ON_OFF("Audio", "MuteInBackground", mute_in_background, false),
     ON_OFF("Audio", "Reverb", reverb, false),
     ON_OFF("Application", "PauseInBackground", pause_background, false),
+    ON_OFF("Application", "PauseInMenu", pause_menu, false),
     ON_OFF("Application", "ConfirmExit", confirm_exit, false),
     {"Application", "Language", SET_CHOICE, F(language), 0, 0, 0, "English|en,Spanish|es|Español,Chinese|zh|中文|Simplified Chinese,Auto|System|Phone", NULL, false, ERR_LANGUAGE},
     {"Application", "ButtonIcons", SET_CHOICE, F(button_icons), 0, 0, 0, "Xbox,Switch,PlayStation", NULL, false, ERR_ICONS},
     {"Application", "Theme", SET_CHOICE, F(menu_theme), 0, 0, 0, "Gold,Blue,Hunter", NULL, false, ERR_MISC},
     {"Application", "MenuScale", SET_INT, F(menu_scale), 0, 50, 200, NULL, NULL, false, ERR_SCALE},
     ON_OFF("Application", "ThanksShown", thanks_shown, false),  // (written as the thank-you closes: settings_panel.cpp)
-    {"Application", "Updates", SET_CHOICE, F(updates), 0, 0, 0, "Ask,Auto|automatic,Off|never", NULL, false, ERR_UPDATES},
+    {"Application", "Updates", SET_CHOICE, F(updates), 0, 0, 0, "Off|never|0,On|ask|auto|automatic|1", NULL, false, ERR_UPDATES},
 #ifndef __ANDROID__  // (a phone's settings button is always on the screen: no notice, no key)
     ON_OFF("Application", "MenuHintSeen", menu_hint_seen, false),
 #endif
@@ -1323,6 +1369,7 @@ bool config_help(const char *key, char *buf, size_t size) {
 static int desktop_w, desktop_h;
 static bool render_auto = true;
 static bool g_shadows_set, g_bloom_set;  // (the file says Shadows / Bloom: an older one doesn't, and LowEnd then takes them off)
+static bool g_lock_buttons_set;          // (it says LockOnButtons: one of 0.1.8 or before doesn't)
 
 static void set_key(const char *key, char *val, int line) {
     char k[64], v[256];
@@ -1348,12 +1395,67 @@ static void set_key(const char *key, char *val, int line) {
         if (i == h->quests) h->quests++;
         return;
     }
+    // [Multiplayer] RecentServer<n> / RecentKey<n> = a hub server or a matchmaking key typed and saved (1: the last one)
+    size_t at = !strncmp(k, "recentserver", 12) ? 12 : !strncmp(k, "recentkey", 9) ? 9 : 0;
+    if (at && isdigit((unsigned char)k[at])) {
+        char *end;
+        unsigned long n = strtoul(k + at, &end, 10);
+        if (*end || n < 1 || n > LDN_RECENT) {
+            LOG("[config] line %d: %s is not one of the %d remembered (ignored)\n", line, key, LDN_RECENT);
+            return;
+        }
+        if (at == 12) snprintf(g_config.ldn_recent_server[n - 1], sizeof g_config.ldn_recent_server[0], "%s", val);
+        else snprintf(g_config.ldn_recent_key[n - 1], sizeof g_config.ldn_recent_key[0], "%s", val);
+        return;
+    }
     const ConfigSetting *s = config_setting(key);
     if (!s) { LOG("[config] line %d: unknown setting \"%s\" (ignored)\n", line, key); return; }
     if (s->field == offsetof(Config, shadows)) g_shadows_set = true;
     if (s->field == offsetof(Config, bloom)) g_bloom_set = true;
+    if (s->field == offsetof(Config, lock_buttons)) g_lock_buttons_set = true;
     if (!config_parse(s, val, &g_config))
         LOG("[config] line %d: \"%s\" is not a value %s takes; using the default\n", line, val, key);
+}
+
+static int recent_same(const char *a, const char *b, bool nocase) { return nocase ? !strcasecmp(a, b) : !strcmp(a, b); }
+void config_recent_add(char *list, int n, size_t width, const char *value, bool nocase) {
+    if (!value || !*value || strlen(value) >= width || strpbrk(value, "\r\n;#")) return;  // (the file couldn't read it back)
+    char keep[256];
+    snprintf(keep, sizeof keep, "%s", value);  // (value may be one of the list's own)
+    config_recent_remove(list, n, width, keep, nocase);
+    memmove(list + width, list, width * (size_t)(n - 1));
+    snprintf(list, width, "%s", keep);
+}
+bool config_recent_remove(char *list, int n, size_t width, const char *value, bool nocase) {
+    for (int i = 0; i < n; i++) {
+        if (!list[width * i] || !recent_same(list + width * i, value, nocase)) continue;
+        memmove(list + width * i, list + width * (i + 1), width * (size_t)(n - 1 - i));
+        memset(list + width * (n - 1), 0, width);
+        return true;
+    }
+    return false;
+}
+// A hub server the player typed: not the default (empty), not Off, none of the short list's (settings_panel.cpp's
+// typed_server)
+static bool typed_server(const char *s) {
+    static const char *const presets[] = LDN_SERVERS;
+    if (!*s || !strcasecmp(s, "off")) return false;
+    for (size_t i = 0; i < sizeof presets / sizeof *presets; i++)
+        if (!strcasecmp(s, presets[i])) return false;
+    return true;
+}
+// A remembered list as the file had it: its empty places, doubles and what the file can't hold left out, the rest in order
+static void recent_tidy(char *list, int n, size_t width, bool nocase) {
+    int kept = 0;
+    for (int i = 0; i < n; i++) {
+        const char *v = list + width * i;
+        bool twice = false;
+        for (int j = 0; j < kept && !twice; j++) twice = recent_same(list + width * j, v, nocase);
+        if (!*v || twice || strpbrk(v, "\r\n;#")) continue;
+        if (kept != i) memmove(list + width * kept, v, width);
+        kept++;
+    }
+    memset(list + width * kept, 0, width * (size_t)(n - kept));
 }
 
 static char *trim(char *s) {
@@ -1419,8 +1521,22 @@ void config_load(void) {
     FILE *f = fopen(path, "r");
     if (!f) {
         FILE *o = fopen(path, "w");
-        const char *ini = DEFAULT_INI;  // (Language = Auto: the menu follows the phone's language from the start)
-        if (o) {
+        const char *ini = DEFAULT_INI, *lang = NULL;
+        // (a phone or a PC set to Spanish: the settings menu in Spanish from the start)
+        int nloc = 0;
+        SDL_Locale **loc = SDL_GetPreferredLocales(&nloc);
+        bool spanish = loc && nloc > 0 && loc[0]->language && !SDL_strncasecmp(loc[0]->language, "es", 2);
+        bool chinese = loc && nloc > 0 && loc[0]->language && !SDL_strncasecmp(loc[0]->language, "zh", 2);
+        SDL_free(loc);
+        if (spanish || chinese) lang = strstr(ini, "Language = English\n");
+        if (o && lang) {
+            fwrite(ini, 1, (size_t)(lang - ini), o);
+            fputs(chinese ? "Language = Chinese\n" : "Language = Spanish\n", o);
+            fputs(lang + strlen("Language = English\n"), o);
+            fclose(o);
+            g_config.language = chinese ? 2 : 1;  // (MENU_LANG_ES, MENU_LANG_ZH: settings_locale.h)
+            LOG("[config] wrote the default settings to %s (the menu in %s, as the system)\n", path, chinese ? "Chinese" : "Spanish");
+        } else if (o) {
             fputs(ini, o);
             fclose(o);
             LOG("[config] wrote the default settings to %s\n", path);
@@ -1451,6 +1567,8 @@ void config_load(void) {
         fclose(f);
         append_missing_sections(path, seen);
     }
+    recent_tidy(g_config.ldn_recent_server[0], LDN_RECENT, sizeof g_config.ldn_recent_server[0], true);
+    recent_tidy(g_config.ldn_recent_key[0], LDN_RECENT, sizeof g_config.ldn_recent_key[0], false);
 
     // (a file of an older version, with LowEnd on and no Shadows: off, as the menu's Low-end mode now sets them; a
     // desktop's Low-end mode keeps the shadows, and only Toaster turns them off)
@@ -1460,6 +1578,30 @@ void config_load(void) {
     if (f && !g_shadows_set && g_config.low_end == LOW_END_TOASTER) g_config.shadows = 0;
 #endif
     if (f && !g_bloom_set && g_config.low_end) g_config.bloom = 0;  // (LowEnd alone left the bloom out up to 0.1.6)
+    // (L and the target button, off by default up to 0.1.8, when a tap on the target camera's icon turned the lock-on: the
+    // icons take no taps now, so a file of then gets both, once; the next save writes LockOnButtons and keeps the choice)
+    if (f && (!g_lock_buttons_set || !g_config.lock_buttons)) {
+        g_config.touch_show[TB_L] = g_config.touch_show[TB_ZL] = 1, g_config.lock_buttons = 1;
+        LOG("[config] L and the target button shown for the lock-on (a file of an older version)\n");
+    }
+    // (the item bar's arrows, off by default up to 0.1.8 and written so by its first start: on, as now, once for a file
+    // of then, the one without LockOnButtons; the next save keeps the choice)
+    if (f && !g_lock_buttons_set && !g_config.touch_show[TB_ITEM_ARROWS]) {
+        g_config.touch_show[TB_ITEM_ARROWS] = 1;
+        LOG("[config] the item bar's arrows shown, as by default now (a file of an older version)\n");
+    }
+    // (the hub server and the matchmaking key typed in an older version, the ones in use: in the menu's lists, as if typed
+    // and saved now, once for a file of then, the one without LockOnButtons; the next save writes LockOnButtons and the
+    // lists, and from then on only what is typed and saved goes in - one taken out stays out)
+    if (f && !g_lock_buttons_set && (typed_server(g_config.ldn_server) || *g_config.ldn_key)) {
+        if (typed_server(g_config.ldn_server))
+            config_recent_add(g_config.ldn_recent_server[0], LDN_RECENT, sizeof g_config.ldn_recent_server[0],
+                              g_config.ldn_server, true);
+        if (*g_config.ldn_key)
+            config_recent_add(g_config.ldn_recent_key[0], LDN_RECENT, sizeof g_config.ldn_recent_key[0], g_config.ldn_key,
+                              false);
+        LOG("[config] the hub server and key in use listed in the menu (a file of an older version)\n");
+    }
     // Keep Auto/Desktop and file values, rather than persisting temporary environment overrides.
     render_auto = !g_config.render_w;
     config_store_loaded(&g_config);
@@ -1485,11 +1627,6 @@ void config_load(void) {
     if ((e = getenv("MHGU_BACKGROUND_INPUT"))) g_config.background_input = atoi(e) != 0;
     if ((e = getenv("MHGU_PAD_POSITIONAL"))) g_config.face_buttons = atoi(e) ? FACE_POSITION : FACE_LABEL;
     if ((e = getenv("MHGU_LDN_PORT")) && atoi(e) > 0) g_config.ldn_port = atoi(e);
-    if ((e = getenv("MHGU_SYNC_ZAKO"))) g_config.sync_small_monsters = atoi(e) != 0;
-    if ((e = getenv("MHGU_LDN_JOIN"))) snprintf(g_config.ldn_join, sizeof g_config.ldn_join, "%s", e);
-    if ((e = getenv("MHGU_LDN_SERVER"))) snprintf(g_config.ldn_server, sizeof g_config.ldn_server, "%s", e);
-    if ((e = getenv("MHGU_LDN_KEY"))) snprintf(g_config.ldn_key, sizeof g_config.ldn_key, "%s", e);
-    if ((e = getenv("MHGU_LDN_DIRECT"))) g_config.ldn_direct = atoi(e) != 0;
     static const struct { const char *env, *key; } crossplay_env[] = {
         {"MHGU_CROSSPLAY", "Crossplay"}, {"MHGU_RYU_SERVERS", "RyuServers"}, {"MHGU_RYU_HOST", "RyuHost"},
         {"MHGU_RYU_PORT", "RyuPort"}, {"MHGU_RYU_PASSWORD", "RyuPassword"}, {"MHGU_ROOM_SERVER", "RoomServer"},
@@ -1511,15 +1648,21 @@ void config_load(void) {
         Config candidate = g_config;
         if (config_parse(setting, value, &candidate) && config_valid(setting, &candidate)) g_config = candidate;
     }
+    if ((e = getenv("MHGU_SYNC_ZAKO"))) g_config.sync_small_monsters = atoi(e) != 0;
+    if ((e = getenv("MHGU_LDN_JOIN"))) snprintf(g_config.ldn_join, sizeof g_config.ldn_join, "%s", e);
+    if ((e = getenv("MHGU_LDN_SERVER"))) snprintf(g_config.ldn_server, sizeof g_config.ldn_server, "%s", e);
+    if ((e = getenv("MHGU_LDN_KEY"))) snprintf(g_config.ldn_key, sizeof g_config.ldn_key, "%s", e);
+    if ((e = getenv("MHGU_ONLINE_NOTICE"))) g_config.online_notice = atoi(e) != 0;  // (test runs: 0 shows it again; not saved)
     if ((e = getenv("MHGU_ASPECT"))) parse_aspect(e, &g_config.aspect_ratio);
     if ((e = getenv("MHGU_FOV")) && strtof(e, NULL) >= 0.5f && strtof(e, NULL) <= 2.0f) g_config.fov = strtof(e, NULL);
     if ((e = getenv("MHGU_UI_ANCHOR"))) config_parse(config_setting("UIAnchor"), e, &g_config);
     e = getenv("MHGU_RENDER");
     if (e && parse_size(e, &w, &h)) render_auto = false, g_config.render_w = w, g_config.render_h = h;
     // (test runs, the device's own settings left as they are: MHGU_LOWEND=0|1|2 (Toaster), MHGU_SCALE=<percent>,
-    // MHGU_SHADOWS=0|1, MHGU_BLOOM=0|1, MHGU_FPS_LIMIT=<fps>; not saved)
+    // MHGU_SHADOWS=0|1, MHGU_BLOOM=0|1, MHGU_GRASS=0|1, MHGU_FPS_LIMIT=<fps>; not saved)
     if ((e = getenv("MHGU_LOWEND"))) g_config.low_end = atoi(e) < 0 ? 0 : atoi(e) > 2 ? 2 : atoi(e);
     if ((e = getenv("MHGU_BLOOM"))) g_config.bloom = atoi(e) != 0, config_live_test(&g_config);
+    if ((e = getenv("MHGU_GRASS"))) g_config.grass = atoi(e) != 0, config_live_test(&g_config);
     if ((e = getenv("MHGU_FPS_LIMIT")) && atoi(e) >= 30 && atoi(e) <= FPS_MAX) g_config.fps = atoi(e), config_live_test(&g_config);
     if ((e = getenv("MHGU_SCALE")) && atoi(e) >= 10 && atoi(e) <= 100) g_config.render_scale = atoi(e);
     if ((e = getenv("MHGU_SHADOWS"))) g_config.shadows = atoi(e) != 0, config_live_test(&g_config);
@@ -1642,6 +1785,16 @@ void config_load(void) {
     g_config.render_w = w, g_config.render_h = h;
     g_render_size[0] = (uint32_t)w;
     g_render_size[1] = (uint32_t)h;
+    {   // The game's screen-sized targets come out of its 848 MB GPU pool: ~59 bytes a pixel (measured at 720p to
+        // 4320x2430). Above the Switch's 1920x1080 the pool grows by that much (64 a pixel), so what's left for
+        // textures stays as on the Switch; at 4320x2430 the pool was otherwise too full for a boss demo's 5.6 MB
+        // texture, and the game copied it to address 0 over its own code.
+        uint64_t px = (uint64_t)w * (uint64_t)h, base = 1920ull * 1080ull;
+        uint64_t size = 0x35200000ull + (px > base ? ((px - base) * 64 + 0xfffff) & ~0xfffffull : 0);
+        g_gpu_pool_size = (uint32_t)size;
+        if (px > base) LOG("[config] GPU memory pool %u MB (848 + %u for the render size)\n", (unsigned)(size >> 20),
+                           (unsigned)((size - 0x35200000ull) >> 20));
+    }
     g_render_aspect = aspect;
     g_fov_scale = g_config.fov;
 

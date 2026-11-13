@@ -188,6 +188,9 @@ static char *rel_path(File *f) {
     return s;
 }
 
+static double g_short_gb;  // (the game's image, when it looks cut short: its size, and its empty files)
+static int g_short_empty;
+
 static bool build(RomfsImage *im, const char *base_dir, const char *const *overlays, int noverlays, bool game) {
     Dir *root = scan(base_dir, "", 0);
     if (!root) { LOG("[romfs] cannot read %s\n", base_dir); return false; }
@@ -263,10 +266,26 @@ static bool build(RomfsImage *im, const char *base_dir, const char *const *overl
     im->nfiles = l.nf;
     free(l.dirs);
     LOG("[romfs] %d files, %d folders, image %.1f GB\n", l.nf, l.nd, im->size / 1e9);
-    // (version 1.4.0's is 12.3 GB. A copy cut short, with every file there but some of them empty, starts and then fails in
-    // ways that look like the port's: seen as a black picture and a call to nothing)
+    if (!game) return true;
+    // (version 1.4.0's is 12.3 GB, and none of its files is empty. A copy cut short, with every file there but some of
+    // them empty or short, starts and then fails in ways that look like the port's: a black picture, a call to nothing,
+    // the game closing in one place (#106). The player is told once the game shows: romfs_incomplete, overlay.cpp)
+    int empty = 0;
+    for (int i = 0; i < l.nf; i++)
+        if (!l.files[i]->size && !strncmp(l.files[i]->path, base_dir, strlen(base_dir)) && empty++ < 3)  // (a mod's may be empty)
+            LOG("[romfs] WARNING: empty file %s\n", l.files[i]->rpath);
     if (im->size < 12000000000ull) LOG("[romfs] WARNING: smaller than the game's 12.3 GB: some files are probably incomplete\n");
+    if (empty) LOG("[romfs] WARNING: %d empty file(s): the copy is incomplete\n", empty);
+    if (im->size < 12000000000ull || empty) g_short_gb = im->size / 1e9, g_short_empty = empty;
+    const char *t = getenv("MHGU_ROMFS_SHORT");  // (test: the notice as if the copy were that many GB, e.g. 11.5)
+    if (t && atof(t) > 0) g_short_gb = atof(t);
     return true;
+}
+
+bool romfs_incomplete(double *gb, int *empty) {
+    if (gb) *gb = g_short_gb;
+    if (empty) *empty = g_short_empty;
+    return g_short_gb > 0;
 }
 
 bool romfs_open(const char *base_dir, const char *const *overlays, int noverlays) {

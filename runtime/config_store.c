@@ -19,13 +19,13 @@
 
 static Config saved, startup;
 static bool have_saved, runtime_ready, runtime_no_msaa, runtime_no_fxaa;
-static SDL_AtomicInt volume = {100}, confirm_exit = {1}, language = {MENU_LANG_AUTO}, mute_in_background, window_focused = {1};
+static SDL_AtomicInt volume = {100}, confirm_exit = {1}, language = {0}, mute_in_background, window_focused = {1};
 static SDL_AtomicInt live_fps, live_fov, live_mouse, live_draw = {0x3f800000}, live_fxaa = {1}, live_msaa = {1},
                      live_vsync = {1}, live_face, live_menu_confirm, live_background = {1}, live_combo, live_chat_key,
                      live_fxaa_mode, live_smooth, live_discord, live_discord_hunter, live_binds[BINDS][BIND_KEYS],
-                     live_touch, live_touch_scheme, live_touch_hud, live_auto_run, live_touch_show[TB_COUNT], live_touch_show_trad[TB_COUNT], live_touch_combo[TOUCH_COMBOS], live_touch_combo_pad[TOUCH_COMBOS], live_touch_cam, live_touch_opacity, live_lock_on = {1}, live_mouse_menus = {1},
-                     live_touch_vibration = {1}, live_phone_rumble = {1}, live_show_stats, live_pause_bg = {1}, live_hub_full = {1}, live_ldn_direct = {1},
-                     live_shadows = {1}, live_bloom = {1}, live_reverb = {1};
+                     live_touch, live_touch_scheme, live_auto_run, live_touch_hud, live_touch_show[TB_COUNT], live_touch_show_trad[TB_COUNT], live_touch_combo[TOUCH_COMBOS], live_touch_combo_pad[TOUCH_COMBOS], live_touch_cam, live_touch_opacity, live_lock_on = {1}, live_gyro_aim, live_gyro_sens, live_mouse_menus = {1},
+                     live_touch_vibration = {1}, live_phone_rumble = {1}, live_show_stats, live_pause_bg = {1}, live_pause_menu = {1},
+                     live_shadows = {1}, live_bloom = {1}, live_grass = {1}, live_reverb = {1}, live_online_notice;
 static void set_float(SDL_AtomicInt *slot, float value) {
     int bits; _Static_assert(sizeof bits == sizeof value, "32-bit float settings");
     memcpy(&bits, &value, sizeof bits); SDL_SetAtomicInt(slot, bits);
@@ -33,9 +33,12 @@ static void set_float(SDL_AtomicInt *slot, float value) {
 static float get_float(SDL_AtomicInt *slot) {
     int bits = SDL_GetAtomicInt(slot); float value; memcpy(&value, &bits, sizeof value); return value;
 }
+static SDL_AtomicInt live_gen;  // (each publish: config_live_generation)
 static SDL_SpinLock live_ldn_lock;  // [Multiplayer] Server / Key: read by the network threads (runtime/net/ldn.c)
 static char live_ldn_server[sizeof saved.ldn_server], live_ldn_key[sizeof saved.ldn_key];
+static SDL_AtomicInt live_share_urgent, live_village = {1};
 static Config live_crossplay;  // protected by live_ldn_lock
+static SDL_AtomicInt live_hub_full = {1};
 // A save updates changed hot fields only. Saving the volume must not silently
 // remove an unchanged FOV/FPS override supplied by the development environment.
 static void publish_live(const Config *c, bool all) {
@@ -57,28 +60,28 @@ static void publish_live(const Config *c, bool all) {
     if (all || c->discord != saved.discord) SDL_SetAtomicInt(&live_discord, c->discord);
     if (all || c->discord_hunter != saved.discord_hunter) SDL_SetAtomicInt(&live_discord_hunter, c->discord_hunter);
     if (all || c->touch_controls != saved.touch_controls) SDL_SetAtomicInt(&live_touch, c->touch_controls);
-    if (all || c->touch_scheme != saved.touch_scheme) SDL_SetAtomicInt(&live_touch_scheme, c->touch_scheme);
     if (all || c->touch_hud != saved.touch_hud) SDL_SetAtomicInt(&live_touch_hud, c->touch_hud);
-    if (all || c->touch_auto_run != saved.touch_auto_run) SDL_SetAtomicInt(&live_auto_run, c->touch_auto_run);
     for (int i = 0; i < TB_COUNT; i++) SDL_SetAtomicInt(&live_touch_show[i], c->touch_show[i]);
-    for (int i = 0; i < TB_COUNT; i++) SDL_SetAtomicInt(&live_touch_show_trad[i], c->touch_show_trad[i]);
     for (int i = 0; i < TOUCH_COMBOS; i++) {
         SDL_SetAtomicInt(&live_touch_combo[i], (int)config_combo_mask(c->touch_combo[i]));
         SDL_SetAtomicInt(&live_touch_combo_pad[i], c->touch_combo_pad[i]);
     }
     if (all || c->lock_on != saved.lock_on) SDL_SetAtomicInt(&live_lock_on, c->lock_on);
+    if (all || c->gyro_aim != saved.gyro_aim) SDL_SetAtomicInt(&live_gyro_aim, c->gyro_aim);
+    if (all || c->gyro_sensitivity != saved.gyro_sensitivity) set_float(&live_gyro_sens, c->gyro_sensitivity);
     if (all || c->mouse_menus != saved.mouse_menus) SDL_SetAtomicInt(&live_mouse_menus, c->mouse_menus);
     if (all || c->touch_camera != saved.touch_camera) set_float(&live_touch_cam, c->touch_camera);
     if (all || c->touch_opacity != saved.touch_opacity) set_float(&live_touch_opacity, c->touch_opacity);
     if (all || c->touch_vibration != saved.touch_vibration) SDL_SetAtomicInt(&live_touch_vibration, c->touch_vibration);
     if (all || c->phone_rumble != saved.phone_rumble) SDL_SetAtomicInt(&live_phone_rumble, c->phone_rumble);
     if (all || c->show_stats != saved.show_stats) SDL_SetAtomicInt(&live_show_stats, c->show_stats);
-    if (all || c->hub_full_list != saved.hub_full_list) SDL_SetAtomicInt(&live_hub_full, c->hub_full_list);
-    if (all || c->ldn_direct != saved.ldn_direct) SDL_SetAtomicInt(&live_ldn_direct, c->ldn_direct);
     if (all || c->pause_background != saved.pause_background) SDL_SetAtomicInt(&live_pause_bg, c->pause_background);
+    if (all || c->pause_menu != saved.pause_menu) SDL_SetAtomicInt(&live_pause_menu, c->pause_menu);
     if (all || c->shadows != saved.shadows) SDL_SetAtomicInt(&live_shadows, c->shadows);
     if (all || c->bloom != saved.bloom) SDL_SetAtomicInt(&live_bloom, c->bloom);
+    if (all || c->grass != saved.grass) SDL_SetAtomicInt(&live_grass, c->grass);
     if (all || c->reverb != saved.reverb) SDL_SetAtomicInt(&live_reverb, c->reverb);
+    if (all || c->online_notice != saved.online_notice) SDL_SetAtomicInt(&live_online_notice, c->online_notice);
     for (int i = 0; i < BINDS; i++)
         for (int k = 0; k < BIND_KEYS; k++)
             if (all || c->binds[i][k] != saved.binds[i][k]) SDL_SetAtomicInt(&live_binds[i][k], c->binds[i][k]);
@@ -88,6 +91,9 @@ static void publish_live(const Config *c, bool all) {
         if (all || strcmp(c->ldn_key, saved.ldn_key)) memcpy(live_ldn_key, c->ldn_key, sizeof live_ldn_key);
         SDL_UnlockSpinlock(&live_ldn_lock);
     }
+    if (all || c->share_urgent != saved.share_urgent) SDL_SetAtomicInt(&live_share_urgent, c->share_urgent);
+    if (all || c->village_in_hub != saved.village_in_hub) SDL_SetAtomicInt(&live_village, c->village_in_hub);
+    if (all || c->hub_full_list != saved.hub_full_list) SDL_SetAtomicInt(&live_hub_full, c->hub_full_list);
     SDL_LockSpinlock(&live_ldn_lock);
     if (all || c->crossplay != saved.crossplay) live_crossplay.crossplay = c->crossplay;
     if (all || strcmp(c->ryu_servers, saved.ryu_servers)) memcpy(live_crossplay.ryu_servers, c->ryu_servers, sizeof live_crossplay.ryu_servers);
@@ -103,7 +109,13 @@ static void publish_live(const Config *c, bool all) {
     if (all || strcmp(c->citra_room_password, saved.citra_room_password)) memcpy(live_crossplay.citra_room_password, c->citra_room_password, sizeof live_crossplay.citra_room_password);
     if (all || strcmp(c->citra_token, saved.citra_token)) memcpy(live_crossplay.citra_token, c->citra_token, sizeof live_crossplay.citra_token);
     SDL_UnlockSpinlock(&live_ldn_lock);
+    if (all || c->touch_scheme != saved.touch_scheme) SDL_SetAtomicInt(&live_touch_scheme, c->touch_scheme);
+    if (all || c->touch_auto_run != saved.touch_auto_run) SDL_SetAtomicInt(&live_auto_run, c->touch_auto_run);
+    for (int i = 0; i < TB_COUNT; i++) SDL_SetAtomicInt(&live_touch_show_trad[i], c->touch_show_trad[i]);
+    SDL_AddAtomicInt(&live_gen, 1);
 }
+// Counts the live settings' publishes (a save, the start): what is drawn from them may change when it moves
+int config_live_generation(void) { return SDL_GetAtomicInt(&live_gen); }
 void config_store_loaded(const Config *c) {
     publish_live(c, !have_saved);
     saved = *c; have_saved = true;
@@ -148,17 +160,19 @@ int config_live_smooth_gradients(void) { return SDL_GetAtomicInt(&live_smooth); 
 int config_live_discord(void) { return SDL_GetAtomicInt(&live_discord); }
 int config_live_discord_hunter(void) { return SDL_GetAtomicInt(&live_discord_hunter); }
 int config_live_touch_controls(void) { return SDL_GetAtomicInt(&live_touch); }
-int config_live_touch_scheme(void) { return SDL_GetAtomicInt(&live_touch_scheme); }
 int config_live_touch_hud(void) { return SDL_GetAtomicInt(&live_touch_hud); }
-int config_live_touch_auto_run(void) { return SDL_GetAtomicInt(&live_auto_run); }
 int config_live_lock_on(void) { return SDL_GetAtomicInt(&live_lock_on); }
+int config_live_gyro_aim(void) { return SDL_GetAtomicInt(&live_gyro_aim); }
+float config_live_gyro_sensitivity(void) { return get_float(&live_gyro_sens); }
 #ifdef __ANDROID__
 int config_live_mouse_menus(void) { return 0; }
 #else
 int config_live_mouse_menus(void) { return SDL_GetAtomicInt(&live_mouse_menus); }
 #endif
-int config_live_touch_show(int button) { return SDL_GetAtomicInt(&live_touch_show[button]); }
+int config_live_touch_scheme(void) { return SDL_GetAtomicInt(&live_touch_scheme); }
+int config_live_touch_auto_run(void) { return SDL_GetAtomicInt(&live_auto_run); }
 int config_live_touch_show_trad(int button) { return SDL_GetAtomicInt(&live_touch_show_trad[button]); }
+int config_live_touch_show(int button) { return SDL_GetAtomicInt(&live_touch_show[button]); }
 uint32_t config_live_touch_combo(int index) { return (uint32_t)SDL_GetAtomicInt(&live_touch_combo[index]); }
 int config_live_touch_combo_pad(int index) { return SDL_GetAtomicInt(&live_touch_combo_pad[index]); }
 
@@ -188,16 +202,18 @@ float config_live_touch_opacity(void) { return get_float(&live_touch_opacity); }
 int config_live_touch_vibration(void) { return SDL_GetAtomicInt(&live_touch_vibration); }
 int config_live_phone_rumble(void) { return SDL_GetAtomicInt(&live_phone_rumble); }
 int config_live_show_stats(void) { return SDL_GetAtomicInt(&live_show_stats); }
-int config_live_hub_full_list(void) { return SDL_GetAtomicInt(&live_hub_full); }
-int config_live_ldn_direct(void) { return SDL_GetAtomicInt(&live_ldn_direct); }
 int config_live_pause_background(void) { return SDL_GetAtomicInt(&live_pause_bg); }
+int config_live_pause_menu(void) { return SDL_GetAtomicInt(&live_pause_menu); }
 int config_live_shadows(void) { return SDL_GetAtomicInt(&live_shadows); }
 int config_live_bloom(void) { return SDL_GetAtomicInt(&live_bloom); }
+int config_live_grass(void) { return SDL_GetAtomicInt(&live_grass); }
 int config_live_reverb(void) { return SDL_GetAtomicInt(&live_reverb); }
-// (config.c: a test run's MHGU_SHADOWS, MHGU_BLOOM, MHGU_FPS_LIMIT, after the file: live, not saved)
+int config_live_online_notice(void) { return SDL_GetAtomicInt(&live_online_notice); }
+// (config.c: a test run's MHGU_SHADOWS, MHGU_BLOOM, MHGU_GRASS, MHGU_FPS_LIMIT, after the file: live, not saved)
 void config_live_test(const Config *c) {
     SDL_SetAtomicInt(&live_shadows, c->shadows);
     SDL_SetAtomicInt(&live_bloom, c->bloom);
+    SDL_SetAtomicInt(&live_grass, c->grass);
     set_float(&live_fps, (float)c->fps);
 }
 int config_live_bind(int bind, int slot) { return SDL_GetAtomicInt(&live_binds[bind][slot]); }
@@ -207,6 +223,9 @@ void config_live_ldn(char *server, size_t server_size, char *key, size_t key_siz
     if (key) SDL_strlcpy(key, live_ldn_key, key_size);
     SDL_UnlockSpinlock(&live_ldn_lock);
 }
+int config_live_share_urgent(void) { return SDL_GetAtomicInt(&live_share_urgent); }
+int config_live_village_in_hub(void) { return SDL_GetAtomicInt(&live_village); }
+int config_live_hub_full_list(void) { return SDL_GetAtomicInt(&live_hub_full); }
 void config_live_crossplay(Config *out) {
     SDL_LockSpinlock(&live_ldn_lock);
     out->crossplay = live_crossplay.crossplay;
@@ -282,9 +301,16 @@ bool config_validate(const Config *c, char *error, size_t size) {
     return true;
 }
 
-// What config_save writes: a setting of the table (setting) or a Quest<number> entry (setting NULL)
+// What config_save writes: a setting of the table (setting) or a Quest<number>, RecentServer<n> or RecentKey<n> entry
+// (setting NULL)
 typedef struct { const ConfigSetting *setting; const char *section; char key[64], value[256]; bool seen; } Entry;
-#define ENTRY_MAX (HP_QUESTS_MAX + 256)  // (every setting of g_settings, about 180 with the crossplay and Traditional ones, 1 more on a desktop, and the quests set apart)
+// (every setting of g_settings, 133 now, 134 on a desktop, the quests set apart, the servers and keys remembered)
+#define ENTRY_MAX (HP_QUESTS_MAX + 256 + 2 * LDN_RECENT)
+// A RecentServer<n> / RecentKey<n> line's key, normalized: what config_save writes again or leaves out
+static bool recent_key(const char *normalized) {
+    size_t at = !strncmp(normalized, "recentserver", 12) ? 12 : !strncmp(normalized, "recentkey", 9) ? 9 : 0;
+    return at && isdigit((unsigned char)normalized[at]);
+}
 static void normalize(const char *s, char *out, size_t size) {
     size_t n = 0;
     for (; *s && n + 1 < size; s++)
@@ -325,7 +351,8 @@ bool config_save(const Config *c, char *error, size_t error_size) {
     if (!config_validate(c, error, error_size)) return false;
     static Entry entries[ENTRY_MAX];  // (big: off the stack)
     int n = 0;
-    if (g_nsettings + c->hp.quests > ENTRY_MAX) return fail(error, error_size, "Too many settings to save (ENTRY_MAX).");
+    if (g_nsettings + c->hp.quests + 2 * LDN_RECENT > ENTRY_MAX)
+        return fail(error, error_size, "Too many settings to save (ENTRY_MAX).");
     for (int i = 0; i < g_nsettings; i++) {
         Entry *e = &entries[n++];
         e->setting = &g_settings[i], e->section = g_settings[i].section, e->seen = false;
@@ -339,6 +366,15 @@ bool config_save(const Config *c, char *error, size_t error_size) {
         snprintf(e->key, sizeof e->key, "Quest%u", c->hp.quest[i].quest);
         snprintf(e->value, sizeof e->value, "%g, %g, %g, %g", (double)v[0], (double)v[1], (double)v[2], (double)v[3]);
     }
+    for (int list = 0; list < 2; list++)  // (the remembered ones, at the end of [Multiplayer]: only those there are)
+        for (int i = 0, kept = 0; i < LDN_RECENT; i++) {
+            const char *v = list ? c->ldn_recent_key[i] : c->ldn_recent_server[i];
+            if (!*v || strpbrk(v, "\r\n;#")) continue;
+            Entry *e = &entries[n++];
+            e->setting = NULL, e->section = "Multiplayer", e->seen = false;
+            snprintf(e->key, sizeof e->key, "%s%d", list ? "RecentKey" : "RecentServer", ++kept);
+            snprintf(e->value, sizeof e->value, "%s", v);
+        }
     char path[1100];
     config_path(path, sizeof path);
     char temp[1200];
@@ -379,6 +415,7 @@ bool config_save(const Config *c, char *error, size_t error_size) {
                 char normalized[128];
                 normalize(key, normalized, sizeof normalized);
                 if (!strncmp(normalized, "quest", 5) && isdigit((unsigned char)normalized[5])) handled = true;
+                if (recent_key(normalized)) handled = true;  // (one taken out of its list: its line goes too)
             }
         }
         if (!handled) { fputs(line, out); ended_line = len && line[len - 1] == '\n'; }

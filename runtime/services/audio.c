@@ -76,7 +76,8 @@ typedef struct Effect Effect;
 // per-buffer volumes. Channel c of a voice (buffer c of a sub mix) goes to destinations c, c + n, c + 2n... of its
 // splitter (n = its channel / buffer count).
 typedef struct { uint32_t ndest; int32_t *dest; } SplitInfo;
-typedef struct { int32_t mix; uint8_t in_use; float vol[MIXBUF_MAX], prev[MIXBUF_MAX]; } SplitDest;
+// (dirty: listed in the renderer's sd_dirty, its volumes changed since the last frame: MHGU_PERF_AUDIO_SDEST)
+typedef struct { int32_t mix; uint8_t in_use, dirty; float vol[MIXBUF_MAX], prev[MIXBUF_MAX]; } SplitDest;
 
 // MHGU_AUDIO_TRACE=1: a line per second on render pacing (frames, game updates, the longest stretch without one),
 // device queue underruns and the aux rings, plus a line for every voice lifetime (first wave buffer appended to stop /
@@ -128,6 +129,15 @@ typedef struct {
     SplitInfo *spl;
     SplitDest *sdest;
     uint32_t nsdest;
+    // The perf pass's switches, read when the renderer opens (renderer_perf_init). MHGU_PERF_AUDIO_SDEST=1: a frame
+    // copies prev <- vol only for the destinations an update changed (sd_dirty, each once) instead of all of them; every
+    // other one already has prev == vol, so the mix is the same bit for bit. MHGU_PERF_AUDIO_ADPCM=1: DSP ADPCM decoded
+    // a 14-sample frame at a time (adpcm_block), the same integer steps. MHGU_PERF_AUDIO_CHECK=1: both checked against
+    // the old way as they run, the result in the log every 2000 frames (10 s).
+    uint8_t perf_sdest, perf_adpcm, perf_check;
+    uint8_t perf_sleep;  // (MHGU_PERF_SLEEP_COARSE, Android: the tick sleeps coarsely; its queue holds ~45 ms)
+    uint32_t *sd_dirty, nsd_dirty;
+    uint64_t chk_frames, chk_sd_copied, chk_sd_all, chk_sd_bad, chk_adpcm, chk_adpcm_bad;
     SDL_AudioStream *stream;
     FILE *wav;
     uint32_t wav_bytes;
@@ -232,6 +242,52 @@ static int16_t adpcm_next(const uint8_t *data, uint64_t size, uint32_t s, const 
     return (int16_t)v;
 }
 
+// adpcm_next for count samples from s on, a frame at a time (MHGU_PERF_AUDIO_ADPCM): the same integer steps in the
+// same order and the same history, without a divide, a header read and a bounds check per sample. A frame the buffer
+// ends in goes sample by sample as adpcm_next does (past the end: 0, the history kept).
+static void adpcm_block(const uint8_t *data, uint64_t size, uint32_t s, int count, const int16_t *coefs, ChanState *cs,
+                        int16_t *out) {
+    uint32_t frame = s / 14, n = s % 14;
+    int16_t h0 = cs->h0, h1 = cs->h1;
+    for (int i = 0; i < count; frame++, n = 0) {
+        uint64_t hdr = (uint64_t)frame * 8;
+        if (hdr + 8 > size) {  // (not all 14 nibbles in the buffer: hdr + 1 + 13 / 2 >= size)
+            for (; n < 14 && i < count; n++, i++) {
+                if (hdr + 1 + n / 2 >= size) { out[i] = 0; continue; }
+                uint8_t ps = data[hdr];
+                int scale = ps & 15, ci = (ps >> 4) & 7;
+                uint8_t b = data[hdr + 1 + n / 2];
+                int nib = (n & 1) ? (int8_t)(b << 4) >> 4 : (int8_t)b >> 4;
+                int pred = coefs[ci * 2] * h0 + coefs[ci * 2 + 1] * h1;
+                int v = ((nib * (2048 << scale)) + pred + 1024) >> 11;
+                if (v > 32767) v = 32767;
+                if (v < -32768) v = -32768;
+                h1 = h0;
+                h0 = (int16_t)v;
+                out[i] = (int16_t)v;
+            }
+            continue;
+        }
+        uint8_t ps = data[hdr], nb[7];
+        memcpy(nb, data + hdr + 1, 7);
+        int step = 2048 << (ps & 15), ci = (ps >> 4) & 7;
+        int c0 = coefs[ci * 2], c1 = coefs[ci * 2 + 1];
+        for (; n < 14 && i < count; n++, i++) {
+            uint8_t b = nb[n / 2];
+            int nib = (n & 1) ? (int8_t)(b << 4) >> 4 : (int8_t)b >> 4;
+            int pred = c0 * h0 + c1 * h1;
+            int v = ((nib * step) + pred + 1024) >> 11;
+            if (v > 32767) v = 32767;
+            if (v < -32768) v = -32768;
+            h1 = h0;
+            h0 = (int16_t)v;
+            out[i] = (int16_t)v;
+        }
+    }
+    cs->h0 = h0;
+    cs->h1 = h1;
+}
+
 static void mark_end(ChanState *cs, WaveBuf *wb, uint32_t *idx) {
     cs->valid[*idx] = 0;
     *idx = (*idx + 1) % WB_COUNT;
@@ -241,7 +297,7 @@ static void mark_end(ChanState *cs, WaveBuf *wb, uint32_t *idx) {
 }
 
 // Decode up to `need` samples of channel `ch` into out; returns how many were produced.
-static int decode_voice(Voice *v, int ch, ChanState *cs, int16_t *out, int need) {
+static int decode_voice(Renderer *r, Voice *v, int ch, ChanState *cs, int16_t *out, int need) {
     int y = 0;
     uint32_t idx = cs->wb_index;
     const int16_t *coefs = (const int16_t *)G2H((uint32_t)v->ds_addr);
@@ -270,6 +326,18 @@ static int decode_voice(Voice *v, int ch, ChanState *cs, int16_t *out, int need)
                     uint64_t s = (uint64_t)start + cs->offset + n;
                     if (s >= nsamp) break;
                     out[y + n] = pcm[s * v->chans + ch];
+                }
+            } else if (v->fmt == 6 && coefs && r->perf_adpcm && want > 0) {
+                int16_t h0 = cs->h0, h1 = cs->h1;
+                adpcm_block(data, wb->size, start + cs->offset, want, coefs, cs, out + y);
+                n = want;
+                if (r->perf_check) {  // (MHGU_PERF_AUDIO_CHECK: the old way from the same history, compared)
+                    ChanState was = *cs;
+                    was.h0 = h0, was.h1 = h1;
+                    int16_t ref[4096];
+                    for (int k = 0; k < want; k++) ref[k] = adpcm_next(data, wb->size, start + cs->offset + k, coefs, &was);
+                    r->chk_adpcm += want;
+                    if (memcmp(ref, out + y, want * sizeof *ref) || was.h0 != cs->h0 || was.h1 != cs->h1) r->chk_adpcm_bad++;
                 }
             } else if (v->fmt == 6 && coefs) {
                 for (; n < want; n++) out[y + n] = adpcm_next(data, wb->size, start + cs->offset + n, coefs, cs);
@@ -1009,7 +1077,7 @@ static void render_frame(Renderer *r, float *stereo) {
             int need = (int)(cs->fraction + ratio * N);
             if (need > 4096) need = 4096;
             memcpy(tmp, cs->hist, sizeof cs->hist);
-            int got = decode_voice(v, c, cs, tmp + HIST, need);
+            int got = decode_voice(r, v, c, cs, tmp + HIST, need);
             if (got < need) memset(tmp + HIST + got, 0, (need - got) * 2);
             VoiceTrace *vtr = r->vt && c == 0 && got ? &r->vt[vi] : NULL;
             int routed = dst != NULL;
@@ -1093,7 +1161,21 @@ static void render_frame(Renderer *r, float *stereo) {
         memset(hf, 0, sizeof hf);
     }
     if (playing > r->ts.playing_max) r->ts.playing_max = playing;
-    for (uint32_t d = 0; d < r->nsdest; d++) memcpy(r->sdest[d].prev, r->sdest[d].vol, sizeof r->sdest[d].prev);
+    if (r->perf_sdest) {  // (MHGU_PERF_AUDIO_SDEST: only those an update changed; the others have prev == vol)
+        for (uint32_t i = 0; i < r->nsd_dirty; i++) {
+            SplitDest *sd = &r->sdest[r->sd_dirty[i]];
+            memcpy(sd->prev, sd->vol, sizeof sd->prev);
+            sd->dirty = 0;
+        }
+        if (r->perf_check) {  // (MHGU_PERF_AUDIO_CHECK: every destination as the old copy leaves it)
+            r->chk_sd_copied += r->nsd_dirty, r->chk_sd_all += r->nsdest;
+            for (uint32_t d = 0; d < r->nsdest; d++)
+                if (memcmp(r->sdest[d].prev, r->sdest[d].vol, sizeof r->sdest[d].prev)) r->chk_sd_bad++;
+        }
+        r->nsd_dirty = 0;
+    } else {
+        for (uint32_t d = 0; d < r->nsdest; d++) memcpy(r->sdest[d].prev, r->sdest[d].vol, sizeof r->sdest[d].prev);
+    }
     // sub mixes, deepest first
     int depth[64] = {0};
     int maxd = 0;
@@ -1130,6 +1212,11 @@ static void render_frame(Renderer *r, float *stereo) {
                 }
         }
     }
+    if (r->perf_check && ++r->chk_frames % 2000 == 0)
+        LOG("[audren] perf check, %llu frames: splitter destinations copied %llu of %llu, %llu differ from the old copy; "
+            "ADPCM samples %llu, %llu blocks differ\n", (unsigned long long)r->chk_frames,
+            (unsigned long long)r->chk_sd_copied, (unsigned long long)r->chk_sd_all, (unsigned long long)r->chk_sd_bad,
+            (unsigned long long)r->chk_adpcm, (unsigned long long)r->chk_adpcm_bad);
     // final mix -> device sink (FL FR FC LFE BL BR) -> stereo
     Mix *f = find_mix(r, 0);
     if (f) apply_effects(r, 0, f);
@@ -1178,6 +1265,7 @@ static void wav_header(FILE *f, uint32_t bytes) {
 
 static void *renderer_tick(void *arg) {
     Renderer *r = arg;
+    plat_thread_name("audren");
     plat_thread_priority(PLAT_PRIO_HIGH);  // (Windows: above normal, a frame mixed late is heard)
     float out[2 * 4096];
     uint32_t N = r->sample_count > 4096 ? 4096 : r->sample_count;
@@ -1213,7 +1301,11 @@ static void *renderer_tick(void *arg) {
             if (q >= prime) primed = true, next = t;
         } else if (!r->stream || q >= low) {
             if (!next || t > next + 4 * period) next = t;  // (behind after a stall: no burst to make up for it)
-            plat_sleep_until_ns(next);  // (Windows: a high-resolution timer, not nanosleep's whole milliseconds)
+#ifdef __ANDROID__
+            if (r->perf_sleep) plat_sleep_coarse_until_ns(next);
+            else
+#endif
+                plat_sleep_until_ns(next);  // (Windows: a high-resolution timer, not nanosleep's whole milliseconds)
             next += period;
             if (r->stream && SDL_GetAudioStreamQueued(r->stream) >= high) {
                 if (r->vt) r->ts.skips++;
@@ -1534,9 +1626,12 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
                 r->sdest = realloc(r->sdest, nn * sizeof *r->sdest);
                 memset(r->sdest + r->nsdest, 0, (nn - r->nsdest) * sizeof *r->sdest);
                 r->nsdest = nn;
+                if (r->perf_sdest) r->sd_dirty = realloc(r->sd_dirty, nn * sizeof *r->sd_dirty);  // (each listed once)
             }
             SplitDest *d = &r->sdest[id];
             bool was = d->in_use;
+            if (r->perf_sdest && !d->dirty && memcmp(d->vol, q + 8, sizeof d->vol))
+                d->dirty = 1, r->sd_dirty[r->nsd_dirty++] = (uint32_t)id;
             memcpy(d->vol, q + 8, sizeof d->vol);
             memcpy(&d->mix, q + 8 + 96, 4);
             d->in_use = q[8 + 96 + 4];
@@ -1582,6 +1677,24 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
     }
     oh[15] = o;
     (void)resp;
+}
+
+// The perf pass's switches (MHGU_PERF_AUDIO_*: 1 or unset on, 0 the old way; the check off unless 1), read once as the renderer opens.
+static int perf_env(const char *name, int def) {  // (def: unset; measured on in 0.1.9's perf pass)
+    const char *e = getenv(name);
+    return e ? *e && strcmp(e, "0") ? 1 : 0 : def;
+}
+static void renderer_perf_init(Renderer *r) {
+    r->perf_sdest = (uint8_t)perf_env("MHGU_PERF_AUDIO_SDEST", 1);
+    r->perf_adpcm = (uint8_t)perf_env("MHGU_PERF_AUDIO_ADPCM", 1);
+    r->perf_check = (uint8_t)perf_env("MHGU_PERF_AUDIO_CHECK", 0);
+#ifdef __ANDROID__
+    r->perf_sleep = (uint8_t)perf_env("MHGU_PERF_SLEEP_COARSE", 1);
+#endif
+    if (r->perf_sdest || r->perf_adpcm || r->perf_check || r->perf_sleep)
+        LOG("[audren] perf: splitter volumes copied %s, ADPCM decoded %s, the tick's sleep %s%s\n",
+            r->perf_sdest ? "when changed" : "every frame", r->perf_adpcm ? "a frame at a time" : "a sample at a time",
+            r->perf_sleep ? "coarse" : "precise", r->perf_check ? ", checked against the old way" : "");
 }
 
 static void renderer_open_output(Renderer *r) {
@@ -1657,6 +1770,7 @@ SERVICE("audren:u", audren_u) {
         r->splitters = p[9];
         r->revision = p[12];
         r->state = 1;
+        renderer_perf_init(r);
         if (r->voices > 1024) r->voices = 1024;
         r->nmix = r->submixes + 1;
         pthread_mutex_init(&r->lock, NULL);
@@ -1752,7 +1866,7 @@ RT_ON_RESET(audio_reset) {
             if (r->wav) { wav_header(r->wav, r->wav_bytes); fclose(r->wav); }
             for (uint32_t m = 0; m < r->nmix; m++) free(r->mix[m].buf);
             free(r->voice), free(r->chres), free(r->chst), free(r->mix), free(r->fx), free(r->vt);
-            free(r->fx_seq), free(r->fx_seq_mix), free(r->fx_seq_ord);  // (reverb delay lines leak)
+            free(r->fx_seq), free(r->fx_seq_mix), free(r->fx_seq_ord), free(r->sd_dirty);  // (reverb delay lines leak)
             free(r);
             g_rens[i] = NULL;
             n++;
@@ -1766,6 +1880,7 @@ RT_ON_RESET(audio_reset) {
 // stream plays the role of the hardware queue. Without a device, buffers are released in real time.
 static void *audout_thread(void *arg) {
     AudioOut *a = arg;
+    plat_thread_name("audout");
     plat_thread_priority(PLAT_PRIO_HIGH);  // (Windows: above normal, as the renderer's mixer)
     uint32_t ch = a->channels ? a->channels : 2;
     int target = 0;

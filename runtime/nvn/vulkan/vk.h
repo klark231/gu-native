@@ -117,7 +117,10 @@ typedef struct TexBackend {
     VkImageAspectFlags aspect;
     bool gpu_owned, uploaded, dynamic;
     uint64_t data_hash, sample_hash, checked_frame, full_frame;
+    uint64_t full_t;     // (textures.c: MHGU_PERF_TEXNET, MHGU_TEX_NET_CHECK) when its last whole hash was, in ns
     uint32_t wgen;       // page write tracking generation at the last upload check
+    uint32_t hash_gen;   // (MHGU_TEX_NET_CHECK) and at its last whole hash
+    uint32_t chg_run;    // (textures.c: MHGU_PERF_TEXSTREAM) checks in a row that found its contents changed
     bool presented;
     void *pending_rgba;  // host-produced pixels waiting to be uploaded on the render thread
     uint32_t pending_w, pending_h, pending_stride;
@@ -136,6 +139,8 @@ typedef struct TexBackend {
     uint64_t up_last;       // the frame its contents last changed and were uploaded again
     uint32_t up_run;        // how many frames in a row they did (textures.c say_every_frame)
     bool up_said;
+    uint32_t shadow_off_gen;  // ([Performance] Shadows Off) a shadow atlas cleared once: when (exec.c shadow_skipped)
+    VkImage shadow_off_image; // (and which image it had then)
 } TexBackend;
 
 bool vk_wide_rt_on(void);  // (textures.c) RGBA8 render targets as RGBA16 UNORM ([Graphics] SmoothGradients)
@@ -180,10 +185,31 @@ VkShaderModule vk_builtin_shader(const char *name);  // internal shaders (clear,
 // (desktop). Freed with vmaDestroyImage / vmaDestroyBuffer as before.
 VkResult vk_create_image(const VkImageCreateInfo *ci, VkImage *img, VmaAllocation *mem);
 VkResult vk_create_buffer(const VkBufferCreateInfo *bi, VkBuffer *buf, VmaAllocation *mem);
+void vk_image_bytes_add(int64_t n);                              // (device.c: the [mem] line's images)
+int64_t vk_bcn_bytes(void);                                      // (textures.c: of those, textures decoded on the CPU)
+uint64_t vk_ram_mb(void);                                        // (textures.c: the device's memory, MHGU_RAM_MB to test)
+VkFormatFeatureFlags vk_format_features(VkFormat f);             // (textures.c: optimal tiling, MHGU_VK_FMT_MASK applied)
+VkImageUsageFlags vk_usage_supported(VkFormat f, VkImageUsageFlags usage);  // (textures.c: usage the format has)
+void vk_exec_mem(uint64_t *staging, int *chunks, uint64_t *vc);  // (exec.c: the staging ring's and vertex cache's bytes)
 void vk_save_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h);
 // The devices that can run the game (Vulkan 1.1; one per name, in the driver's order) and which of them runs it (-1:
 // none yet), for the settings' GPU row ([Display] GPU, settings_panel.cpp): their count, 0 before the device is made
 int vk_gpu_list(const char **names, int max, int *in_use);
+// A PowerVR (or MHGU_VK_POWERVR=1): one driver compile at a time, on one worker (device.c one_compiler_install)
+bool vk_gpu_powervr(void);
+// What an SDK that looks the device's functions up itself gets as its getDeviceProcAddr (FSR 3.1, FSR 4):
+// vkGetDeviceProcAddr, or on a PowerVR one whose compiler functions take the one-compile-at-a-time lock
+PFN_vkGetDeviceProcAddr vk_device_proc_addr(void);
+#ifdef __ANDROID__
+// Presents timed to the display's vsyncs at an FPS limit that is a whole fraction of its rate (present_pacing.c,
+// MHGU_PERF_PRESENT_TIME=1): the device extension (create_device), its functions once the device is made, a swapchain
+// made, whether the swapchain should be FIFO with timed presents now, and the present's time (before vkQueuePresentKHR)
+bool vk_pacing_device_ext(const VkExtensionProperties *ep, uint32_t ne);
+void vk_pacing_device(void);
+void vk_pacing_swapchain(void);
+bool vk_pacing_fifo(void);
+void vk_pacing_present(VkPresentInfoKHR *pi, bool new_frame);
+#endif
 #ifdef _WIN32
 // The picked device's LUID, which Windows' own GPU figures go by (the performance readout: platform/win_stats.c, any
 // thread); false: no device yet, or its driver gives none

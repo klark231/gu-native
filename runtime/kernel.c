@@ -256,6 +256,12 @@ static void prio_follow(KThread *t) {
 static void *thread_main(void *arg) {
     KThread *t = arg;
     t_cur = t;
+    {  // (its guest priority and handle, as the [kernel] CreateThread line logs them: "g44-10a"; the update and
+       // translating threads take their role's name once they show it, runtime/platform/android_perf.c)
+        char name[16];
+        snprintf(name, sizeof name, "g%d-%x", t->prio, t->handle);
+        plat_thread_name(name);
+    }
     prio_follow(t);
     void *rec = plat_prio_self();  // (Windows) what the threads waiting on its mutexes lend their priority to: prio_lend
     if (rec) {
@@ -693,6 +699,88 @@ void kernel_log_guest_stack(const char *tag, const Cpu *c) {
     LOG("%s: lr %x (%s+%x), callers:%s\n", tag, c->r[14], s ? s : "?", off, line);
 }
 
+// ---- the guest's SleepThread by the game's call site. (debug) MHGU_SLEEP_LOG=1: the calls of each site, in the log
+// every 10 s. The perf pass's MHGU_PERF_SLEEP_COARSE (Android, on by default; 0: the old way): the sleeps of the game's
+// own calls, other than its frame limiter's, are coarse (plat_sleep_coarse_until_ns: no spin at the end): threads
+// polling every 5 to 50 ms, the job loop's 100 us retries for a job's dependency (0xdc7bb8), a busy lock's 1 ms
+// backoffs (0x1431030, 0x143108c). Those of the SDK's own code (no site found) stay precise.
+#define MAIN_SLEEP_STUB 0x015efdb8u  // main's import stub of nn::os::SleepThread (1.4.0: 73 direct calls)
+#define LIMITER_SLEEP 0x00da5d2cu    // the engine's frame limiter's call of it (its return address)
+
+static int env_flag(const char *name) {
+    const char *e = getenv(name);
+    return e && *e && strcmp(e, "0") ? 1 : 0;
+}
+static int sleep_log(void) {
+    static int v = -1;
+    if (v < 0) v = env_flag("MHGU_SLEEP_LOG");
+    return v;
+}
+static int sleep_coarse(void) {
+#ifdef __ANDROID__
+    static int v = -1;
+    if (v < 0) v = getenv("MHGU_PERF_SLEEP_COARSE") ? env_flag("MHGU_PERF_SLEEP_COARSE") : 1;  // (unset: on)
+    return v;
+#else
+    return 0;
+#endif
+}
+
+// v follows a BL to main's SleepThread stub
+static bool sleep_return_address(uint32_t v) {
+    if (v < MAIN_BASE + 4 || v >= SDK_BASE || (v & 3)) return false;
+    uint32_t ins = LD32(v - 4);
+    if ((ins & 0x0F000000u) != 0x0B000000u || (ins >> 28) == 0xF) return false;  // (a BL)
+    return v - 4 + 8 + (uint32_t)((int32_t)(ins << 8) >> 6) == MAIN_SLEEP_STUB;
+}
+
+// The game's call of SleepThread that led to this SVC. The SDK's SleepThread (0x24a31c4) is a leaf that jumps to the
+// SVC's stub, so lr is still the game's return address; else the first one on the guest stack. 0: none (the SDK's own
+// code, or a call through a pointer).
+static uint32_t sleep_call_site(const Cpu *c) {
+    if (sleep_return_address(c->r[14])) return c->r[14];
+    for (uint32_t a = c->r[13]; a < c->r[13] + 0x100; a += 4)
+        if (sleep_return_address(LD32(a))) return LD32(a);
+    return 0;
+}
+
+typedef struct { uint32_t site, calls, coarse, thread; uint64_t asked, slept; } SleepSite;
+static SleepSite sleep_sites[64];  // (site 0: none found; the 64th: every site past the 63rd)
+static uint64_t sleep_t0;
+static pthread_mutex_t sleep_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int sleep_site_cmp(const void *a, const void *b) {
+    uint32_t x = ((const SleepSite *)a)->calls, y = ((const SleepSite *)b)->calls;
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+
+static void sleep_count(const Cpu *c, uint32_t site, uint64_t asked, uint64_t slept, bool coarse) {
+    pthread_mutex_lock(&sleep_lock);
+    int i = 0;
+    while (i < 63 && sleep_sites[i].calls && sleep_sites[i].site != site) i++;
+    SleepSite *s = &sleep_sites[i];
+    if (!s->calls) s->site = i == 63 ? 1 : site;
+    s->calls++, s->coarse += coarse, s->asked += asked, s->slept += slept;
+    s->thread = c->thread ? ((const KThread *)c->thread)->handle : 0;
+    uint64_t now = plat_now_ns();
+    if (!sleep_t0) sleep_t0 = now;
+    if (now - sleep_t0 >= 10000000000ull) {
+        SleepSite v[64];
+        memcpy(v, sleep_sites, sizeof v);
+        memset(sleep_sites, 0, sizeof sleep_sites);
+        double secs = (now - sleep_t0) / 1e9;
+        sleep_t0 = now;
+        pthread_mutex_unlock(&sleep_lock);
+        qsort(v, 64, sizeof *v, sleep_site_cmp);
+        for (int k = 0; k < 64 && v[k].calls; k++)
+            LOG("[sleep] %.0f s: %s%x %u calls (%.0f/s, %u coarse), asked %.1f us, slept %.1f us on average, last by t%x\n",
+                secs, v[k].site == 1 ? "other sites " : v[k].site ? "" : "no site ", v[k].site, v[k].calls,
+                v[k].calls / secs, v[k].coarse, v[k].asked / 1e3 / v[k].calls, v[k].slept / 1e3 / v[k].calls, v[k].thread);
+        return;
+    }
+    pthread_mutex_unlock(&sleep_lock);
+}
+
 static int trace_svc = -1;
 static void svc_impl(Cpu *c, uint32_t imm, uint32_t pc);
 
@@ -772,11 +860,18 @@ static void svc_impl(Cpu *c, uint32_t imm, uint32_t pc) {
     case 0x0B: {  // SleepThread(ns r0:r1)
         int64_t ns = (int64_t)(((uint64_t)r[1] << 32) | r[0]);
         if (ns <= 0) { sched_yield(); break; }
+        uint32_t site = sleep_log() || sleep_coarse() ? sleep_call_site(c) : 0;
+        bool coarse = sleep_coarse() && site && site != LIMITER_SLEEP;
         uint64_t now = plat_now_ns();
-        plat_sleep_until_ns(now + (uint64_t)ns);
+#ifdef __ANDROID__
+        if (coarse) plat_sleep_coarse_until_ns(now + (uint64_t)ns);
+        else
+#endif
+            plat_sleep_until_ns(now + (uint64_t)ns);
         uint64_t slept = plat_now_ns() - now;
         g_blocked_ns += slept;
         if (HITCH_ON) hitch_kwait(slept, 5, c);  // ((debug) MHGU_HITCHLOG)
+        if (sleep_log()) sleep_count(c, site, (uint64_t)ns, slept, coarse);
         break;
     }
     case 0x0C: {  // GetThreadPriority(_, handle r1) -> r1
@@ -930,6 +1025,7 @@ static void svc_impl(Cpu *c, uint32_t imm, uint32_t pc) {
 // MHGU_DUMP_THREADS=<seconds>: then (and every 10 s after) every guest thread's state: what it waits for and its
 // last return address (the lr of its most recent call), to find out what a stalled game waits on.
 static void *dump_threads(void *arg) {
+    plat_thread_name("dumpthreads");
     int secs = (int)(intptr_t)arg;
     for (;;) {
         plat_sleep_until_ns(plat_now_ns() + (uint64_t)secs * 1000000000ull);

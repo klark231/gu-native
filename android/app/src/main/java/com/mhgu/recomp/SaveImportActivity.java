@@ -51,10 +51,7 @@ public class SaveImportActivity extends Activity {
     private TextView status;
     private Button main, leave;
 
-    static File home(Context c) {
-        File f = c.getExternalFilesDir(null);
-        return f != null ? f : c.getFilesDir();
-    }
+    static File home(Context c) { return AppHome.home(c); }
     private static File importDir(Context c) { return new File(home(c), "save_import"); }
     private File tmpFile() { return new File(importDir(this), "system.tmp"); }
 
@@ -70,7 +67,7 @@ public class SaveImportActivity extends Activity {
     static void applyPending(Context c) {
         File pending = new File(importDir(c), "system");
         if (!pending.exists()) return;
-        File saves = new File(home(c), "MHGURecomp/save/save_0");
+        File saves = SaveFolder.active(c);  // (the save folder's, when one is chosen; the backup stays here)
         File[] now = {new File(saves, "system_backup"), new File(saves, "system")};
         try {
             if (!saves.isDirectory() && !saves.mkdirs()) throw new IOException("no save folder");
@@ -178,9 +175,11 @@ public class SaveImportActivity extends Activity {
         columns.addView(column(es ? "QUÉ VA A PASAR" : "WHAT WILL HAPPEN", es
                 ? "• Se reemplazan todos los personajes de este dispositivo.\n"
                   + "• Tu partida actual queda guardada en una copia, en MHGURecomp/save_backups.\n"
+                  + (SaveFolder.chosen(this) != null ? "• Va a tu carpeta de partidas: tus otros dispositivos también la reciben cuando se sincronicen.\n" : "")
                   + "• El juego se reinicia: guarda antes lo que no quieras perder."
                 : "• All the characters on this device are replaced.\n"
                   + "• Your current save is kept in a copy, in MHGURecomp/save_backups.\n"
+                  + (SaveFolder.chosen(this) != null ? "• It goes into your save folder: your other devices get it too once they sync.\n" : "")
                   + "• The game restarts: save first if you have progress to keep.", false),
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         page.addView(columns);

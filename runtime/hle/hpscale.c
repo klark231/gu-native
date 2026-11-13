@@ -57,15 +57,17 @@ static bool village_quest(uint32_t q) {
     return group == 0 || group == 10;
 }
 
-bool hpscale_village_from_hub(uint32_t quest) {  // (a Village quest started from the Hub or the Pub: villagehub.c)
-    return quest && village_quest(quest) && (g_town == 0 || g_town == 7);
-}
-
 static uint32_t quest_no(void) {
     uint32_t q = LD32(G_SQUEST);
     if (!sane(q)) return 0;
     uint32_t qd = LD32(q + 0xa4);
     return sane(qd) ? LD32(qd + 8) : 0;
+}
+
+// A Village quest started from the Hub or the Hunters' Pub (the town seen last). runtime/hle/villagehub.c gives it
+// the Hub's maps for 4 hunters with the same test.
+bool hpscale_village_from_hub(uint32_t quest) {
+    return quest && village_quest(quest) && (g_town == 0 || g_town == 7);
 }
 
 static int hunters(void) {
@@ -80,7 +82,8 @@ static int hunters(void) {
 
 // The factor for a quest and number of hunters (the host's settings in a hub we joined).
 static float factor(uint32_t quest, int n, bool *from_host) {
-    const HpScale *s = &g_config.hp;
+    HpScale own = g_config.hp;  // ([Monster HP])
+    const HpScale *s = &own;
     pthread_mutex_lock(&g_lock);
     *from_host = g_have_host;
     if (g_have_host) s = &g_host;
@@ -93,8 +96,9 @@ static float factor(uint32_t quest, int n, bool *from_host) {
 
 // [Village Quests] HubHP (the host's in a hub we joined).
 static float village_factor(void) {
+    float own = g_config.hp.village;
     pthread_mutex_lock(&g_lock);
-    float v = g_have_host ? g_host.village : g_config.hp.village;
+    float v = g_have_host ? g_host.village : own;
     pthread_mutex_unlock(&g_lock);
     return v;
 }
@@ -171,7 +175,7 @@ void hpscale_tick(void) {
     }
     static uint64_t last;
     static bool was_up;
-    bool up = ldn_net_up() && !ldn_crossplay();
+    bool up = ldn_net_up();
     if (!up && was_up) {
         pthread_mutex_lock(&g_lock);
         if (g_have_host) LOG("[hpscale] left the hub: own [Monster HP] settings again\n");
@@ -183,7 +187,9 @@ void hpscale_tick(void) {
     if (!up || !ldn_hosting() || now - last < SYNC_NS) return;
     last = now;
     static uint8_t m[4 + 16 + HP_QUESTS_MAX * 20 + 4];
-    const HpScale *s = &g_config.hp;
+    static HpScale own;
+    config_live_hp(&own);
+    const HpScale *s = &own;
     int nq = s->quests;
     m[0] = SYNC_MAGIC, m[1] = 0, m[2] = (uint8_t)nq, m[3] = (uint8_t)(nq >> 8);
     memcpy(m + 4, s->scale, 16);

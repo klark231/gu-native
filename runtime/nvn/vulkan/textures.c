@@ -4,6 +4,7 @@
 #include <float.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -18,20 +19,55 @@
 // ================================================================== formats
 typedef struct { VkFormat vf; uint8_t expand_rgb, alpha_one; } VkFmt;
 
-// DEPTH24_STENCIL8 as itself where the GPU has it for everything the game does with depth (NVIDIA, Intel); AMD has
-// no D24S8 attachments: D32_SFLOAT_S8_UINT there. MHGU_VK_D24=0: always D32S8.
+// A format's optimal-tiling features. (test) MHGU_VK_FMT_MASK=<VkFormat>:<hex features>[,...] takes those features away,
+// as a driver without them would (e.g. 130:0x8001, D32_SFLOAT_S8_UINT without sampling and transfers in)
+static VkFormatFeatureFlags fmt_features(VkFormat f) {
+    static int nmask = -1;
+    static struct { VkFormat f; VkFormatFeatureFlags off; } mask[8];
+    if (nmask < 0) {
+        nmask = 0;
+        const char *e = getenv("MHGU_VK_FMT_MASK");
+        while (e && *e && nmask < 8) {
+            char *end;
+            long v = strtol(e, &end, 10);
+            if (*end != ':') break;
+            mask[nmask].f = (VkFormat)v, mask[nmask].off = (VkFormatFeatureFlags)strtoul(end + 1, &end, 16);
+            LOG("[vk] (test) format %ld without features %#x\n", v, mask[nmask].off);
+            nmask++;
+            e = *end == ',' ? end + 1 : NULL;
+        }
+    }
+    VkFormatProperties p;
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, f, &p);
+    for (int i = 0; i < nmask; i++)
+        if (mask[i].f == f) p.optimalTilingFeatures &= ~mask[i].off;
+    return p.optimalTilingFeatures;
+}
+
+// DEPTH24_STENCIL8 as itself where the GPU has it for everything the game does with depth (NVIDIA, Intel): an
+// attachment, sampled (shadows, soft particles), copied and cleared, blits (scaled copies). Otherwise
+// D32_SFLOAT_S8_UINT (AMD has no D24S8 attachments) where that one is an attachment that is sampled, copied and
+// cleared. Neither: the one with more of those. The Adreno 630's driver of Android 10 (1.1.87) has no blits of D24S8
+// and was given D32S8, which it can't sample or copy into: create_image then made the game's depth buffer RGBA8, and
+// the driver lost the device at the first 3D scene, character creation (#22, #40, #61). MHGU_VK_D24=0: D32S8 if it can.
 static VkFormat depth24_stencil8(void) {
     static VkFormat f;
     if (!f) {
+        const VkFormatFeatureFlags att = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT, smp = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT,
+                                   xfer = VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT,
+                                   blit = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
         const char *e = getenv("MHGU_VK_D24");
-        VkFormatProperties p;
-        vkGetPhysicalDeviceFormatProperties(g_vk.phys, VK_FORMAT_D24_UNORM_S8_UINT, &p);
-        VkFormatFeatureFlags want = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-                                    VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
-                                    VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
-        bool ok = (p.optimalTilingFeatures & want) == want && !(e && !atoi(e));
-        f = ok ? VK_FORMAT_D24_UNORM_S8_UINT : VK_FORMAT_D32_SFLOAT_S8_UINT;
-        LOG("[vk] depth24 stencil8: %s\n", ok ? "D24_UNORM_S8_UINT" : "D32_SFLOAT_S8_UINT");
+        VkFormatFeatureFlags d24 = fmt_features(VK_FORMAT_D24_UNORM_S8_UINT), d32 = fmt_features(VK_FORMAT_D32_SFLOAT_S8_UINT);
+        const VkFormatFeatureFlags core = att | smp | xfer;
+        // (neither has everything: an attachment first, then sampled, then copies, then blits; equal: D32S8, as before)
+#define DS_SCORE(h) (!((h) & att) ? 0 : 1 + (((h) & smp) ? 8 : 0) + (((h) & xfer) == xfer ? 4 : 0) + (((h) & blit) == blit ? 2 : 0))
+        bool use24 = (d24 & (core | blit)) == (core | blit) && !(e && !atoi(e) && (d32 & core) == core) ? true
+                   : (d32 & core) == core                                                                   ? false
+                                                                                                            : DS_SCORE(d24) > DS_SCORE(d32);
+#undef DS_SCORE
+        f = use24 ? VK_FORMAT_D24_UNORM_S8_UINT : VK_FORMAT_D32_SFLOAT_S8_UINT;
+        LOG("[vk] depth24 stencil8: %s (features: D24S8 %#x, D32S8 %#x)\n", use24 ? "D24_UNORM_S8_UINT" : "D32_SFLOAT_S8_UINT",
+            d24, d32);
     }
     return f;
 }
@@ -159,9 +195,52 @@ static VkImageAspectFlags aspect_of(uint32_t f) {
 }
 
 static bool format_supports(VkFormat f, VkFormatFeatureFlags want) {
-    VkFormatProperties p;
-    vkGetPhysicalDeviceFormatProperties(g_vk.phys, f, &p);
-    return (p.optimalTilingFeatures & want) == want;
+    static int no_bc = -1;  // (tests: MHGU_VK_NO_BC=1, BC textures decoded on the CPU as on a GPU without them: #171)
+    if (no_bc < 0) no_bc = getenv("MHGU_VK_NO_BC") != NULL;
+    if (no_bc && f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK) return false;
+    return (fmt_features(f) & want) == want;
+}
+VkFormatFeatureFlags vk_format_features(VkFormat f) { return fmt_features(f); }
+
+// usage without what the format can't do with optimal tiling (an image asking for more is invalid: a driver may make it
+// anyway and fault when it is used)
+VkImageUsageFlags vk_usage_supported(VkFormat f, VkImageUsageFlags usage) {
+    static const struct { VkImageUsageFlags u; VkFormatFeatureFlags f; } need[] = {
+        {VK_IMAGE_USAGE_SAMPLED_BIT, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT},
+        {VK_IMAGE_USAGE_STORAGE_BIT, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT},
+        {VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_FORMAT_FEATURE_TRANSFER_SRC_BIT},
+        {VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_FORMAT_FEATURE_TRANSFER_DST_BIT},
+        {VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT},
+        {VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT}};
+    VkFormatFeatureFlags have = fmt_features(f);
+    for (size_t i = 0; i < sizeof need / sizeof need[0]; i++)
+        if ((usage & need[i].u) && !(have & need[i].f)) usage &= ~need[i].u;
+    return usage;
+}
+
+// A depth (or stencil) format for NVN format nf, mapped to vf: vf when the GPU has it as an attachment that is sampled,
+// else another of the same kind that is (one with stencil for one with stencil), else one that is an attachment at all.
+// Never a colour format: a colour image as a depth attachment is invalid, and an Adreno lost the device on it (#40)
+static VkFormat depth_format(uint32_t nf, VkFormat vf) {
+    const VkFormatFeatureFlags att = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT, smp = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+    if ((fmt_features(vf) & (att | smp)) == (att | smp)) return vf;
+    bool stencil = renderer_format_has_stencil(nf);
+    VkFormat cand[6];
+    int n = 0;
+    cand[n++] = vf;
+    if (stencil) cand[n++] = depth24_stencil8(), cand[n++] = VK_FORMAT_D32_SFLOAT_S8_UINT, cand[n++] = VK_FORMAT_D24_UNORM_S8_UINT;
+    else cand[n++] = VK_FORMAT_D32_SFLOAT, cand[n++] = VK_FORMAT_X8_D24_UNORM_PACK32, cand[n++] = VK_FORMAT_D16_UNORM,
+         cand[n++] = depth24_stencil8();
+    VkFormat pick = VK_FORMAT_UNDEFINED;
+    for (int pass = 0; pass < 2 && pick == VK_FORMAT_UNDEFINED; pass++)
+        for (int i = 0; i < n && pick == VK_FORMAT_UNDEFINED; i++)
+            if ((fmt_features(cand[i]) & (pass ? att : att | smp)) == (pass ? att : att | smp)) pick = cand[i];
+    if (pick == VK_FORMAT_UNDEFINED) pick = vf;
+    static int nlog;
+    if (nlog++ < 8)
+        LOG("[vk] depth format %d (nvn %#x) not usable as a sampled attachment (features %#x): %d instead (%#x)\n", vf, nf,
+            fmt_features(vf), pick, fmt_features(pick));
+    return pick;
 }
 
 // ---- wide render targets
@@ -196,7 +275,9 @@ void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags as
 }
 
 // Objects destroyed by the guest (or replaced) are kept until the submissions that may use them have completed.
-typedef struct { VkImage img; VmaAllocation mem; VkImageView view; VkFramebuffer fb; VkBuffer buf; uint64_t seq; } Dead;
+typedef struct { VkImage img; VmaAllocation mem; VkImageView view; VkFramebuffer fb; VkBuffer buf; uint64_t seq; bool bcn; } Dead;
+static _Atomic int64_t bcn_bytes;  // (the [mem] line: the images of textures decoded on the CPU, vk_bcn_bytes)
+int64_t vk_bcn_bytes(void) { return atomic_load_explicit(&bcn_bytes, memory_order_relaxed); }
 static Dead *dead;
 static int ndead, cap_dead;
 static void views_forget(TexBackend *b);
@@ -211,7 +292,15 @@ void vk_collect_dead(void) {
         if (dead[i].fb) vkDestroyFramebuffer(g_vk.dev, dead[i].fb, NULL);
         else if (dead[i].buf) vmaDestroyBuffer(g_vk.vma, dead[i].buf, dead[i].mem);
         else if (dead[i].view) vkDestroyImageView(g_vk.dev, dead[i].view, NULL);
-        else vmaDestroyImage(g_vk.vma, dead[i].img, dead[i].mem);
+        else {
+            if (dead[i].mem) {
+                VmaAllocationInfo info;
+                vmaGetAllocationInfo(g_vk.vma, dead[i].mem, &info);
+                vk_image_bytes_add(-(int64_t)info.size);
+                if (dead[i].bcn) atomic_fetch_sub_explicit(&bcn_bytes, (int64_t)info.size, memory_order_relaxed);
+            }
+            vmaDestroyImage(g_vk.vma, dead[i].img, dead[i].mem);
+        }
     }
     if (HITCH_ON && k < ndead) hitch_add(HC_DEAD, plat_now_ns() - t0, (uint64_t)(ndead - k));
     ndead = k;
@@ -228,17 +317,31 @@ void vk_defer_view(VkImageView v) { vk_framebuffers_forget_view(v); defer((Dead)
 void vk_defer_framebuffer(VkFramebuffer f) { defer((Dead){.fb = f}); }
 void vk_defer_buffer(VkBuffer b, VmaAllocation mem) { defer((Dead){.buf = b, .mem = mem}); }
 
+// The device's memory in MB. (test) MHGU_RAM_MB=<n>: as if it had that much (a 2.8 GB phone's choices on a bigger one)
+uint64_t vk_ram_mb(void) {
+    static uint64_t mb;
+    if (!mb) {
+#ifdef _WIN32
+        mb = (uint64_t)SDL_GetSystemRAM();
+#else
+        mb = ((uint64_t)sysconf(_SC_PHYS_PAGES) * (uint64_t)sysconf(_SC_PAGESIZE)) >> 20;
+#endif
+        const char *e = getenv("MHGU_RAM_MB");
+        if (e && atoi(e) > 0) {
+            mb = (uint64_t)atoi(e);
+            LOG("[vk] (test) memory taken as %llu MB\n", (unsigned long long)mb);
+        }
+    }
+    return mb;
+}
+
 // A phone with little memory and no BC support: every decoded texture takes four to eight times what it does compressed.
 // There, 3D textures (those with mipmaps: menus and text have none, and stay sharp) lose their largest level, a quarter
 // of the memory for a picture no sharper on such a screen. (Levels line up: the view's first level is the next one.)
 static bool low_memory_textures(void) {
     static int on = -1;
     if (on < 0) {
-#ifdef _WIN32
-        uint64_t ram = (uint64_t)SDL_GetSystemRAM() << 20;
-#else
-        uint64_t ram = (uint64_t)sysconf(_SC_PHYS_PAGES) * (uint64_t)sysconf(_SC_PAGESIZE);
-#endif
+        uint64_t ram = vk_ram_mb() << 20;
         on = ram < 5ull << 30;
         if (on) LOG("[vk] %llu MB of memory: 3D textures without their largest level\n", (unsigned long long)(ram >> 20));
     }
@@ -252,15 +355,87 @@ static bool very_low_memory_textures(void) {
 #ifdef _WIN32
         on = 0;
 #else
-        on = (uint64_t)sysconf(_SC_PHYS_PAGES) * (uint64_t)sysconf(_SC_PAGESIZE) < 3584ull << 20;
+        on = vk_ram_mb() < 3584;
         if (on) LOG("[vk] 3.5 GB or less: big 3D textures without their two largest levels\n");
 #endif
     }
     return on;
 }
 
+// ---- (MHGU_PERF_FMTLIST, a test until measured) Every colour image is made with VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT and no
+// list of the formats its views may have, which some drivers take as a reason not to compress it (a Mali's AFBC, an
+// Adreno's UBWC). Set at all (=0 too), the log says at start what the driver makes of it (fmt_probe: an image's memory
+// size with the flag, with a list, without the flag) and names each pair of image / view formats the game's views ask for
+// (vk_view). =1: an image no game view can read as another format - decoded on the CPU (BCn on a Mali, ASTC), widened or a
+// fallback format: vk_view keeps their own format - gets its own format and its sRGB / UNORM twin (raw_view) as its list,
+// or no flag where it has no twin.
+static int fmtlist_on(void) {
+    static int on = -2;
+    if (on == -2) {
+        const char *e = getenv("MHGU_PERF_FMTLIST");
+        on = e ? atoi(e) : -1;  // (-1: not set)
+        if (e) LOG("[perf] MHGU_PERF_FMTLIST=%d\n", on);
+    }
+    return on;
+}
+static VkFormat srgb_twin(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R8G8B8A8_UNORM: return VK_FORMAT_R8G8B8A8_SRGB;
+    case VK_FORMAT_R8G8B8A8_SRGB: return VK_FORMAT_R8G8B8A8_UNORM;
+    case VK_FORMAT_B8G8R8A8_UNORM: return VK_FORMAT_B8G8R8A8_SRGB;
+    case VK_FORMAT_B8G8R8A8_SRGB: return VK_FORMAT_B8G8R8A8_UNORM;
+    default: return VK_FORMAT_UNDEFINED;
+    }
+}
+// What the driver does with the flag: the memory an RGBA8 render target and texture need (a compressed image needs more:
+// its headers), with the flag and no list, with a list of the format and its twin, of the format alone, and without it
+static void fmt_probe(void) {
+    static const struct { uint32_t w, h, levels; const char *what; } im[] = {
+        {1024, 1024, 1, "render target 1024x1024"}, {1640, 720, 1, "render target 1640x720"},
+        {1024, 1024, 11, "texture 1024x1024, 11 levels"}};
+    static const char *const kind[4] = {"mutable", "mutable + list (UNORM, SRGB)", "mutable + list (UNORM)", "not mutable"};
+    for (int i = 0; i < 3; i++) {
+        char line[400];
+        int n = snprintf(line, sizeof line, "[perf] formats: RGBA8 %s:", im[i].what);
+        for (int k = 0; k < 4; k++) {
+            VkFormat list[2] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB};
+            VkImageFormatListCreateInfo fl = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
+                                              .viewFormatCount = k == 1 ? 2 : 1, .pViewFormats = list};
+            VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .pNext = k == 1 || k == 2 ? &fl : NULL,
+                                    .flags = k < 3 ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0, .imageType = VK_IMAGE_TYPE_2D,
+                                    .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {im[i].w, im[i].h, 1},
+                                    .mipLevels = im[i].levels, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                    .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                    .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                                    .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+            VkImage img;
+            VkMemoryRequirements r = {0};
+            if (vkCreateImage(g_vk.dev, &ci, NULL, &img) == VK_SUCCESS) {
+                vkGetImageMemoryRequirements(g_vk.dev, img, &r);
+                vkDestroyImage(g_vk.dev, img, NULL);
+            }
+            n += snprintf(line + n, sizeof line - (size_t)n, " %s %llu (align %llu)%s", kind[k], (unsigned long long)r.size,
+                          (unsigned long long)r.alignment, k < 3 ? "," : "");
+        }
+        LOG("%s\n", line);
+    }
+    uint32_t ne = 0;
+    vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
+    VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
+    vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
+    bool cc = false;
+    for (uint32_t i = 0; i < ne; i++) cc |= !strcmp(ep[i].extensionName, "VK_EXT_image_compression_control");
+    free(ep);
+    LOG("[perf] formats: VK_EXT_image_compression_control %s\n", cc ? "available" : "not available");
+}
+
 static void create_image(NvnTexture *t, TexBackend *b) {
     VkFmt mf = fmt_of(t->format);
+    {
+        static bool probed;
+        if (!probed && fmtlist_on() >= 0) probed = true, fmt_probe();
+    }
     uint32_t tw = t->width ? t->width : 1, th = t->height ? t->height : 1;
     VkImageType type = VK_IMAGE_TYPE_2D;
     uint32_t layers = 1, depth = 1;
@@ -287,7 +462,9 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     b->astc_bw = b->astc_bh = 0;
     b->bcn = BCN_NONE;
     b->mip_skip = 0;
-    if (!format_supports(vf, need)) {
+    bool depthfmt = renderer_format_is_depth(t->format);
+    if (depthfmt) vf = depth_format(t->format, vf);  // (a depth format stays one: below, only what it can do is asked)
+    else if (!format_supports(vf, need)) {
         bool astc = vf >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
         const FormatInfo *fi = t->layout.fmt;
         int bcn = vf == VK_FORMAT_BC1_RGBA_UNORM_BLOCK || vf == VK_FORMAT_BC1_RGBA_SRGB_BLOCK ? BCN_BC1
@@ -336,14 +513,25 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         }
     }
     if (b->wide) vf = VK_FORMAT_R16G16B16A16_UNORM;
-    bool depthfmt = renderer_format_is_depth(t->format);
     VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    if (depthfmt) usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    else if (format_supports(vf, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if (depthfmt) {
+        usage = vk_usage_supported(vf, usage | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+        static int nlog;
+        if (usage != (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) && nlog++ < 4)
+            LOG("[vk] depth format %d: usage %#x only (what the GPU has for it)\n", vf, usage);
+    } else if (format_supports(vf, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     VkImageCreateFlags flags = 0;
     if (!depthfmt) flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;  // format views (NVN texture views, raw sRGB views)
     if (type == VK_IMAGE_TYPE_2D && layers >= 6 && tw == th && samples == 1) flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = flags, .imageType = type, .format = vf,
+    // (MHGU_PERF_FMTLIST=1, above) an image of a format the game's views never ask for: its own and its twin only
+    VkFormat vlist[2] = {vf, srgb_twin(vf)};
+    VkImageFormatListCreateInfo fl = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO, .viewFormatCount = 2,
+                                      .pViewFormats = vlist};
+    bool listed = !depthfmt && fmtlist_on() == 1 && vf != mf.vf;
+    if (listed && vlist[1] == VK_FORMAT_UNDEFINED) flags &= ~VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, listed = false;
+    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .pNext = listed ? &fl : NULL, .flags = flags,
+                            .imageType = type, .format = vf,
                             .extent = {tw >> b->mip_skip, th >> b->mip_skip, depth}, .mipLevels = levels - b->mip_skip,
                             .arrayLayers = layers,
                             .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,
@@ -355,10 +543,16 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         ci.flags &= ~VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+        ci.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, ci.pNext = NULL;  // (as before: any view)
         VK_CHECK(vk_create_image(&ci, &b->image, &b->mem));
         depthfmt = false;
     }
     b->format = vf;
+    if (b->bcn != BCN_NONE) {
+        VmaAllocationInfo info;
+        vmaGetAllocationInfo(g_vk.vma, b->mem, &info);
+        atomic_fetch_add_explicit(&bcn_bytes, (int64_t)info.size, memory_order_relaxed);
+    }
     b->width = tw; b->height = th; b->depth = depth; b->layers = layers; b->levels = levels; b->samples = samples;
     b->aspect = depthfmt ? aspect_of(t->format) : VK_IMAGE_ASPECT_COLOR_BIT;
     b->base_type = type == VK_IMAGE_TYPE_1D ? (layers > 1 ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : VK_IMAGE_VIEW_TYPE_1D)
@@ -372,7 +566,8 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     VkImageSubresourceRange rg = {b->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
     if (depthfmt) {
         VkClearDepthStencilValue zero = {0.0f, 0};
-        vkCmdClearDepthStencilImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+        if (ci.usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT)  // (a format the GPU can't copy into can't be cleared this way either)
+            vkCmdClearDepthStencilImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
     } else if (!(vf >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK)) {
         VkClearColorValue zero = {{0, 0, 0, 0}};
         vkCmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
@@ -387,7 +582,7 @@ static void destroy_image(TexBackend *b) {
     if (b->ms) { destroy_image(b->ms); free(b->ms); b->ms = NULL; }
     b->ms_valid = b->ms_dirty = false;
     views_forget(b);
-    if (b->image || b->mem) defer((Dead){.img = b->image, .mem = b->mem});
+    if (b->image || b->mem) defer((Dead){.img = b->image, .mem = b->mem, .bcn = b->bcn != BCN_NONE});
     b->image = VK_NULL_HANDLE;
     b->mem = VK_NULL_HANDLE;
 }
@@ -599,6 +794,13 @@ static uint64_t rec_hash(const UpRec *r) {
     return band_mix(acc, r->n);
 }
 
+// The bands' hash made the texture's (a copy of the same contents as before ends MHGU_PERF_TEXSTREAM's streak)
+static void rec_finish(const UpRec *r) {
+    uint64_t h = rec_hash(r);
+    if (h == r->b->data_hash) r->b->chg_run = 0;
+    r->b->data_hash = h;
+}
+
 static void run_job(const UpJob *j) {
     if (j->rec) j->rec->h[j->band] = hash_full(j->src, j->len);
     if (!j->dst) return;
@@ -641,13 +843,19 @@ static struct {
     pthread_cond_t go, idle;
     UpJob *q;
     int n, cap, next, busy, started;  // q[next .. n): not taken yet; busy: being run
-    UpRec *recs;                      // (vk_lock) first uploads waiting for their hashes
+    UpRec *recs;                      // (vk_lock) first uploads (and MHGU_PERF_TEXSTREAM's) waiting for their hashes
     UpRange rg[UP_RANGES], all;       // (vk_lock) what the queued bands read: a texture's each, and the span of them all
     int nr;
 } U = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, PTHREAD_COND_INITIALIZER};
 
 static void *up_worker(void *unused) {
     (void)unused;
+    {
+        static _Atomic int n;
+        char name[16];
+        snprintf(name, sizeof name, "upload-%d", atomic_fetch_add(&n, 1));
+        plat_thread_name(name);
+    }
     pthread_mutex_lock(&U.mu);
     for (;;) {
         while (U.next >= U.n) pthread_cond_wait(&U.go, &U.mu);
@@ -736,7 +944,7 @@ void vk_upload_jobs_finish(void) {
     pthread_mutex_unlock(&U.mu);
     for (UpRec *r = U.recs, *nx; r; r = nx) {
         nx = r->next;
-        if (r->b) r->b->data_hash = rec_hash(r);
+        if (r->b) rec_finish(r);
         free(r);
     }
     U.recs = NULL;
@@ -865,6 +1073,135 @@ static uint64_t plan(NvnTexture *t, TexBackend *b, const uint8_t *mem, int mode,
 static uint64_t full_hash_budget, full_hash_budget_frame;
 static uint64_t hl_hashed, hl_copied;  // ((debug) MHGU_HITCHLOG) what upload_texture just did: bytes hashed, uploaded
 
+// The safety net: a texture's whole hash now and then, a write reported or not (one the tracking missed would leave it
+// stale for good). By default every 120 frames, 4 MB of them a frame at most: every 4 s at 30 FPS, but every second at
+// 120, four times the hashing on the translating thread.
+//   MHGU_PERF_TEXNET=1     by time instead: tex_net_ns after its last whole hash (Android 30 s; a desktop 4 s),
+//                          staggered by up to 2 s, and TEX_NET_RATE bytes a second (up to 4 MB in one frame, as
+//                          before). MHGU_TEX_NET_CHECK below is what tells whether the tracking misses writes
+//   MHGU_PERF_TEXSAMPLE=1  the sampling hash (fnv_sample: 4096 reads spread over the texture) only where it is
+//                          compared: at a texture's first upload, and the check of one never changed that takes it.
+//                          A dynamic texture's is never compared again, and a whole hash that found no change found
+//                          the same samples, so nothing else needs it
+//   MHGU_PERF_TEXSTREAM=1  a texture whose contents changed at each of its last TEX_STREAM_RUN checks (data the game
+//                          writes on the CPU: in a hunt four 1 MB RGBA32F 1024x64 ones, one a frame, the PC's
+//                          MHGU_TEX_NET_CHECK named) is copied at once when a write is reported, each band hashed as it
+//                          is copied, as a first upload is: one read of it, not a hash and then a copy. The same
+//                          contents copied (the same hash) end the streak; a texture written but unchanged is then
+//                          copied once more than before, never left stale
+//   MHGU_TEX_NET_CHECK=1   (a test) every texture hashed whole 2 s after its last whole hash, whatever its size, and one
+//                          that changed with no write reported since its last check logged: a write the tracking
+//                          missed, or one it reported that the sampling hash didn't see (the samples the same), with
+//                          counts
+#define TEX_NET_RATE (32ull << 20)
+#define TEX_NET_CAP (4ull << 20)
+#define TEX_CHECK_NS 2000000000ull
+#define TEX_STREAM_RUN 4
+static int tex_net = -1, tex_sample_once, tex_check, tex_stream;  // (read once, at the first upload)
+static uint64_t tex_net_ns, tex_t;  // (tex_t: the frame's time, with either of tex_net and tex_check)
+// (MHGU_VK_STATS, exec.c) bytes hashed whole by checks, those of them no write reported (the safety net's), those where
+// nothing tracks writes, those found changed (uploaded again), those copied at once (MHGU_PERF_TEXSTREAM), the samplings
+uint64_t stat_tex_hashed, stat_tex_net, stat_tex_untracked, stat_tex_changed, stat_tex_streamed, stat_tex_samples;
+
+static void tex_net_init(void) {
+    const char *e = getenv("MHGU_PERF_TEXNET");
+    tex_net = e ? atoi(e) == 1 : 1;  // (the three: unset, on)
+    e = getenv("MHGU_PERF_TEXSAMPLE");
+    tex_sample_once = e ? atoi(e) == 1 : 1;
+    e = getenv("MHGU_TEX_NET_CHECK");
+    tex_check = e && atoi(e) == 1;
+    e = getenv("MHGU_PERF_TEXSTREAM");
+    tex_stream = e ? atoi(e) == 1 : 1;
+#ifdef __ANDROID__
+    tex_net_ns = 30000000000ull;
+#else
+    tex_net_ns = 4000000000ull;
+#endif
+    if (tex_net) LOG("[tex] safety net: a texture hashed whole %llu s after the last time, %llu MB a second (MHGU_PERF_TEXNET)\n",
+                     (unsigned long long)(tex_net_ns / 1000000000ull), (unsigned long long)(TEX_NET_RATE >> 20));
+    if (tex_sample_once) LOG("[tex] the sampling hash only where it is compared (MHGU_PERF_TEXSAMPLE)\n");
+    if (tex_stream) LOG("[tex] a texture changed at each of its last %d checks copied at once, hashed as it is copied "
+                        "(MHGU_PERF_TEXSTREAM)\n", TEX_STREAM_RUN);
+    if (tex_check)
+        LOG("[tex] check: every texture hashed whole every %llu s, and changes no write explains logged (MHGU_TEX_NET_CHECK)\n",
+            (unsigned long long)(TEX_CHECK_NS / 1000000000ull));
+}
+
+// (MHGU_TEX_NET_CHECK) a whole hash of t with no write reported since its last check, changed or not. Changed: asked
+// once more (a write just after the check is the next check's), then whether a check since its last whole hash had a
+// write reported (the sampling hash then said the same: its miss) or not (the tracking's)
+static void tex_check_note(NvnTexture *t, TexBackend *b, uint64_t total, bool changed, uint32_t hash_gen) {
+    static uint64_t compared, nchanged, missed, sampled, raced, said_t;
+    compared++;
+    if (changed) {
+        nchanged++;
+        uint32_t now;
+        const char *who = NULL;
+        if (vk_pages_changed(t->addr, total, b->wgen, &now) != 0) raced++;  // (b->wgen stays: the next check has them)
+        else if (pages_written(t->addr, total, hash_gen))
+            sampled++, who = "the sampling hash (a write reported, the samples the same)";
+        else missed++, who = "the write tracking";
+        if (who && missed + sampled <= 20)
+            LOG("[tex] check: fmt %#x %ux%u, %llu KB at %llx (%s), changed with no write reported since its last check: "
+                "missed by %s\n", t->format, t->width, t->height, (unsigned long long)(total >> 10), (unsigned long long)t->addr,
+                b->dynamic ? "dynamic" : "static", who);
+    }
+    if (compared % 5000 == 0 || tex_t - said_t >= 60000000000ull) {
+        said_t = tex_t;
+        LOG("[tex] check: %llu whole hashes with no write reported, %llu changed: %llu missed by the write tracking, %llu by the "
+            "sampling hash, %llu written just then\n", (unsigned long long)compared, (unsigned long long)nchanged,
+            (unsigned long long)missed, (unsigned long long)sampled, (unsigned long long)raced);
+    }
+}
+
+// (MHGU_TEX_NET_CHECK) a whole hash of t after a write was reported (or where nothing tracks writes) that found it
+// unchanged (its pages written, by the game or by whatever shares them, with its bytes the same): every minute the
+// bytes so hashed, and the textures that took most
+static void tex_check_same(NvnTexture *t, TexBackend *b, uint64_t total, uint32_t since, bool untracked) {
+    static struct { TexBackend *b; uint64_t addr, bytes, n, pages, written; uint32_t fmt, w, h; bool dyn, untracked; } top[64];
+    static uint64_t all_bytes, all_n, said_t;
+    int i = 0, lo = 0;
+    while (i < 64 && top[i].b && top[i].b != b) {
+        if (top[i].bytes < top[lo].bytes) lo = i;
+        i++;
+    }
+    if (i == 64) i = lo, top[i].b = NULL;  // (full: the smallest goes)
+    if (!top[i].b) memset(&top[i], 0, sizeof top[i]), top[i].b = b;
+    top[i].addr = t->addr, top[i].fmt = t->format, top[i].w = t->width, top[i].h = t->height;
+    top[i].dyn = b->dynamic, top[i].untracked = untracked;
+    top[i].bytes += total, top[i].n++;
+    top[i].pages += (t->addr + total + PT_PAGE - 1) / PT_PAGE - t->addr / PT_PAGE;
+    top[i].written += pages_written(t->addr, total, since);
+    all_bytes += total, all_n++;
+    if (tex_t - said_t < 60000000000ull) return;
+    said_t = tex_t;
+    LOG("[tex] check: %llu whole hashes after a write reported (or untracked) found the texture the same (%.1f MB) in the last "
+        "minute; most:\n", (unsigned long long)all_n, all_bytes / 1048576.0);
+    for (int k = 0; k < 6; k++) {
+        int m = -1;
+        for (int j = 0; j < 64; j++)
+            if (top[j].b && top[j].n && (m < 0 || top[j].bytes > top[m].bytes)) m = j;
+        if (m < 0) break;
+        LOG("[tex]   fmt %#x %ux%u at %llx (%s%s): %llu x %llu KB, %.1f of its %.1f pages written each time\n",
+            top[m].fmt, top[m].w, top[m].h, (unsigned long long)top[m].addr, top[m].dyn ? "dynamic" : "static",
+            top[m].untracked ? ", no tracking there" : "", (unsigned long long)top[m].n,
+            (unsigned long long)(top[m].bytes / top[m].n >> 10), (double)top[m].written / top[m].n,
+            (double)top[m].pages / top[m].n);
+        top[m].n = 0;
+    }
+    memset(top, 0, sizeof top);
+    all_bytes = all_n = 0;
+}
+
+// (MHGU_TEX_NET_CHECK, MHGU_PERF_TEXSTREAM) a texture found changed at 8 checks in a row: a line once (the first 8)
+static void say_streak(NvnTexture *t, TexBackend *b, uint64_t total) {
+    static int nsaid;
+    if (nsaid++ >= 8) return;
+    LOG("[tex] changed at each of its last 8 checks: fmt %#x %ux%u, %u levels, %llu KB at %llx (%s), uploaded again %u "
+        "frames in a row\n", t->format, t->width, t->height, t->levels, (unsigned long long)(total >> 10),
+        (unsigned long long)t->addr, t->flags & 0x10 ? "linear" : "block-linear", b->up_run);
+}
+
 // A texture whose contents change at every check, frame after frame, is uploaded whole each time: a line once (for the
 // first few such), saying what it is and who writes it.
 static void say_every_frame(NvnTexture *t, TexBackend *b, uint64_t total, uint32_t since) {
@@ -892,11 +1229,24 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     uint64_t total = upload_extent(t);
     b->checked_frame = frame + 1;
     if (t->flags & 0x10) b->dynamic = true;
-    if (full_hash_budget_frame != frame + 1) { full_hash_budget_frame = frame + 1; full_hash_budget = 4 << 20; }
+    if (tex_net < 0) tex_net_init();
+    if (full_hash_budget_frame != frame + 1) {
+        full_hash_budget_frame = frame + 1;
+        if (!tex_net && !tex_check) full_hash_budget = 4 << 20;
+        else {  // (MHGU_PERF_TEXNET: TEX_NET_RATE bytes a second, up to TEX_NET_CAP)
+            uint64_t tn = plat_now_ns(), dt = tex_t && tn - tex_t < 1000000000ull ? tn - tex_t : 1000000000ull;
+            full_hash_budget += (uint64_t)((double)dt * (double)TEX_NET_RATE / 1e9);
+            if (full_hash_budget > TEX_NET_CAP) full_hash_budget = TEX_NET_CAP;
+            tex_t = tn;
+        }
+    }
     const uint8_t *mem = (const uint8_t *)G2H((uint32_t)t->addr);
     bool full = b->dynamic || !b->uploaded;
-    bool periodic = frame - b->full_frame >= 120 && full_hash_budget >= total;  // (safety net: a full hash now and then)
-    if (!full && periodic) { full = true; full_hash_budget -= total; }
+    uint64_t net_due = tex_net_ns + (((uintptr_t)b >> 6) & 255) * 8000000ull;  // (MHGU_PERF_TEXNET: staggered)
+    bool periodic = tex_check ? tex_t - b->full_t >= TEX_CHECK_NS
+                  : tex_net   ? tex_t - b->full_t >= net_due && full_hash_budget >= total
+                              : frame - b->full_frame >= 120 && full_hash_budget >= total;  // (safety net: a full hash now and then)
+    if (!full && periodic) { full = true; full_hash_budget -= full_hash_budget >= total ? total : full_hash_budget; }
     // page write tracking: texture memory the CPU hasn't written since the last check is not hashed at all
     uint32_t now = 0, since = b->wgen;
     int ch = vk_pages_changed(t->addr, total, b->wgen, &now);
@@ -906,18 +1256,45 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     }
     if (!full) {
         uint64_t sh = fnv_sample(mem, total);
+        stat_tex_samples++;
         if (sh == b->sample_hash) return;
+        if (tex_sample_once) b->sample_hash = sh;
     }
+    uint32_t hash_gen = b->hash_gen;
     b->full_frame = frame;
-    b->sample_hash = fnv_sample(mem, total);
+    b->full_t = tex_t, b->hash_gen = b->wgen;
+    if (!tex_sample_once || (!b->uploaded && !b->dynamic)) b->sample_hash = fnv_sample(mem, total), stat_tex_samples++;
     bool fmt_ok = b->format == fmt_of(t->format).vf || b->astc_bw || b->bcn;
     bool async = fmt_ok && !b->bcn && !b->astc_bw && total >= UP_ASYNC && up_workers();
+    if (b->uploaded && tex_stream && fmt_ok && ch && b->chg_run >= TEX_STREAM_RUN) {  // (MHGU_PERF_TEXSTREAM) see above
+        uint32_t n = (uint32_t)plan(t, b, mem, P_COUNT, NULL, false);
+        UpRec *rec = malloc(sizeof *rec + (n ? n : 1) * sizeof *rec->h);
+        if (rec) {
+            rec->b = b, rec->n = n, rec->next = NULL;
+            hl_copied = total;
+            stat_tex_streamed += total;
+            plan(t, b, mem, P_UPLOAD, rec, async);
+            if (async) rec->next = U.recs, U.recs = rec;
+            else { rec_finish(rec); free(rec); }
+            b->up_run = b->up_last + 1 == frame ? b->up_run + 1 : 1;
+            b->up_last = frame;
+            if (b->up_run >= 120) say_every_frame(t, b, total, since);
+            return;
+        }
+    }
     if (b->uploaded) {  // a check: hashed here, and if it changed, copied (on the workers when big)
         uint64_t h = plan(t, b, mem, P_HASH, NULL, false);
         hl_hashed = total;
-        if (h == b->data_hash) { b->up_run = 0; return; }
+        stat_tex_hashed += total;
+        if (!ch) stat_tex_net += total;
+        if (ch < 0) stat_tex_untracked += total;
+        if (h != b->data_hash) stat_tex_changed += total;
+        if (tex_check && !ch) tex_check_note(t, b, total, h != b->data_hash, hash_gen);
+        if (tex_check && ch && h == b->data_hash) tex_check_same(t, b, total, since, ch < 0);
+        if (h == b->data_hash) { b->up_run = 0, b->chg_run = 0; return; }
         b->dynamic = true;
         b->data_hash = h;
+        if (++b->chg_run == 8 && (tex_check || tex_stream)) say_streak(t, b, total);
         if (!fmt_ok) return;
         hl_copied = total;
         plan(t, b, mem, P_UPLOAD, NULL, async);
@@ -945,7 +1322,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (async) {
         rec->next = U.recs, U.recs = rec;
     } else {
-        b->data_hash = rec_hash(rec);
+        rec_finish(rec);
         free(rec);
     }
 }
@@ -964,6 +1341,13 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     if (for_render) b->gpu_owned = true;
     else if (!b->gpu_owned) {
         extern uint64_t stat_upload_ns;
+        extern bool vk_perf_textime;  // (exec.c, MHGU_PERF_TEXTIME: upload_texture's first returns, untimed)
+        if (vk_perf_textime) {
+            uint64_t frame = vk_frame_counter();
+            if (!t->addr || t->target == 10 || (b->uploaded && b->checked_frame == frame + 1) ||
+                (b->uploaded && !b->dynamic && ((frame + ((uintptr_t)b >> 6)) & 7)))
+                return b;
+        }
         uint64_t t0 = plat_now_ns();
         upload_texture(t, b);
         stat_upload_ns += plat_now_ns() - t0;
@@ -1002,7 +1386,7 @@ void vk_rt_widen(NvnTexture *t, bool on) {
     }
     vkCmdBlitImage(cb, old.image, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL, n, r, VK_FILTER_NEAREST);
     vk_full_barrier(cb);
-    defer((Dead){.img = old.image, .mem = old.mem});
+    defer((Dead){.img = old.image, .mem = old.mem, .bcn = old.bcn != BCN_NONE});
     static int nlog;
     if (nlog++ < 40) LOG("[vk] render target %ux%u (%u levels) %s\n", b->width, b->height, b->levels, b->wide ? "wide" : "RGBA8");
 }
@@ -1089,6 +1473,16 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
         else if (b->wide && vf != VK_FORMAT_R8G8B8A8_UNORM) {
             static int nlog;
             if (nlog++ < 10) LOG("[vk] wide render target %ux%u read as nvn fmt %#x: as RGBA16 instead\n", b->width, b->height, v->format);
+        }
+        if (fmt != b->format && fmtlist_on() >= 0) {  // (MHGU_PERF_FMTLIST set: each pair once)
+            static uint32_t seen[64];
+            static int nseen;
+            uint32_t key = (uint32_t)b->format << 16 | (uint32_t)fmt;
+            int i = 0;
+            while (i < nseen && seen[i] != key) i++;
+            if (i == nseen && nseen < 64)
+                seen[nseen++] = key, LOG("[perf] formats: a %ux%u image of format %d read as format %d (nvn %#x as %#x)%s\n",
+                                         b->width, b->height, b->format, fmt, t->format, v->format, render ? ", rendered into" : "");
         }
     }
     uint32_t lv0 = v && (v->setmask & 1) ? v->base_level : 0;
@@ -1241,6 +1635,15 @@ VkSampler vk_sampler(NvnSamplerDesc *d) {
             float l = (c[0] + c[1] + c[2]) / 3;
             si.borderColor = c[3] < 0.5f ? VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK
                            : l < 0.5f ? VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK : VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+            static float told[8][4];  // (each colour once: what a GPU without the extension draws otherwise, #171)
+            static int ntold;
+            bool known = false;
+            for (int i = 0; i < ntold; i++) known |= !memcmp(told[i], c, 16);
+            if (!known && ntold < 8) {
+                memcpy(told[ntold++], c, 16);
+                LOG("[vk] border colour %g,%g,%g,%g: no custom border colours here, %s instead\n", c[0], c[1], c[2], c[3],
+                    c[3] < 0.5f ? "transparent black" : l < 0.5f ? "opaque black" : "opaque white");
+            }
         }
     }
     VkSampler s;

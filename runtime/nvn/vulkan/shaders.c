@@ -287,13 +287,16 @@ VkDescriptorSetLayout vk_set_layout(const VkBindingInfo *b, int n, uint32_t set,
 static const char *builtin_src(const char *name, int *stage) {
     if (!strcmp(name, "present.vert")) {
         *stage = STAGE_VERTEX;
-        // pv[0].x: flip (lower-left origin), pv[1]: uv crop (origin, size). Fullscreen triangle; Vulkan NDC y points down.
+        // pv[0].x: flip (lower-left origin), pv[0].y: the window image's quarter turns (0, 1: 90 degrees, 3: 270; device.c
+        // MHGU_PERF_PREROTATE: the picture sampled turned back), pv[1]: uv crop (origin, size). Fullscreen triangle; Vulkan
+        // NDC y points down.
         return "#version 450\n"
                "layout(push_constant) uniform P { vec4 a; vec4 crop; } pc;\n"
                "layout(location = 0) out vec2 uv;\n"
                "void main() {\n"
                "  vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);\n"
                "  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n"
+               "  if (pc.a.y > 2.5) p = vec2(1.0 - p.y, p.x); else if (pc.a.y > 0.5) p = vec2(p.y, 1.0 - p.x);\n"
                "  vec2 u = vec2(p.x, pc.a.x > 0.5 ? 1.0 - p.y : p.y);\n"
                "  uv = pc.crop.xy + u * pc.crop.zw;\n"
                "}\n";
@@ -328,6 +331,30 @@ static const char *builtin_src(const char *name, int *stage) {
                  "layout(push_constant) uniform P { vec4 c; vec4 d; } pc;\n"
                  "layout(location = %d) out %s o;\n"
                  "void main() { o = %s; }\n", idx, ty, cv);
+        return buf;
+    }
+    // fill.frag.<index>: a picture scaled over colour target <index> as vkCmdBlitImage LINEAR does it, each pixel's centre
+    // sampled bilinearly (exec.c fill_draw; push constant: 1 / the target's size)
+    if (!strncmp(name, "fill.frag.", 10)) {
+        *stage = STAGE_FRAGMENT;
+        static __thread char buf[400];
+        snprintf(buf, sizeof buf,
+                 "#version 450\n"
+                 "layout(set = 0, binding = 0) uniform sampler2D t;\n"
+                 "layout(push_constant) uniform P { vec4 a; } pc;\n"
+                 "layout(location = %d) out vec4 o;\n"
+                 "void main() { o = texture(t, gl_FragCoord.xy * pc.a.xy); }\n", atoi(name + 10));
+        return buf;
+    }
+    // copy.frag.<index>: a picture of the target's size copied over colour target <index>, each texel fetched (exec.c fill_draw)
+    if (!strncmp(name, "copy.frag.", 10)) {
+        *stage = STAGE_FRAGMENT;
+        static __thread char buf[400];
+        snprintf(buf, sizeof buf,
+                 "#version 450\n"
+                 "layout(set = 0, binding = 0) uniform sampler2D t;\n"
+                 "layout(location = %d) out vec4 o;\n"
+                 "void main() { o = texelFetch(t, ivec2(gl_FragCoord.xy), 0); }\n", atoi(name + 10));
         return buf;
     }
     if (!strcmp(name, "clear.frag.none")) {

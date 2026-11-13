@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">MHGU</string>
+    <!-- the app icon's long press (res/xml/shortcuts.xml) -->
+    <string name="share_log">Share log</string>
 </resources>

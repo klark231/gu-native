@@ -16,6 +16,7 @@
 #include "mods.h"
 #include "app_actions.h"
 #include "net/discord.h"
+#include "savefolder.h"
 #ifdef __ANDROID__
 static void game_lib_failed(const char *why);
 #endif
@@ -73,11 +74,12 @@ static void boot(const char *root) {
     forge_init();  // (Forge plugins in the mods: runtime/forge.c)
     hpscale_init();  // (large monster HP by the number of hunters: runtime/hle/hpscale.c)
     villagehub_init();  // (Village quests at the Hub / Pub counter: runtime/hle/villagehub.c)
+    urgentcredit_init();  // (Urgent quests count for all who clear them: runtime/hle/urgentcredit.c)
     mashrate_init();  // (mashing out of a stun at high frame rates: runtime/hle/mashrate.c)
-    { void chat_init(void); chat_init(); }  // (typed chat: a message's rows under one name: runtime/hle/chat.c)
-    hatestep_init();  // (monsters' attention scores at high frame rates: runtime/hle/hatestep.c)
+    grass_init();  // ([Performance] Grass: the game's grass unit left out while Off: runtime/hle/grass.c)
+    guimark_init();  // (the HUD's markers over the world shown below 1280x720 too: runtime/hle/guimark.c)
+    limiter_init();  // (MHGU_PERF_LIMITER: the frame limiter sleeps instead of turning on the clock: runtime/hle/limiter.c)
     inflate_init();  // (zlib's inflate_fast as host code, for loading: runtime/hle/inflate.c)
-    fastload_init();  // (shorter transitions when not in a network session: runtime/hle/fastload.c)
     movelog_init();  // (debug, MHGU_LOG_MOVES: runtime/hle/movelog.c)
     quickhunt_init();  // (debug, MHGU_QUICKHUNT: runtime/hle/quickhunt.c)
     camjit_init();  // (FSR: the main camera and its jitter: runtime/hle/camera_jitter.c)
@@ -121,10 +123,16 @@ static void boot(const char *root) {
 #include <dlfcn.h>
 #include "settings_locale.h"
 // A message before the settings are read: in the phone's language, as the settings' first run (config.c)
-static const char *boot_text(const char *english) { return settings_text(MENU_LANG_AUTO, english); }
+static const char *boot_text(const char *english) {
+    int n = 0;
+    SDL_Locale **loc = SDL_GetPreferredLocales(&n);
+    bool spanish = loc && n > 0 && loc[0]->language && !SDL_strncasecmp(loc[0]->language, "es", 2);
+    SDL_free(loc);
+    return settings_text(spanish ? 1 : 0, english);
+}
 // These files can't be played: GameFolderActivity shows what is wrong with them at the next start
 static void files_rejected(void) {
-    const char *ext = SDL_GetAndroidExternalStoragePath();
+    const char *ext = getenv("MHGU_HOME") ? getenv("MHGU_HOME") : SDL_GetAndroidExternalStoragePath();  // (AppHome's)
     char path[1100];
     snprintf(path, sizeof path, "%s/game_folder_bad.txt", ext ? ext : ".");
     FILE *f = fopen(path, "w");
@@ -141,6 +149,19 @@ static void game_lib_failed(const char *why) {
 static void android_env(void) {
     const char *ext = SDL_GetAndroidExternalStoragePath();
     if (!ext) ext = SDL_GetAndroidInternalStoragePath();
+    // (the app's folder is the private one when another app made the external one and the app can't write it:
+    // android/.../AppHome.java decides once, and home.txt there says so; gu-native #176)
+    static char moved[1024];
+    char mark_path[1100];
+    snprintf(mark_path, sizeof mark_path, "%s/home.txt", SDL_GetAndroidInternalStoragePath() ? SDL_GetAndroidInternalStoragePath() : ".");
+    FILE *mark = fopen(mark_path, "r");
+    if (mark) {
+        if (fgets(moved, sizeof moved, mark)) {
+            moved[strcspn(moved, "\r\n")] = 0;
+            if (moved[0]) ext = moved;
+        }
+        fclose(mark);
+    }
     if (ext) {
         setenv("MHGU_HOME", ext, 0);
         setenv("XDG_DATA_HOME", ext, 0);
@@ -208,6 +229,7 @@ int main(int argc, char **argv) {
     if (getenv("MHGU_GAME_DIR")) g_game_dir = getenv("MHGU_GAME_DIR"), given = true;
     if (!given) {  // standalone (the build folder): data\ holds the game files; caches, mods and log.txt beside, saves
         plat_standalone();  // in the player's folder (%APPDATA%\MHGURecomp\save)
+        fprintf(stderr, "MHGU Recomp %s\n", MHGU_VERSION);  // (log.txt's first line: before anything that logs or stops)
         static char data[1100] = "data";
         char exe[1024];
         if (getenv("MHGU_HOME") && plat_exe_path(exe, sizeof exe)) {  // (running elsewhere: the files beside the exe)
@@ -231,6 +253,7 @@ int main(int argc, char **argv) {
         } else {
             fprintf(stderr, "[main] no user data folder: saves go to save\\ beside the executable\n");
         }
+        savefolder_init();  // (Settings -> Save folder: a change made in the menu, the folder chosen, runtime/savefolder.h)
 #ifndef __ANDROID__
         pc_apply_imported_save();  // (a save imported from the menu: in place before the game runs, runtime/pc_actions.c)
         pc_install_bundled_cheats();  // (the port's optional cheats, the first time: off)
@@ -300,7 +323,7 @@ int main(int argc, char **argv) {
     }
     rt_log_start();  // (Windows: from here the log's own thread writes it, runtime/logwriter.c)
     hitch_init();  // ((debug) MHGU_HITCHLOG=1: before the game's threads start, runtime/hitchlog.c)
-    LOG("MHGU Recomp %s\n", MHGU_VERSION);
+    if (given) LOG("MHGU Recomp %s\n", MHGU_VERSION);  // (standalone: log.txt's first line, written above)
 #if defined(__ANDROID__) || defined(_WIN32)
     void plat_log_device(void);  // (the phone; Windows: how this run treats its threads)
     plat_log_device();

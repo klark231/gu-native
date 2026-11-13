@@ -3,11 +3,11 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-union SDL_Event;
-
 #ifdef __cplusplus
-extern "C" {  // (settings_panel.cpp, C++, calls textinput_tap)
+extern "C" {
 #endif
+
+union SDL_Event;
 
 enum { TI_NONE, TI_CHANGED, TI_ENTER, TI_CANCEL };
 
@@ -16,6 +16,12 @@ void textinput_begin(const char *initial, int max_chars);  // the game shows a t
 void textinput_end(void);                                  // it is gone (decided, or closed by the game)
 int textinput_poll(char *out, size_t size, int *chars);    // TI_*: what happened since the last poll; the text now
 void textinput_peek(char *out, size_t size);               // the text now (to show it), leaving the events for the poll
+
+// the port's own menu (runtime/settings_panel.cpp, any thread): its keyboard view's Phone keyboard (Android; elsewhere
+// the menu doesn't offer it and these do nothing)
+void textinput_menu_keyboard(bool want);    // each frame: the phone's keyboard up while true
+void textinput_menu_keyboard_show(void);    // its key: up, and up again if the keyboard's own button had hidden it
+bool textinput_menu_keyboard_closed(void);  // true once after Back put it away (only the keyboard: the view, its text stay)
 
 // window side (the main thread)
 bool textinput_active(void);

@@ -37,12 +37,18 @@ enum {
 #define HP_QUESTS_MAX 256
 #define HP_SCALE_MIN 0.05f
 #define HP_SCALE_MAX 20.0f
-// The game's buttons, for showing each on the screen or not ([Touch] Show*: runtime/touch.cpp)
+// [Multiplayer] RecentServer<n> / RecentKey<n>: how many hub servers and matchmaking keys the menu remembers (the MH4U
+// port's lobbies too: RecentLobby<n>)
+#define LDN_RECENT 24
+// The game's buttons, for showing each on the screen or not ([Touch] Show*: runtime/touch.cpp); and two of the touch
+// controls' ways, kept with them: [Touch] StickRun (the stick pushed far out runs, locked; Off: a Run button instead) and
+// GuardSlide (a thumb from Guard keeps R as it slides onto the attacks)
 enum { TB_ATTACKS, TB_DODGE, TB_GUARD, TB_SHEATHE, TB_PLUS, TB_MINUS, TB_DPAD, TB_L, TB_ZL, TB_ZR, TB_L3, TB_R3, TB_STICK,
        TB_RANGED, TB_FIRE, TB_SECOND, TB_AIM, TB_RSPECIAL, TB_AMMO, TB_ITEM_ARROWS, TB_MENU_ZL, TB_MENU_ZR, TB_MENU_PAD,
-       TB_COUNT };
-#define TOUCH_SHOW_DEFAULT {1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1}
-#define TOUCH_SHOW_TRAD_DEFAULT {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // (Traditional: every button on)
+       TB_STICK_RUN, TB_GUARD_SLIDE, TB_COUNT };
+// (the item bar's arrows on by default, as in the MH4U port)
+#define TOUCH_SHOW_DEFAULT {1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0}
+#define TOUCH_SHOW_TRAD_DEFAULT {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}  // (Traditional: every button on)
 #define TOUCH_COMBOS 6
 // a controller's buttons a combined button can be on (the less used ones)
 enum { PADB_NONE, PADB_L3, PADB_R3, PADB_MINUS, PADB_GUIDE, PADB_MISC, PADB_PADDLE1, PADB_PADDLE2, PADB_PADDLE3, PADB_PADDLE4,
@@ -65,7 +71,6 @@ typedef struct {
     int face_buttons;         // FACE_*: controller face buttons by position (the Switch layout) or by their labels
     int ldn_port;             // local play: the port a hosted hub listens on (TCP; UDP for LAN search)
     char ldn_join[256];       // local play: hosts to search besides the LAN (host[:port], comma separated)
-    int hub_full_list;        // [Multiplayer] FullHubList: each Join Hub search asks each hub server several times at once, to list all their hubs
     int sync_small_monsters;  // multiplayer: small monsters synced like large ones (runtime/net/emsync.c)
     int bonus_content;        // free downloads copied from a donor save into saves without any (runtime/services/bonus.c)
     int village_in_hub;       // L / R at the Hub's / Pub's quest counter switch to Village quests (runtime/hle/villagehub.c)
@@ -78,7 +83,7 @@ typedef struct {
     int background_input;     // the controller keeps working while the window is in the background (runtime/ui.c)
     int volume;               // host master volume, 0..100; independent of the game's music / SFX settings
     int button_icons;         // 0: Xbox, 1: Switch, 2: PlayStation (visual guides only)
-    int language;             // MENU_LANG_* (settings_locale.h): English, Spanish, Chinese or Auto (the phone's); host menu only
+    int language;             // 0: English, 1: Spanish (host menu only)
     int menu_scale;           // host UI text/layout scale, 50..200 percent
     int menu_confirm;         // independent confirmation policy for the host settings menu
     int confirm_exit;         // ask before closing the application
@@ -90,7 +95,7 @@ typedef struct {
     int fsr_animsurf;         // FSR: surfaces animated through their texture (banners, water): 1 detected, 0 off
     int fsr_upscaler;         // [Upscaler] Upscaler: FSR_UP_3 (FSR 3.1), FSR_UP_4 (FSR 4, runtime/nvn/vulkan/fsr4.c) or
                               // FSR_UP_XESS (XeSS-SR, Windows: runtime/nvn/vulkan/xess.c)
-    int updates;              // [Application] Updates: UPDATES_*, unused (the original project's updater read it; none here)
+    int updates;              // [Application] Updates: UPDATES_*: Android's start looks for a newer release once a day (Notices.java)
     int shader_prewarm;       // [Performance] ShaderPrewarm: translate the game's shaders at start-up (nvn/vulkan/exec.c)
     float draw_distance;      // [Graphics] DrawDistance: town NPCs' fade distance factor, 0 no limit (config.c npc_fade_dist2)
     int mute_in_background;   // [Audio] MuteInBackground: no sound while the window is not focused (config_audio_gain)
@@ -136,15 +141,28 @@ typedef struct {
                               // at the start that says how (overlay.cpp menu_hint) no longer shows
     int mouse_menus;          // [Controls] MouseMenus (a desktop): in the game's menus the mouse points and clicks
                               // (runtime/hle/mousemenu.c, host_input.c); off, it turns the camera there as elsewhere
-    int grass;                // [Performance] Grass: 0 the tall grass and foliage drawn with alpha to coverage left out
-                              // (nvn/vulkan/exec.c; the Marshland's area 8 slowed weak phones down: #85, #121)
-    // From here on the defaults are set by name in CONFIG_DEFAULT_VALUES (config.c), after the positional ones: fields
-    // added upstream go above this line, so none of these moves them.
+    int grass;                // [Performance] Grass: 0 the game's grass fields (its uGrass2 units) are not drawn
+                              // (runtime/hle/grass.c; the Marshland's area 8 slowed weak phones down: #85, #121, #159)
+    int lock_buttons;         // [Touch] LockOnButtons: L and the target button were shown once for the lock-on (its
+                              // padlock and long press are L's, the target button changes its monster: touch.cpp); a
+                              // file without it (0.1.8 and before, both off by default) gets both shown (config.c)
+    int online_notice;        // [Multiplayer] OnlineNoticeShown: the notice about playing online (which server, and that it
+                              // sees the player's IP address) was closed; until then nothing reaches a hub server
+                              // (runtime/net/ldn.c, settings_panel.cpp's card)
+    int pause_menu;           // [Application] PauseInMenu (Android): the game waits while the settings menu is open and the
+                              // player plays alone (runtime/overlay.cpp; #94)
+    char ldn_recent_server[LDN_RECENT][256];  // [Multiplayer] RecentServer1..: the hub servers typed and saved, the last
+                                              // first, none of the short list's (the menu's list: settings_panel.cpp)
+    char ldn_recent_key[LDN_RECENT][64];      // [Multiplayer] RecentKey1..: the matchmaking keys typed and saved, the same
+    int gyro_aim;             // [Controls] GyroAim: aiming a bow or a bowgun, turning the phone (or a controller with a gyro)
+                              // turns the aim too, from where it was as the aim began (runtime/host_input.c gyro_update)
+    float gyro_sensitivity;   // [Controls] GyroSensitivity: the aim's turn for a turn of the phone (GYRO_SENS_MIN..MAX)
+    // From here on the defaults are set by name in CONFIG_DEFAULT_VALUES (config.c), after the positional ones.
     int touch_scheme;         // [Touch] Layout: TS_*, how the controls on the screen are laid out (Adaptive by default)
     int touch_show_trad[TB_COUNT];  // [Touch] TradShow*: the same for the Traditional layout (TB_ATTACKS to TB_STICK; all on by default)
     int touch_auto_run;       // [Touch] AutoRun: Traditional layout only: the thumb past the stick's rim runs (R held); off (default): only the R button runs
-    int ldn_direct;           // [Multiplayer] Direct: in an internet hub, game packets go straight between the players when
-                              // their routers let them (hole punching; they see each other's IP address), else through the server
+    int share_urgent;         // [Multiplayer] ShareUrgentCredit: an Urgent quest posted by someone else counts for you too (runtime/hle/urgentcredit.c)
+    int hub_full_list;        // [Multiplayer] FullHubList: each Join Hub search asks each hub server several times at once, to list all their hubs
     // Crossplay (runtime/net/ldn.c, crates/mhgu-crossplay)
     int crossplay;            // [Multiplayer] Crossplay: XP_* (Ryujinx LDN server, Yuzu rooms, Mixed, Citra rooms, All Rooms)
     char ryu_servers[256];    // [Multiplayer] RyuServers: RyuLdn servers (host[:port], comma separated)
@@ -172,11 +190,19 @@ enum { XP_OFF, XP_RYU, XP_ROOM, XP_MIXED, XP_CITRA, XP_ALL };  // (XP_ROOM: Yuzu
 #define WEB_API_DEFAULT_URL "api.ynet-fun.xyz"  // the Eden build's default (its web_api_url setting)
 #define CITRA_WEB_API_DEFAULT_URL "http://88.198.47.46:5000"    // AzaharPlus's defaults (its web_api_url and web_api_url_2)
 #define CITRA_WEB_API_DEFAULT_URL_2 "http://3ds.mgn.pub:3000"
+// The remembered lists (Config's ldn_recent_*: n entries of `width` bytes, the last first, no empty one between): add puts
+// a value at the front once (nocase: compared as host names are; an empty one is nothing), the last one dropped when it
+// is full; remove takes it out, the rest moving up (false: it wasn't there)
+void config_recent_add(char *list, int n, size_t width, const char *value, bool nocase);
+bool config_recent_remove(char *list, int n, size_t width, const char *value, bool nocase);
 uint32_t config_combo_mask(const char *text);  // "A+X" -> the BTN_* bits, 0 if there is nothing or anything else in it
 void config_combo_text(uint32_t mask, char *out, size_t size);  // and back
-// The hub servers used when ini Server is empty (runtime/net/ldn.c, server/): the two public MHGURecomp ones, a list like
-// the ini's. Hubs are listed on both, and a search asks both. "" = no default: no internet hubs unless the player names a server.
+// The hub server used when ini Server is empty (runtime/net/ldn.c, server/): a community server that speaks this port's
+// protocol (PROTO_VERSION 2, LOBBY_PROTO 1), where players of 0.1.6 and later already meet. The project runs none.
+// LDN_SERVERS: the menu's short list, the default first ("Custom..." types any other, Off is none).
+// (several: the hubs of each are listed, a hub made is listed on each; the menu's Hub servers view edits the list)
 #define LDN_DEFAULT_SERVER "hunterhubid-gu-hub.duckdns.org morerokk-mhgurecomp-ldnserver.duckdns.org"
+#define LDN_SERVERS {"hunterhubid-gu-hub.duckdns.org", "morerokk-mhgurecomp-ldnserver.duckdns.org"}
 #define LOW_END_SCALE 40  // what the menu's Low-end mode sets: RenderScale, FPS
 #define LOW_END_FPS 30
 // [Performance] FPS: the most a phone takes; a desktop also takes more, up to FPS_UNLIMITED ("Unlimited" in the file
@@ -194,7 +220,7 @@ void config_combo_text(uint32_t mask, char *out, size_t size);  // and back
 // (a desktop) how tall the menu's Low-end mode and Toaster make the 3D picture, whatever the screen: config_lowend_scale
 #define LOW_END_LINES 720
 #define TOASTER_LINES 540
-enum { UPDATES_ASK, UPDATES_AUTO, UPDATES_OFF };
+enum { UPDATES_OFF, UPDATES_ON };  // (an older file's Ask and Auto: On; Never: Off)
 enum { THEME_GOLD, THEME_BLUE, THEME_HUNTER };  // [Application] Theme
 enum { UI_CENTER = 1, UI_21_9, UI_32_9, UI_EDGES };  // the middle 16:9, 21:9, 32:9, the picture's sides
 enum { FSR_UP_3, FSR_UP_4, FSR_UP_XESS };  // [Upscaler] Upscaler (a start-up setting: the device is made for it)
@@ -202,6 +228,7 @@ enum { FSR_NATIVE, FSR_QUALITY, FSR_BALANCED, FSR_PERFORMANCE, FSR_ULTRA_PERFORM
 
 extern Config g_config;
 extern uint32_t g_render_size[2];  // read by the game code (tools/gen.py PATCHES: its docked render size)
+extern uint32_t g_gpu_pool_size;   // the game's GPU pool for render targets and textures, bigger with the render size (gen.py PATCHES)
 extern float g_render_aspect;      // the picture's shape, 16:10 or wider: the 3D cameras' aspect (tools/gen.py PATCHES)
 extern float g_fov_scale;          // boot diagnostic value; camera_fovy reads config_live_fov()
 extern uint32_t g_ui_size[2];      // the game's 2D canvas size (tools/gen.py PATCHES: 0xdbcd48, 0xdbcd54)
@@ -278,35 +305,42 @@ int config_live_fxaa_mode(void);
 int config_live_smooth_gradients(void);
 int config_live_discord(void);         // [Discord] RichPresence
 int config_live_discord_hunter(void);  // [Discord] ShowHunter
-int config_live_touch_scheme(void);    // [Touch] Layout: TS_*
 int config_live_touch_controls(void);  // [Touch] (runtime/touch.cpp)
 int config_live_touch_hud(void);
-int config_live_touch_auto_run(void);  // [Touch] AutoRun
 int config_live_lock_on(void);
+int config_live_gyro_aim(void);           // [Controls] GyroAim
+float config_live_gyro_sensitivity(void); // [Controls] GyroSensitivity
 int config_live_mouse_menus(void);  // [Controls] MouseMenus (a desktop's; 0 on a phone)
-int config_live_touch_show(int button);        // TB_*
+int config_live_touch_scheme(void);    // [Touch] Layout: TS_*
+int config_live_touch_auto_run(void);  // [Touch] AutoRun
 int config_live_touch_show_trad(int button);   // TB_*, in the Traditional layout
+int config_live_touch_show(int button);        // TB_*
 uint32_t config_live_touch_combo(int index);   // its buttons (config_combo_mask)
 int config_live_touch_combo_pad(int index);    // PADB_*
 float config_live_touch_camera(void);
 float config_live_touch_opacity(void);
 int config_live_touch_vibration(void);  // [Touch] Vibration
 int config_live_phone_rumble(void);     // [Controls] PhoneRumble
-int config_live_hub_full_list(void);   // [Multiplayer] FullHubList
-int config_live_ldn_direct(void);      // [Multiplayer] Direct (net/ldn.c: for the next player link)
 int config_live_show_stats(void);       // [Performance] ShowStats
+int config_live_generation(void);      // counts the live settings' publishes (runtime/touch.cpp: a frame's key)
 int config_live_pause_background(void); // [Application] PauseInBackground
+int config_live_pause_menu(void);       // [Application] PauseInMenu
 int config_live_shadows(void);          // [Performance] Shadows
 int config_live_bloom(void);            // [Performance] Bloom
+int config_live_grass(void);            // [Performance] Grass
 int config_live_reverb(void);           // [Audio] Reverb
-void config_live_test(const Config *c);  // (config.c: a test run's overrides of Shadows, Bloom, FPS; not saved)
+void config_live_test(const Config *c);  // (config.c: a test run's overrides of Shadows, Bloom, Grass, FPS; not saved)
+int config_live_share_urgent(void);   // [Multiplayer] ShareUrgentCredit
+int config_live_village_in_hub(void); // [Village Quests] VillageQuestsInHub (hle/villagehub.c)
+int config_live_hub_full_list(void);   // [Multiplayer] FullHubList
 void config_live_crossplay(Config *out);  // coherent snapshot of the saved Crossplay / Ryu* / Room* settings
 void config_live_ldn(char *server, size_t server_size, char *key, size_t key_size);  // [Multiplayer] Server, Key
+int config_live_online_notice(void);  // [Multiplayer] OnlineNoticeShown
 bool config_restart_required(const Config *draft); // Raw cold fields vs this process's startup INI values.
 float config_audio_gain(void);  // atomic, safe on audio threads; 0 while muted in the background
 void config_window_focus(bool focused);  // the window got / lost the focus (runtime/host_input.c)
-int config_language(void);     // the saved UI language as it shows (Auto: the phone's), atomic across host threads
 void config_refresh_system_language(void);  // the phone's language may have changed (SDL_EVENT_LOCALE_CHANGED)
+int config_language(void);     // last saved UI language, atomic across host threads
 bool config_confirm_exit(void); // atomic, safe on the host main thread
 
 #ifdef __cplusplus

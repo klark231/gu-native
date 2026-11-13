@@ -1,0 +1,4 @@
+<resources>
+    <!-- the app icon's long press (res/xml/shortcuts.xml) -->
+    <string name="share_log">Compartir registro</string>
+</resources>

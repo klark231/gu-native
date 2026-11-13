@@ -7,6 +7,18 @@
 //   MHGU_ADPF_LOG=1         every 2 s: the work reported per frame (average, max), each thread's CPU time per frame
 //                           (average / max), the target, the thermal headroom and status (also without a session)
 //   MHGU_ADPF_TARGET=<pct>  the target as a percentage of the frame period (default 100; lower: boosted sooner, warmer)
+//   MHGU_PERF_ADPF70=0|1    (on: Moto g06 Toaster 30, 2.832 -> 2.789 W, CPU -4.8 %) without MHGU_ADPF_TARGET, the target is 70 % of the period at FPS limits of
+//                           60 and below, as in the MH4U port, and the efficient cores go by the period (below)
+//   MHGU_PERF_EFFICIENT=1   (off: no effect measured) efficiency_follow forgives a lone frame over the target (below)
+//   MHGU_ADPF_EFFICIENT=force  (a test) the efficient cores asked for once the session is made, and never let go: what
+//                           they save at most
+//   MHGU_PERF_MEMTHREAD=1   (on by default) the minute's [mem] line read and written on a thread of its own (mem_watch)
+//
+// The target as all of the period: the system winds the clocks down until the busiest thread's work fills it, so
+// frames then end on either side of a vsync as their work varies (the Moto g06 at Toaster's 30 FPS: work 25.5 ms on
+// average and 33 at most, of 33.3). The MH4U port's 70 % put its frames back on the vsync there (p90 50 -> 33 ms, no
+// stutters, less CPU time: the same work at a higher clock, done sooner); above 60 the CPU is not what limits a phone
+// that gets there, and a lower target would only raise its clocks, so it stays all of the period.
 //
 // The threads: the game's update thread (runtime/hle/vi.c vi_pause_game, once a frame), the presenting one
 // (runtime/nvn/vulkan/device.c backend_present) and the one translating command lists (exec.c backend_execute) when it
@@ -31,13 +43,16 @@
 #define _GNU_SOURCE
 #include <android/api-level.h>
 #include <dlfcn.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <math.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -104,6 +119,7 @@ static _Atomic uint32_t presents;  // frames presented so far: the number of the
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static __thread unsigned t_roles;  // the roles this thread has given already
 static __thread int t_slot = -1;   // its entry in thr (-1: none, the table was full)
+static void role_name(unsigned roles, char *buf, size_t size);
 
 void perf_hint_thread(int role) {
     unsigned bit = 1u << role;
@@ -133,6 +149,11 @@ void perf_hint_thread(int role) {
     t_slot = i;
     atomic_fetch_or(&roles_known, bit);
     pthread_mutex_unlock(&lock);
+    if (i >= 0) {  // (MHGU_PERF_THREADNAMES: the thread is named for what it does, "game+render", "submit")
+        char r[32];
+        role_name(atomic_load(&thr[i].roles), r, sizeof r);
+        plat_thread_name(r);
+    }
 }
 
 static void role_name(unsigned roles, char *buf, size_t size) {
@@ -168,16 +189,27 @@ static _Atomic int unavailable;                      // there will be none: MHGU
 static bool making;      // the maker has been started
 static int64_t target_ns;
 static int pct = 100, log_on = -1;
+static bool pct_given;          // MHGU_ADPF_TARGET
+static bool adpf70;             // MHGU_PERF_ADPF70
+static bool efficient_relaxed;  // MHGU_PERF_EFFICIENT
 static struct { int n; int32_t tids[MAX_THREADS]; char list[200]; } mk;  // the maker's threads (set before it starts)
 
-static int64_t frame_target(void) {
+static float live_fps(void) {
     float fps = config_live_fps();
-    if (!(fps >= 1.0f)) fps = 60.0f;  // (the settings not read yet)
-    return (int64_t)(1e9 / fps * pct / 100.0);
+    return fps >= 1.0f ? fps : 60.0f;  // (the settings not read yet)
+}
+
+// The target's share of the frame period: MHGU_ADPF_TARGET's, or 100 %; with MHGU_PERF_ADPF70, 70 % at 60 FPS and below
+static int target_pct(float fps) { return adpf70 && !pct_given && fps < 60.5f ? 70 : pct; }
+
+static int64_t frame_target(void) {
+    float fps = live_fps();
+    return (int64_t)(1e9 / fps * target_pct(fps) / 100.0);
 }
 
 static void *make_session(void *arg) {
     (void)arg;
+    plat_thread_name("adpf-session");
     pthread_once(&load_once, load);
     int n = mk.n;
     APerformanceHintManager *m = NULL;
@@ -269,25 +301,55 @@ static void log_frame(uint64_t work, bool have_session) {
 #define EASY_FRAMES 60  // (frames looked at together)
 #define EASY_RUNS 5     // (of them in a row, all easy, before the efficient cores)
 #define EASY_RUNS_MAX 80
+#define LONE_QUIET 30   // (MHGU_PERF_EFFICIENT) windows in a row with no frame over the target before one is forgiven
 // A phone whose frames are easy on the fast cores but not on the efficient ones went back and forth all the time
 // (a Unisoc T606: about 30 times in one session, each a few slow frames): each time they did not last a minute, the
-// next try waits twice as long
+// next try waits twice as long.
+// MHGU_PERF_EFFICIENT: a frame over the target on its own (a quest's departure, a load: none in the LONE_QUIET windows
+// before, the window's average under half) neither turns them off nor keeps them from coming, and an easy window may have
+// one frame over 80 %. Without it the Moto g06's quest departure turned them off, and at the camp (10-13 ms of 33.3) they
+// never came back in 9 minutes: every frame of 10 windows in a row had to stay under 80 %. Two frames over the target in
+// a window, or another within LONE_QUIET windows (a minute at 30 FPS), still turn them off at once, as an average over
+// 70 % does: one that comes back is not a one-off, and on the efficient cores it would be a dropped frame each time.
 static void efficiency_follow(APerformanceHintSession *s, int64_t work) {
-    static int frames, easy_runs, off = -1, need = EASY_RUNS;
-    static int64_t sum, longest;
+    static int frames, easy_runs, off = -1, need = EASY_RUNS, over, quiet = LONE_QUIET;
+    static int64_t sum, longest, second;
     static bool efficient;
     static uint64_t on_since;
     if (off < 0) {
         const char *e = getenv("MHGU_ADPF_EFFICIENT");
         off = !fn.prefer_efficiency || (e && !strcmp(e, "0"));
+        if (!off && e && !strcmp(e, "force")) {
+            fn.prefer_efficiency(s, true);
+            LOG("[perf] efficient cores on, and held (MHGU_ADPF_EFFICIENT=force: a test)\n");
+            off = 1;
+        }
     }
     if (off) return;
-    sum += work, longest = work > longest ? work : longest;
+    // (MHGU_PERF_ADPF70: the frame period, of which the session's target is a share, as the MH4U port does; else the
+    // target, as before)
+    int64_t target = adpf70 ? (int64_t)(1e9 / live_fps()) : target_ns;
+    sum += work;
+    if (work > longest) second = longest, longest = work;
+    else if (work > second) second = work;
+    over += work > target;
     if (++frames < EASY_FRAMES) return;
-    int64_t avg = sum / frames, target = target_ns;
-    bool tight = avg > target * 7 / 10 || longest > target;
-    easy_runs = avg < target / 2 && longest < target * 8 / 10 ? easy_runs + 1 : 0;
-    frames = 0, sum = longest = 0;
+    int64_t avg = sum / frames;
+    bool tight, easy;
+    if (efficient_relaxed) {
+        bool lone = over == 1 && quiet >= LONE_QUIET && avg < target / 2;
+        tight = avg > target * 7 / 10 || (over && !lone);
+        easy = avg < target / 2 && second < target * 8 / 10 && (!over || lone);
+        if (lone && log_on)
+            LOG("[perf] one frame of %.1f ms over the target (%.1f), alone: let pass (efficient cores %s)\n", longest / 1e6,
+                target / 1e6, efficient ? "on" : "off");
+        quiet = over ? 0 : quiet < LONE_QUIET ? quiet + 1 : quiet;
+    } else {
+        tight = avg > target * 7 / 10 || longest > target;
+        easy = avg < target / 2 && longest < target * 8 / 10;
+    }
+    easy_runs = easy ? easy_runs + 1 : 0;
+    frames = over = 0, sum = longest = second = 0;
     bool want = tight ? false : efficient || easy_runs >= need;
     if (want == efficient) return;
     efficient = want;
@@ -296,8 +358,15 @@ static void efficiency_follow(APerformanceHintSession *s, int64_t work) {
     if (want) on_since = now, easy_runs = 0;
     else if (now - on_since < 60000000000ull) need = need * 2 > EASY_RUNS_MAX ? EASY_RUNS_MAX : need * 2;
     else need = EASY_RUNS;
+    // (a window on them that averaged more than the frame period: every frame of it late, not a few. An Infinix Smart 10
+    // (Unisoc T7250) in a hunt: 11.7 ms on the fast cores, 33.6 of 33.3 on the efficient ones, and each later try two
+    // more seconds of dropped frames. They don't hold this rate there: no more tries this session)
+    int64_t period = (int64_t)(1e9 / live_fps());
+    bool never = !want && avg > period;
     LOG("[perf] efficient cores %s (work %.1f ms of %.1f)%s\n", want ? "on" : "off", avg / 1e6, target / 1e6,
-        want ? "" : need > EASY_RUNS ? ": the next try waits longer" : "");
+        want ? "" : never ? ": over the frame period on them, not tried again this session"
+                  : need > EASY_RUNS ? ": the next try waits longer" : "");
+    if (never) off = 1;
 }
 
 // Once a minute (and at the first present): the process's memory map entries against vm.max_map_count, its resident
@@ -347,12 +416,13 @@ void perf_mem_report(void) {
     fprintf(stderr, "[mem] at the error: %ld map entries, resident %ld MB\n", maps, rss / 1024);
 }
 
-static void mem_watch(void) {
-    static uint64_t next;
+static sem_t mem_sem;       // (MHGU_PERF_MEMTHREAD) a line is due
+static bool mem_threaded;   // the mem thread writes the lines (set once, before the first)
+
+// The line itself (the presenting thread's, or with MHGU_PERF_MEMTHREAD the mem thread's: one of them for a whole run)
+static void mem_line(void) {
     static long max_maps = -1, first_maps = -1, first_rss = -1;
-    uint64_t now = plat_now_ns();
-    if (now < next) return;
-    next = now + 60000000000ull;
+    uint64_t t0 = plat_now_ns();
     if (max_maps < 0) {
         FILE *f = fopen("/proc/sys/vm/max_map_count", "re");
         if (f) { if (fscanf(f, "%ld", &max_maps) != 1) max_maps = 0; fclose(f); }
@@ -361,13 +431,57 @@ static void mem_watch(void) {
     long maps = count_lines("/proc/self/maps", NULL);
     long rss = kb_field("/proc/self/status", "VmRSS:"), avail = kb_field("/proc/meminfo", "MemAvailable:");
     if (first_maps < 0) first_maps = maps, first_rss = rss;
+    // (resident: the process's own memory, the files it maps (the game's code: pages the system can drop and read again)
+    // and shared memory)
+    long anon = kb_field("/proc/self/status", "RssAnon:"), file = kb_field("/proc/self/status", "RssFile:"),
+         shmem = kb_field("/proc/self/status", "RssShmem:");
     void vk_mem_summary(char *out, size_t size);  // (nvn/vulkan/device.c)
-    char gpu[96];
+    char gpu[192];
     vk_mem_summary(gpu, sizeof gpu);
     char of[32] = "";  // (apps may not read vm.max_map_count: 65530 is the kernel's default)
     if (max_maps > 0) snprintf(of, sizeof of, " of %ld", max_maps);
-    LOG("[mem] %ld map entries%s (%+ld since the start), resident %ld MB (%+ld), the system's available %ld MB%s\n",
-        maps, of, maps - first_maps, rss / 1024, (rss - first_rss) / 1024, avail / 1024, gpu);
+    LOG("[mem] %ld map entries%s (%+ld since the start), resident %ld MB (%+ld; own %ld, files %ld, shared %ld), the system's "
+        "available %ld MB%s\n",
+        maps, of, maps - first_maps, rss / 1024, (rss - first_rss) / 1024, anon / 1024, file / 1024, shmem / 1024, avail / 1024, gpu);
+    if (__atomic_load_n(&log_on, __ATOMIC_RELAXED) > 0)  // (MHGU_ADPF_LOG: what reading it cost the thread)
+        LOG("[mem] that line took %.2f ms of the %s thread\n", (plat_now_ns() - t0) / 1e6, mem_threaded ? "mem" : "presenting");
+}
+
+// MHGU_PERF_MEMTHREAD: the line on a thread of its own, at nice 10, when the presenting thread says it is time (as the
+// MH4U port does). Reading /proc/self/maps has the kernel write out its thousands of lines (7,685 at the Moto g06's camp)
+// under the process's memory map lock, which the write tracking's faults and mprotects take too: a stall on the game's
+// update thread once a minute, there.
+static void *mem_thread(void *arg) {
+    (void)arg;
+    plat_thread_name("mem");
+    setpriority(PRIO_PROCESS, (id_t)gettid(), 10);  // (nothing waits for it)
+    for (;;) {
+        if (sem_wait(&mem_sem) != 0) {
+            if (errno == EINTR) continue;
+            return NULL;  // (never seen: no more lines rather than a thread turning on a failed wait)
+        }
+        mem_line();
+    }
+}
+
+static void mem_watch(void) {
+    static uint64_t next;
+    static uint64_t every;  // (MHGU_MEM_LOG=<seconds>, test runs: more often than every minute)
+    if (!every) {
+        const char *e = getenv("MHGU_MEM_LOG");
+        every = (e && atoi(e) > 0 ? (uint64_t)atoi(e) : 60) * 1000000000ull;
+        e = getenv("MHGU_PERF_MEMTHREAD");
+        pthread_t th;
+        if ((e ? atoi(e) > 0 : 1) && sem_init(&mem_sem, 0, 0) == 0 && pthread_create(&th, NULL, mem_thread, NULL) == 0) {
+            pthread_detach(th);
+            mem_threaded = true;
+        }
+    }
+    uint64_t now = plat_now_ns();
+    if (now < next) return;
+    next = now + every;
+    if (mem_threaded) sem_post(&mem_sem);
+    else mem_line();
 }
 
 void perf_hint_frame(void) {
@@ -377,7 +491,15 @@ void perf_hint_frame(void) {
         const char *e = getenv("MHGU_ADPF_LOG");
         log_on = e && *e && strcmp(e, "0") != 0;
         e = getenv("MHGU_ADPF_TARGET");
-        if (e && atoi(e) > 0) pct = atoi(e) < 25 ? 25 : atoi(e) > 400 ? 400 : atoi(e);
+        if (e && atoi(e) > 0) pct = atoi(e) < 25 ? 25 : atoi(e) > 400 ? 400 : atoi(e), pct_given = true;
+        e = getenv("MHGU_PERF_ADPF70");
+        adpf70 = !e || !*e || atoi(e) > 0;  // (on by default since the watts were measured: MHGU_PERF_ADPF70=0 turns it off)
+        e = getenv("MHGU_PERF_EFFICIENT");
+        efficient_relaxed = e && atoi(e) > 0;
+        if (adpf70 || efficient_relaxed)
+            LOG("[perf] %s%s%s\n", adpf70 ? "MHGU_PERF_ADPF70: the target 70 % of the frame period at 60 FPS and below" : "",
+                adpf70 && efficient_relaxed ? "; " : "",
+                efficient_relaxed ? "MHGU_PERF_EFFICIENT: a frame over the target on its own is let pass" : "");
         e = getenv("MHGU_ADPF");
         if (e && !strcmp(e, "0")) {
             LOG("[perf] ADPF off (MHGU_ADPF=0)\n");

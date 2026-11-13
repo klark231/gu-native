@@ -351,7 +351,7 @@ static bool init_driver(void) {
     for (char *c = prov_name + strlen(prov_name); c > prov_name && (c[-1] == '*' || c[-1] == ' '); c--) c[-1] = 0;
     LOG("[fsr4] driver provider \"%s\" id %#llx\n", prov_name, (unsigned long long)prov.provider.versionId);
     if (prov.isSupported) {
-        struct { VkDevice d; VkPhysicalDevice p; PFN_vkGetDeviceProcAddr g; } be = {g_vk.dev, g_vk.phys, vkGetDeviceProcAddr};
+        struct { VkDevice d; VkPhysicalDevice p; PFN_vkGetDeviceProcAddr g; } be = {g_vk.dev, g_vk.phys, vk_device_proc_addr()};
         if (!prov.isSupported(&be)) { LOG("[fsr4] the provider says this GPU / device setup is not supported: FSR 3.1 is used\n"); return false; }
         LOG("[fsr4] the provider accepts this device\n");
     }
@@ -486,7 +486,7 @@ static bool make_context(const Fsr4Dispatch *d) {
                                       .fpMessage = ffx_message};
     UpscaleVersion uv = {.header.type = UPSCALE_VERSION_V2_TYPE, .version = FSR4_VERSION};
     BackendVk bd = {.header.type = via_loader ? BACKEND_VK_PUBLIC_TYPE : BACKEND_VK_V2_TYPE, .device = g_vk.dev, .physical = g_vk.phys,
-                    .gdpa = vkGetDeviceProcAddr};
+                    .gdpa = vk_device_proc_addr()};
     struct ffxOverrideVersion ov = {.header.type = FFX_API_DESC_TYPE_OVERRIDE_VERSION, .versionId = loader_ver};
     bd.header.pNext = via_loader ? &ov.header : &uv.header;
     cu.header.pNext = &bd.header;

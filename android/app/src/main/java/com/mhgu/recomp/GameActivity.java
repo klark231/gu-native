@@ -1,11 +1,14 @@
 package com.mhgu.recomp;
 
 import android.app.Dialog;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
+import android.hardware.Sensor;
+import android.hardware.display.DisplayManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Process;
@@ -14,6 +17,7 @@ import android.util.TypedValue;
 import android.view.Display;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.Surface;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
@@ -22,6 +26,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import org.libsdl.app.SDLActivity;
+import org.libsdl.app.SDLSurface;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -44,12 +49,117 @@ public class GameActivity extends SDLActivity {
         return new String[] { "c++_shared", "SDL3", "mhguffmpeg", "main" };
     }
 
+    private boolean viaEntry;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // A start that skipped the entry screen (GameFolderActivity: its file checks, the app's folder, the save folder's
+        // start gate, the notices) goes there first, and it starts the game again: brought back from Recents after the
+        // game ended or Android closed it (Recents restores this task with its old intent), a controller plugged in.
+        // Without the gate a save folder that couldn't be reached, or another device's game still open on it, went unasked.
+        if (!GameFolderActivity.gameStarted) {
+            viaEntry = true;
+            Log.i(TAG, "a start without the entry screen: it goes first");
+            super.onCreate(savedInstanceState);  // (finishes at once: startElsewhere)
+            startActivity(new Intent(this, GameFolderActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            overridePendingTransition(0, 0);
+            return;
+        }
         prepareFiles();
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         pickRefreshRate();
+    }
+
+    @Override
+    protected boolean startElsewhere() {
+        return viaEntry;
+    }
+
+    @Override
+    protected SDLSurface createSDLSurface(Context context) {
+        return new GameSurface(context);
+    }
+
+    // MHGU_PERF_NO_ACCEL=1 (runtime/ui.c lo avisa una vez al arrancar: perfNoAccel): SDL no escucha el acelerómetro (unos
+    // 50 eventos por segundo en el hilo de la interfaz que nada lee: el juego tiene sus sensores siempre quietos,
+    // runtime/hle/input.c); el giro de 180 grados que SDL notaba con él lo dice el DisplayManager al cambiar la rotación de
+    // la pantalla (onNativeRotationChanged, como antes). El giro del cuadro y el notch no dependen de esto: los hace el
+    // sistema (orientación sensorLandscape) y los insets. Encendido por defecto; 0: el acelerómetro de SDL, como siempre.
+    private static boolean noAccel;  // (sólo en el hilo de la interfaz)
+
+    /** MHGU_PERF_NO_ACCEL=1 (runtime/ui.c, desde el hilo de SDL, una vez al arrancar). */
+    public static void perfNoAccel() {
+        SDLActivity activity = mSingleton;
+        if (activity == null) return;
+        activity.runOnUiThread(() -> {
+            noAccel = true;
+            if (mSurface instanceof GameSurface) ((GameSurface) mSurface).accelOff();
+            Log.i(TAG, "perf: no accelerometer listener; the display's rotation from the DisplayManager");
+        });
+    }
+
+    /** La superficie de SDL con el acelerómetro cambiado por un DisplayListener cuando noAccel (MHGU_PERF_NO_ACCEL=1). */
+    static class GameSurface extends SDLSurface {
+        private boolean accelOn;  // (SDL lo pidió: entre su resume y su pause)
+        private DisplayManager.DisplayListener rotationListener;
+
+        GameSurface(Context context) {
+            super(context);
+        }
+
+        @Override
+        protected void enableSensor(int sensortype, boolean enabled) {
+            if (sensortype != Sensor.TYPE_ACCELEROMETER) {
+                super.enableSensor(sensortype, enabled);
+                return;
+            }
+            accelOn = enabled;
+            if (noAccel) watchRotation(enabled);
+            else super.enableSensor(sensortype, enabled);
+        }
+
+        /** El aviso llegó con el acelerómetro ya registrado (el arranque lo registra antes de que corra el runtime). */
+        void accelOff() {
+            if (!accelOn) return;
+            super.enableSensor(Sensor.TYPE_ACCELEROMETER, false);
+            watchRotation(true);
+        }
+
+        private void watchRotation(boolean on) {
+            DisplayManager dm = (DisplayManager) getContext().getSystemService(Context.DISPLAY_SERVICE);
+            if (dm == null) return;
+            if (on && rotationListener == null) {
+                rotationListener = new DisplayManager.DisplayListener() {
+                    @Override public void onDisplayAdded(int displayId) {}
+                    @Override public void onDisplayRemoved(int displayId) {}
+                    @Override public void onDisplayChanged(int displayId) {
+                        if (displayId == mDisplay.getDisplayId()) rotationNow();
+                    }
+                };
+                dm.registerDisplayListener(rotationListener, null);  // (en el hilo de la interfaz, como el sensor)
+                rotationNow();  // (un giro mientras nada escuchaba: en pausa)
+            } else if (!on && rotationListener != null) {
+                dm.unregisterDisplayListener(rotationListener);
+                rotationListener = null;
+            }
+        }
+
+        /** Lo mismo que SDLSurface.onSensorChanged hace con la rotación en cada lectura del acelerómetro. */
+        private void rotationNow() {
+            int rotation;
+            switch (mDisplay.getRotation()) {
+                case Surface.ROTATION_90: rotation = 90; break;
+                case Surface.ROTATION_180: rotation = 180; break;
+                case Surface.ROTATION_270: rotation = 270; break;
+                default: rotation = 0; break;
+            }
+            if (rotation != mCurrentRotation) {
+                mCurrentRotation = rotation;
+                onNativeRotationChanged(rotation);
+                Log.i(TAG, "display rotation " + rotation);
+            }
+        }
     }
 
     @Override
@@ -175,7 +285,12 @@ public class GameActivity extends SDLActivity {
         if (activity != null) activity.startActivity(new Intent(activity, SaveImportActivity.class));
     }
 
-    /** Ajustes -> Exportar partida. */
+    /** Ajustes -> Carpeta de partidas. */
+    public static void showSaveFolder() {
+        SDLActivity activity = mSingleton;
+        if (activity != null) activity.startActivity(new Intent(activity, SaveFolderActivity.class));
+    }
+
     /** Ajustes -> Gráficos -> Driver de GPU. */
     public static void showDrivers() {
         SDLActivity activity = mSingleton;
@@ -210,30 +325,6 @@ public class GameActivity extends SDLActivity {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         intent.putExtra(LogShareActivity.EXTRA_CRASH, true);
         activity.startActivity(intent);
-    }
-
-    /** Room Browser (runtime/net/webapi.c): GET an http(s) URL (the Eden Web API), "" on any failure. */
-    public static String webGet(String url, String apiVersion) {
-        java.net.HttpURLConnection c = null;
-        try {
-            c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
-            c.setConnectTimeout(8000);
-            c.setReadTimeout(8000);
-            c.setRequestProperty("api-version", apiVersion);
-            c.setRequestProperty("Accept", "application/json");
-            if (c.getResponseCode() >= 400) return "";
-            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
-            try (InputStream in = c.getInputStream()) {
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = in.read(buf)) > 0 && out.size() < (4 << 20)) out.write(buf, 0, n);
-            }
-            return out.toString("UTF-8");
-        } catch (Exception e) {
-            return "";
-        } finally {
-            if (c != null) c.disconnect();
-        }
     }
 
     /** LAN (runtime/net/ldn.c): sin este permiso, muchos teléfonos descartan por Wi-Fi los paquetes de búsqueda de sala. */
@@ -278,6 +369,21 @@ public class GameActivity extends SDLActivity {
     }
 
     /**
+     * Cuánto antes de un vsync hay que entregar un búfer para que se vea en él (Display.getPresentationDeadlineNanos):
+     * el margen de los presents con hora (runtime/nvn/vulkan/present_pacing.c). 0 si no se sabe. Como el del MH4U.
+     */
+    public static long presentationDeadlineNs() {
+        SDLActivity activity = mSingleton;
+        if (activity == null) return 0;
+        try {
+            Display display = Build.VERSION.SDK_INT >= 30 ? activity.getDisplay() : activity.getWindowManager().getDefaultDisplay();
+            return display != null ? display.getPresentationDeadlineNanos() : 0;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /**
      * La tasa de refresco más baja que alcanza para el límite de FPS, nunca menos de 60: una pantalla a 120 Hz con el juego
      * a 60 gasta batería y calienta el teléfono sin mostrar nada más. Sin límite conocido, la más alta.
      */
@@ -305,9 +411,10 @@ public class GameActivity extends SDLActivity {
 
     /** Crea las carpetas del jugador y copia lo que el APK trae para ellas (la lista de pipelines). */
     private void prepareFiles() {
+        AppHome.ensure(this);  // (a start without GameFolderActivity: a controller plugged in)
+        SaveFolder.applyPending(this);  // (before the game: Ajustes -> Carpeta de partidas)
         SaveImportActivity.applyPending(this);  // (before the game: Ajustes -> Importar partida)
-        File home = getExternalFilesDir(null);
-        if (home == null) home = getFilesDir();
+        File home = AppHome.home(this);
         new File(home, "data").mkdirs();
         new File(home, "mods").mkdirs();
         new File(home, "cheats").mkdirs();
@@ -343,6 +450,30 @@ public class GameActivity extends SDLActivity {
         } catch (Exception e) {
             Log.w(TAG, "asset " + name + ": " + e);
             return false;
+        }
+    }
+
+    /** Room Browser (runtime/net/webapi.c): GET an http(s) URL (the Eden Web API), "" on any failure. */
+    public static String webGet(String url, String apiVersion) {
+        java.net.HttpURLConnection c = null;
+        try {
+            c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(8000);
+            c.setRequestProperty("api-version", apiVersion);
+            c.setRequestProperty("Accept", "application/json");
+            if (c.getResponseCode() >= 400) return "";
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            try (InputStream in = c.getInputStream()) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0 && out.size() < (4 << 20)) out.write(buf, 0, n);
+            }
+            return out.toString("UTF-8");
+        } catch (Exception e) {
+            return "";
+        } finally {
+            if (c != null) c.disconnect();
         }
     }
 }

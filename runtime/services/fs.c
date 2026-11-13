@@ -11,6 +11,7 @@
 #include "../ipc.h"
 #include "../mods.h"
 #include "../romfs.h"
+#include "../savefolder.h"
 #include "dlc.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
@@ -80,11 +81,13 @@ static Service *open_romfs_storage(void) {
 // is then copied over the real file in place (which keeps a symlinked file a symlink; a rename would replace it) and
 // it is deleted. At the first mount of a folder, a leftover .mhgu-commit is applied (the copy was cut short) and a
 // leftover .mhgu-tmp is deleted (never committed). The SD card file system has no commit and writes directly.
+// A save folder a sync app shares (runtime/savefolder.h) can bring another device's .mhgu-commit while it is still
+// being written there: the save's files (system, system_backup) are applied only whole (their fixed size).
 #define TMP_EXT    ".mhgu-tmp"
 #define COMMIT_EXT ".mhgu-commit"
 #define MAX_PENDING 16
 typedef struct { char path[1100]; bool deleted, created; } Pending;  // created: the new content is in path + TMP_EXT
-typedef struct { char root[1024]; bool journal; int npending; Pending pending[MAX_PENDING]; } HostFs;
+typedef struct { char root[1024]; bool journal, missed; int npending; Pending pending[MAX_PENDING]; } HostFs;
 typedef struct { int fd; char path[1100]; } HostFile;
 typedef struct { DIR *d; char path[1024]; int mode; } HostDir;
 
@@ -219,6 +222,14 @@ static void fs_recover(const char *root) {
         snprintf(p, sizeof p, "%s/%s", root, e->d_name);
         if (has_ext(e->d_name, COMMIT_EXT)) {
             snprintf(real, sizeof real, "%.*s", (int)(strlen(p) - strlen(COMMIT_EXT)), p);
+            const char *base = e->d_name;
+            size_t blen = strlen(base) - strlen(COMMIT_EXT);
+            struct stat st;
+            bool save_file = (blen == 6 && !strncmp(base, "system", 6)) || (blen == 13 && !strncmp(base, "system_backup", 13));
+            if (save_file && (stat(p, &st) != 0 || st.st_size != 5159100)) {  // (cut short: not a save to put in place)
+                LOG("[fs] %s: an incomplete %s left as it is\n", real, COMMIT_EXT);
+                continue;
+            }
             bool ok = copy_over(p, real);
             if (ok) unlink(p);
             LOG("[fs] %s: finished an interrupted save%s\n", real, ok ? "" : " - FAILED, the data stays in .mhgu-commit");
@@ -425,7 +436,11 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         break;
     }
     case 10:  // Commit
-        if (fs->journal && !fs_commit(fs)) resp->result = MAKE_RESULT(2, 4000);
+        if (fs->journal) {
+            bool changed = fs->npending > 0;
+            if (!fs_commit(fs)) resp->result = MAKE_RESULT(2, 4000);
+            else if (changed && fs->missed) savefolder_missed();  // (the save folder couldn't be reached: it went here)
+        }
         break;
     case 11: case 12: OUT(int64_t, 0) = 0x40000000; resp_size(resp, 8); break;  // free / total space
     case 13: rm_rf(p, true); break;
@@ -452,7 +467,8 @@ static void filesystem_close(Service *s) {
 static Service *open_host_fs(const char *sub, bool journal) {
     HostFs *fs = calloc(1, sizeof *fs);
     if (getenv("MHGU_SAVE_DIR")) g_save_dir = getenv("MHGU_SAVE_DIR");
-    snprintf(fs->root, sizeof fs->root, "%s/%s", g_save_dir, sub);
+    if (journal) fs->missed = savefolder_root(sub, fs->root, sizeof fs->root);  // (the save: the save folder's, when one is chosen)
+    else snprintf(fs->root, sizeof fs->root, "%s/%s", g_save_dir, sub);
     mkdirs(fs->root);
     fs->journal = journal;
     if (journal) fs_recover(fs->root);

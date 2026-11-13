@@ -9,6 +9,11 @@
 void mousemenu_init(void);
 // (both platforms, any thread) the game's menus turn their pages with ZL / ZR, not L / R (an option of the game's)
 bool menu_pages_zl(void);
+// (both platforms, any thread) the player's controls in the game's Options: Control Type 0..3 (Type 1..4); L / R with ZL /
+// ZR swapped (L/R Button Controls), the right stick with the d-pad (R Stick Controls)
+int game_control_type(void);
+bool game_lr_swapped(void);
+bool game_rstick_swapped(void);
 // (both platforms, any thread) the game's pad updates so far, and how many since the last one a menu's cursor (a list,
 // a box), a quantity or a choice of two ran in: 0 in the last one (or the one under way), large before any. A menu
 // takes the d-pad while one runs; a menu closing runs none (the touch controls' menu pad: runtime/touch.cpp)

@@ -37,10 +37,10 @@ static void ImGui_ImplVulkan_UpdateTexture(ImTextureData *) {}
 #include "menu_confirm.h"
 #include "overlay.h"
 #include "perfstats.h"
+#include "platform.h"
 #include "hle/chat.h"
 #include "settings_locale.h"
 #include "settings_panel.h"
-#include "settings_locale.h"
 
 #define LOG(...) rt_logf(__VA_ARGS__)  // (Windows: queued, the log's own thread writes it)
 
@@ -49,9 +49,10 @@ void vk_lock(void);
 void vk_unlock(void);
 SDL_Window *ui_window(void);
 void vi_pause_game(void);
+bool romfs_incomplete(double *gb, int *empty);  // (romfs.c)
 }
 
-static std::atomic<bool> g_enabled, g_ready, g_open, g_wants_text;
+static std::atomic<bool> g_enabled, g_ready, g_open;
 static std::atomic<bool> g_settings_open, g_forge_open;
 static std::atomic<bool> g_modal_open;  // (the thank-you, settings_panel.cpp: a menu as far as input goes, until it is closed)
 static int g_menu_key;
@@ -96,6 +97,19 @@ static void cjk_font_if_needed() {
 }
 static ImGuiStyle g_base_style;  // (unscaled; scaled copies follow the window's height)
 static float g_scale;
+// MHGU_PERF_OVERLAY_REUSE (read once, overlay_init): 1 frames of the touch controls alone that would come out the same
+// are not built again; 2 they are, and compared (a check); 0 every frame built (1, the default)
+static int g_perf_overlay_reuse;
+static bool g_reuse_last;  // (the frame built last had the touch controls alone, and uploaded no texture)
+static uint32_t g_reuse_w, g_reuse_h;
+static uint64_t g_reuse_built_ns, g_reuse_log_ns, g_reuse_n[2];
+static int g_reuse_bad;
+#ifdef __ANDROID__
+// MHGU_PERF_MENU_PRESENT=1: while the settings menu holds the game, the held picture is presented again only when the
+// menu's frame changed (snap_same), when the window needs one (back from the background, a new size: vk_present_needed)
+// and once a second; the menu is still built 60 times a second, so it moves as before. 0 (the default): every pass
+static bool g_perf_menu_present, g_perf_menu_log;  // (log: the variable set, 0 or 1: the hold's presents counted)
+#endif
 
 // ------------------------------------------------------------------ input (main thread -> game thread)
 struct Ev {
@@ -109,7 +123,6 @@ struct Ev {
     char text[32];
 };
 static std::mutex g_in_lock;
-static char g_composing[256];  // (the system keyboard's text not yet committed: overlay_composition)
 static std::vector<Ev> g_in;
 static OverlayPad g_pad;
 
@@ -268,18 +281,10 @@ bool overlay_event(const SDL_Event *e) {
                          (e->key.mod & SDL_KMOD_ALT));
         return !port_key;
     }
-    case SDL_EVENT_TEXT_INPUT: {
+    case SDL_EVENT_TEXT_INPUT:
         v.kind = Ev::TEXT;
         SDL_strlcpy(v.text, e->text.text, sizeof v.text);
-        std::lock_guard<std::mutex> l(g_in_lock);
-        g_composing[0] = 0;  // (committed: it comes as this text)
         break;
-    }
-    case SDL_EVENT_TEXT_EDITING: {
-        std::lock_guard<std::mutex> l(g_in_lock);
-        SDL_strlcpy(g_composing, e->edit.text ? e->edit.text : "", sizeof g_composing);
-        return true;
-    }
     case SDL_EVENT_WINDOW_FOCUS_LOST: case SDL_EVENT_WINDOW_FOCUS_GAINED:
         v.kind = Ev::FOCUS, v.down = e->type == SDL_EVENT_WINDOW_FOCUS_GAINED;
         queue(v);
@@ -298,13 +303,6 @@ void overlay_pad(const OverlayPad *p) {
 
 bool overlay_enabled(void) { return g_enabled; }
 bool overlay_menu_open(void) { return g_open; }
-
-bool overlay_wants_text(void) { return g_wants_text; }
-
-void overlay_composition(char *out, size_t size) {
-    std::lock_guard<std::mutex> l(g_in_lock);
-    SDL_strlcpy(out, g_open ? g_composing : "", size);
-}
 
 static void apply_input(ImGuiIO &io) {
     std::vector<Ev> evs;
@@ -477,12 +475,20 @@ void overlay_init(const char *font_path, float font_size, int menu_key) {
         if (!font_path && access(p, R_OK) == 0) font_path = p;
 #endif
     ImFont *font = font_path ? io.Fonts->AddFontFromFileTTF(font_path, g_font_size, &cfg) : nullptr;
-    bool builtin = !font;  // (ImGui's own font: no file of the player's)
     g_main_font = font ? font : io.Fonts->AddFontDefaultVector(&cfg);
+#ifdef __ANDROID__
+    // (the titles' serif, as the game's own and the MH4U port's: the second font, settings_panel.cpp title_font; a phone
+    // without one has the main font there)
+    const char *serif = nullptr;
+    for (const char *p : {"/system/fonts/NotoSerif-Bold.ttf", "/system/fonts/NotoSerif-Regular.ttf"})
+        if (!serif && access(p, R_OK) == 0) serif = p;
+    if (serif && io.Fonts->AddFontFromFileTTF(serif, g_font_size, &cfg))
+        LOG("[forge] titles in %s\n", serif);
+#endif
 #ifdef _WIN32
     // (ImGui's own font has Latin-1 only: what it lacks - the thank-you's em dash, a licence's quotes, a chat line in another
     // script - comes from Windows' Segoe UI, merged after it; the font itself stays as it was)
-    if (builtin) {
+    if (!font) {
         const char *windir = getenv("WINDIR");
         std::string fallback = std::string(windir && *windir ? windir : "C:/Windows") + "/Fonts/segoeui.ttf";
         ImFontConfig merge;
@@ -497,6 +503,19 @@ void overlay_init(const char *font_path, float font_size, int menu_key) {
     ImGui::GetStyle().FontSizeBase = g_font_size;
     g_base_style = ImGui::GetStyle();
     g_menu_key = menu_key;
+#ifdef __ANDROID__
+    {
+        const char *e = getenv("MHGU_PERF_MENU_PRESENT");  // (read once: the menu hold's presents, menu_holds_game)
+        g_perf_menu_present = e && atoi(e) == 1, g_perf_menu_log = e != nullptr;
+        if (e) LOG("[perf] MHGU_PERF_MENU_PRESENT=%d\n", (int)g_perf_menu_present);
+    }
+#endif
+    {
+        const char *e = getenv("MHGU_PERF_OVERLAY_REUSE");  // (read once: frame_once)
+        g_perf_overlay_reuse = e ? std::clamp(atoi(e), 0, 2) : 1;  // (unset: on)
+        if (g_perf_overlay_reuse) touch_reuse_begin();
+        if (e) LOG("[perf] MHGU_PERF_OVERLAY_REUSE=%d\n", g_perf_overlay_reuse);
+    }
     g_enabled = true;
     LOG("[forge] ImGui %s overlay: %s opens the menu (font %s, %.0f px)\n", IMGUI_VERSION,
         SDL_GetScancodeName((SDL_Scancode)menu_key), font ? font_path : "ImGui's", g_font_size);
@@ -552,6 +571,42 @@ static void menu_hint(uint64_t now) {
     LOG("[overlay] notice: F1 opens the settings menu (MenuHintSeen = Off)\n");
 }
 #endif
+
+// A copy of the game's files cut short (romfs.c romfs_incomplete: under 12.0 GB, or empty files) starts, then closes or
+// draws black somewhere later (#106): a few seconds into each start, once nothing else is shown, the player is told.
+static const uint64_t ROMFS_NOTICE_NS = 8000000000ull;  // (after the first frame the overlay drew)
+static void romfs_notice(uint64_t now) {
+    static uint64_t first;
+    static bool done;
+    if (done) return;
+    double gb = 0;
+    int empty = 0;
+    if (!romfs_incomplete(&gb, &empty)) {
+        done = true;
+        return;
+    }
+    if (!first) first = now;
+    if (now - first < ROMFS_NOTICE_NS || notice_due(now) || settings_panel_credits_up()) return;
+    done = true;
+    int lang = config_language();
+    char size[16], text[400];
+    snprintf(size, sizeof size, "%.1f", gb);
+    if (lang == 1)
+        for (char *c = size; *c; c++)
+            if (*c == '.') *c = ',';  // (Spanish: 11,5)
+    if (gb < 12.0)
+        snprintf(text, sizeof text,
+                 settings_text(lang, "The romfs folder holds %s GB of the game's 12.3 GB: some files were cut short when they were "
+                                     "copied. If the game closes or shows black, copy the romfs folder to the device again."),
+                 size);
+    else
+        snprintf(text, sizeof text,
+                 settings_text(lang, "%d of the romfs folder's files are empty: they were cut short when they were copied. If the "
+                                     "game closes or shows black, copy the romfs folder to the device again."),
+                 empty);
+    overlay_notice(settings_text(lang, "Game files incomplete"), text);
+    LOG("[overlay] notice: the game's files look incomplete (%s GB, %d empty)\n", size, empty);
+}
 
 static void draw_notice(uint64_t now, float scale) {
     std::string title, text;
@@ -643,6 +698,7 @@ static void draw_chat(const char *line, uint64_t now, float scale) {
 // ------------------------------------------------------------------ frames (game thread)
 static std::mutex g_snap_lock;  // the copy the render thread draws
 static ImDrawData g_snap;
+static uint32_t g_snap_gen;  // (counts the copies: overlay_draw's turned one is made again for a new one)
 static std::atomic<uint32_t> g_disp_w, g_disp_h;
 static bool g_plugins_init;
 static uint64_t g_last_ns;
@@ -654,35 +710,92 @@ static void snap_clear(void) {
     g_snap.Valid = false;
 }
 
-// A texture ImGui wants made whose descriptor set could not be had (VK_ERROR_OUT_OF_POOL_MEMORY: the backend's pool
-// full). The backend still made its image, gave it a null set and marked it ready, and the next draw naming it
-// asserts ("ImDrawCmd is referring to ImTextureData that wasn't uploaded"). Undo it and ask again next frame, by
-// when textures ImGui let go of (an outgrown font atlas: freed after ImageCount frames) have freed their sets.
-// VkOverlayTex: the backend's ImGui_ImplVulkan_Texture (imgui_impl_vulkan.cpp, internal to it), field for field.
-#ifndef MHGU_NULL_BACKEND
-struct VkOverlayTex { VkDeviceMemory memory; VkImage image; VkImageView view; VkDescriptorSet set; };
-static VkDevice g_dev;
-static bool tex_create_failed(ImTextureData *tex) {
-    VkOverlayTex *bt = (VkOverlayTex *)tex->BackendUserData;
-    if (!bt || bt->set != VK_NULL_HANDLE) return false;
-    static int logged;
-    if (logged++ < 8) LOG("[forge] ImGui texture %dx%d: no descriptor set free, again next frame\n", tex->Width, tex->Height);
-    vkDestroyImageView(g_dev, bt->view, nullptr);
-    vkDestroyImage(g_dev, bt->image, nullptr);
-    vkFreeMemory(g_dev, bt->memory, nullptr);
-    IM_FREE(bt);
-    tex->BackendUserData = nullptr;
-    tex->SetStatus(ImTextureStatus_WantCreate);
+static void frame_once(void *cpu);
+// (MHGU_PERF_MENU_PRESENT=1, the settings menu holding the game) the frames built since the start whose draw lists
+// differ from the one before (or that uploaded a texture): the hold presents the last picture again only when this
+// moved, so an unchanged menu is not drawn into the window again with the very same pixels
+static uint64_t g_snap_seq;
+static bool g_snap_compare;  // (set by the hold: frame_once compares each new frame with the one before)
+// Every ImDrawList the render thread would draw, byte for byte (the commands, their textures and clip rectangles, the
+// indices and the vertices) and the display's place and size: the same picture
+static bool snap_same(const ImDrawData *dd) {
+    if (!g_snap.Valid || g_snap.CmdListsCount != dd->CmdListsCount || g_snap.TotalVtxCount != dd->TotalVtxCount ||
+        g_snap.TotalIdxCount != dd->TotalIdxCount || g_snap.CmdLists.Size != dd->CmdLists.Size)
+        return false;
+    if (memcmp(&g_snap.DisplayPos, &dd->DisplayPos, sizeof dd->DisplayPos) ||
+        memcmp(&g_snap.DisplaySize, &dd->DisplaySize, sizeof dd->DisplaySize) ||
+        memcmp(&g_snap.FramebufferScale, &dd->FramebufferScale, sizeof dd->FramebufferScale))
+        return false;
+    for (int i = 0; i < dd->CmdLists.Size; i++) {
+        const ImDrawList *a = dd->CmdLists[i], *b = g_snap.CmdLists[i];
+        if (a->CmdBuffer.Size != b->CmdBuffer.Size || a->IdxBuffer.Size != b->IdxBuffer.Size ||
+            a->VtxBuffer.Size != b->VtxBuffer.Size || a->Flags != b->Flags)
+            return false;
+        for (const ImDrawCmd &c : a->CmdBuffer)
+            if (c.UserCallback) return false;  // (a callback's data is not copied with the list: never taken as the same)
+        if (memcmp(a->CmdBuffer.Data, b->CmdBuffer.Data, (size_t)a->CmdBuffer.Size * sizeof(ImDrawCmd)) ||
+            memcmp(a->IdxBuffer.Data, b->IdxBuffer.Data, (size_t)a->IdxBuffer.Size * sizeof(ImDrawIdx)) ||
+            memcmp(a->VtxBuffer.Data, b->VtxBuffer.Data, (size_t)a->VtxBuffer.Size * sizeof(ImDrawVert)))
+            return false;
+    }
     return true;
 }
-#else
-static bool tex_create_failed(ImTextureData *) { return false; }
+#ifdef __ANDROID__
+extern "C" bool ldn_net_up(void);
+extern "C" void vi_menu_hold(bool on);
+extern "C" bool vk_present_again(void);
+extern "C" bool vk_present_needed(void);
+extern "C" uint64_t vk_last_present_ns(void);
+// The settings menu, or the touch controls' layout editor opened from it, is open and the player plays alone
+// ([Application] PauseInMenu; never with others: a Local Play or hub network up)
+static bool menu_holds_game(void) {
+    return g_ready && ((g_settings_open && !g_modal_open) || touch_editor_open()) && config_live_pause_menu() && !ldn_net_up();
+}
 #endif
 
 void overlay_frame(void *cpu) {
     // (once a frame on the game's update thread: with [Application] PauseInBackground the game stops here while the app
     // is in the background, its clock held: runtime/hle/vi.c)
     vi_pause_game();
+    frame_once(cpu);
+#ifdef __ANDROID__
+    // (the settings menu open, playing alone: the game waits here, as on the console's HOME menu - gu-native #94. The menu
+    // goes on being drawn, over the last picture presented again once the game's own presents have stopped)
+    if (menu_holds_game()) {
+        vi_menu_hold(true);
+        touch_game_held(true);
+        uint64_t next = plat_now_ns();
+        uint64_t shown_seq = ~0ull, shown_ns = 0, skipped = 0, presented = 0;  // (MHGU_PERF_MENU_PRESENT)
+        g_snap_compare = g_perf_menu_present;
+        while (menu_holds_game()) {
+            if (touch_editor_step()) break;  // (a part of the HUD dragged in the editor: a step of the game draws it there)
+            next += 16666667;
+            uint64_t now = plat_now_ns();
+            if (next < now) next = now;
+            plat_sleep_until_ns(next);
+            vi_pause_game();  // (the app went to the background meanwhile)
+            frame_once(cpu);
+            now = plat_now_ns();
+            if (now - vk_last_present_ns() > 50000000ull) {
+                if (!g_perf_menu_present || g_snap_seq != shown_seq || now - shown_ns >= 1000000000ull || vk_present_needed()) {
+                    if (vk_present_again()) shown_seq = g_snap_seq, shown_ns = now;
+                    presented++;
+                } else {
+                    skipped++;
+                }
+            }
+        }
+        g_snap_compare = false;
+        if (g_perf_menu_log)
+            LOG("[perf] menu hold: %llu presents, %llu unchanged frames not presented again\n", (unsigned long long)presented,
+                (unsigned long long)skipped);
+        touch_game_held(false);
+        vi_menu_hold(false);
+    }
+#endif
+}
+
+static void frame_once(void *cpu) {
     if (!g_ready) return;
     // (the menu closed: its state let go here, drawn - the credits - only inside the frame below: before the first frame
     // there is no font, the credits' text measured with none faulted at the first frame - "accessing 0" under
@@ -694,24 +807,45 @@ void overlay_frame(void *cpu) {
 #ifndef __ANDROID__
     menu_hint(now);
 #endif
+    romfs_notice(now);
     if (g_modal_open) notice_hold(now);
     bool notice = notice_due(now);
     char line[256];
     bool chat = chat_composing(line, sizeof line);
     ImGuiIO &io = ImGui::GetIO();
-    g_wants_text = g_open && io.WantTextInput;  // (last frame's: a Forge plugin's text box has the focus; runtime/textinput.c)
     bool touch = touch_drawn();  // (hidden, the settings button still shows)
     bool stats = perfstats_visible();  // ([Performance] ShowStats: runtime/perfstats.cpp)
     bool fading = settings_panel_fading();  // (the settings menu closed a moment ago: fading out, taking no input)
     if (!open && !free_render && !notice && !chat && !touch && !stats && !credits && !fading) {  // (nothing to draw)
         std::lock_guard<std::mutex> l(g_snap_lock);
-        if (g_snap.Valid) snap_clear();
+        if (g_snap.Valid) snap_clear(), g_snap_seq++;
         apply_input(io);  // (keep the queue short)
         g_last_ns = 0;
         return;
     }
     uint32_t w = g_disp_w, h = g_disp_h;
     if (!w || !h) return;
+    // MHGU_PERF_OVERLAY_REUSE=1: a frame with the touch controls alone (no menu, notice, chat, stats, credits or plugin's
+    // drawing) whose controls would draw the very same lists as the frame built last (touch_draw_unchanged: nothing of
+    // theirs moving, nothing they show changed) is not built again: the render thread draws the copy it has (g_snap), as
+    // it does every frame. Once a second it is built anyway. =2, a check: such frames are built, compared with the copy
+    // (snap_same) and a difference logged
+    bool alone = touch && !open && !free_render && !notice && !chat && !stats && !credits && !fading && !g_modal_open &&
+                 !g_settings_open && !g_forge_open && !settings_panel_confirming();
+    bool same = g_perf_overlay_reuse && alone && g_reuse_last && g_snap.Valid && w == g_reuse_w && h == g_reuse_h &&
+                now - g_reuse_built_ns < 1000000000ull && touch_draw_unchanged((float)w, (float)h);
+    if (g_perf_overlay_reuse && now - g_reuse_log_ns >= 60000000000ull) {
+        if (g_reuse_log_ns)
+            LOG("[perf] overlay: %llu frames built, %llu %s (a minute)\n", (unsigned long long)g_reuse_n[0],
+                (unsigned long long)g_reuse_n[1], g_perf_overlay_reuse == 1 ? "drawn again unbuilt" : "checked");
+        g_reuse_n[0] = g_reuse_n[1] = 0, g_reuse_log_ns = now;
+    }
+    g_reuse_n[same]++;
+    if (same && g_perf_overlay_reuse == 1) {
+        apply_input(io);  // (keep the queue short: nothing reaches it with no menu open)
+        g_last_ns = now;
+        return;
+    }
     io.DisplaySize = ImVec2((float)w, (float)h);
     io.DisplayFramebufferScale = ImVec2(1, 1);
     float scale = std::max(1.0f, h / 720.0f);  // (Forge's sizes are for the console's 720p screen)
@@ -779,21 +913,24 @@ void overlay_frame(void *cpu) {
     settings_panel_after_render(ImGui::GetDrawData());
 
     ImDrawData *dd = ImGui::GetDrawData();
-    bool tex_failed = false;
+    bool uploaded = false;
     if (dd->Textures)  // (texture uploads: on this thread, between the render thread's submissions)
         for (ImTextureData *tex : *dd->Textures)
             if (tex->Status != ImTextureStatus_OK) {
-                bool create = tex->Status == ImTextureStatus_WantCreate;
                 vk_lock();
                 uint64_t t0 = HITCH_ON ? hitch_now() : 0;
                 ImGui_ImplVulkan_UpdateTexture(tex);
-                if (create && tex->TexID == ImTextureID_Invalid) tex_failed |= tex_create_failed(tex);
                 if (HITCH_ON) hitch_add(HC_OVERLAY_TEX, hitch_now() - t0, (uint64_t)tex->Width * tex->Height * 4);
                 vk_unlock();
+                uploaded = true;
             }
     std::lock_guard<std::mutex> l(g_snap_lock);
+    if (uploaded || !g_snap_compare || !snap_same(dd)) g_snap_seq++;  // (MHGU_PERF_MENU_PRESENT: a new picture)
+    if (same && !snap_same(dd) && g_reuse_bad++ < 20)  // (MHGU_PERF_OVERLAY_REUSE=2: the frame drawn again would differ)
+        LOG("[perf] overlay reuse check: a frame the key took as unchanged differs (%d lists, %d vertices; before %d, %d)\n",
+            dd->CmdListsCount, dd->TotalVtxCount, g_snap.CmdListsCount, g_snap.TotalVtxCount);
+    g_reuse_last = alone && !uploaded, g_reuse_w = w, g_reuse_h = h, g_reuse_built_ns = now;
     snap_clear();
-    if (tex_failed) return;  // (nothing drawn this frame: a draw naming a texture with no descriptor set is an assert)
     for (ImDrawList *list : dd->CmdLists) g_snap.CmdLists.push_back(list->CloneOutput());
     g_snap.CmdListsCount = dd->CmdListsCount;
     g_snap.TotalIdxCount = dd->TotalIdxCount;
@@ -803,6 +940,7 @@ void overlay_frame(void *cpu) {
     g_snap.FramebufferScale = dd->FramebufferScale;
     g_snap.Textures = nullptr;  // (done above)
     g_snap.Valid = true;
+    g_snap_gen++;
 }
 
 // ------------------------------------------------------------------ drawing (render thread)
@@ -829,9 +967,7 @@ void overlay_draw(VkCommandBuffer cb, const OverlayTarget *t) {
         info.QueueFamily = t->qfam;
         info.Queue = t->queue;
         info.PipelineCache = t->cache;
-        // One set per ImGui texture: the font atlases (a new texture each time one grows or is repacked, the old one freed
-        // ImageCount frames later; damage numbers at many sizes do that over and over) and the plugins' own. 16 ran out.
-        info.DescriptorPoolSize = 1024;
+        info.DescriptorPoolSize = IMGUI_IMPL_VULKAN_MINIMUM_SAMPLED_IMAGE_POOL_SIZE * 2;
         info.MinImageCount = 2;
         info.ImageCount = 8;  // (vertex buffers in turn: more than the frames ever in flight)
         info.PipelineInfoMain.RenderPass = t->pass;
@@ -844,10 +980,60 @@ void overlay_draw(VkCommandBuffer cb, const OverlayTarget *t) {
             return;
         }
         g_pass = t->pass;
-        g_dev = t->dev;
         g_ready = true;
     }
     std::lock_guard<std::mutex> l(g_snap_lock);
-    if (g_snap.Valid && g_snap.CmdListsCount) ImGui_ImplVulkan_RenderDrawData(&g_snap, cb);
+    if (!g_snap.Valid || !g_snap.CmdListsCount) return;
+    if (!t->turn) {
+        ImGui_ImplVulkan_RenderDrawData(&g_snap, cb);
+        return;
+    }
+    // The window image drawn turned for the panel (nvn/vulkan/device.c, MHGU_PERF_PREROTATE): a turned copy of the
+    // snapshot, made once for each (its vertices and clip rectangles a quarter turn round, onto the image's own size)
+    static ImDrawData rot;
+    static uint32_t rot_gen;
+    static int rot_turn;
+    if (!rot.Valid || rot_gen != g_snap_gen || rot_turn != t->turn) {
+        for (ImDrawList *d : rot.CmdLists) IM_DELETE(d);
+        rot.CmdLists.resize(0);
+        float w = g_snap.DisplaySize.x, h = g_snap.DisplaySize.y, ox = g_snap.DisplayPos.x, oy = g_snap.DisplayPos.y;
+        bool r90 = t->turn == 1;  // (else 270)
+        // The scissor of each command: the pixels ImGui's backend would take for it upright (the clip rectangle clamped
+        // to the picture, its start and its size each cut to whole pixels: a start of 252.5 and an end of 600.4 are
+        // columns 252 to 599), turned. Turned before it is cut, a clip rectangle that isn't on whole pixels took a column
+        // more or less than upright: at 270 degrees 262 pixels of the settings menu's list and text differed.
+        float sx = g_snap.FramebufferScale.x > 0 ? g_snap.FramebufferScale.x : 1, sy = g_snap.FramebufferScale.y > 0 ? g_snap.FramebufferScale.y : 1;
+        float fw = w * sx, fh = h * sy;  // (the picture's size in pixels, upright)
+        for (ImDrawList *src : g_snap.CmdLists) {
+            ImDrawList *d = src->CloneOutput();
+            for (ImDrawVert &v : d->VtxBuffer) {
+                float x = v.pos.x - ox, y = v.pos.y - oy;
+                v.pos = r90 ? ImVec2(h - y, x) : ImVec2(y, w - x);
+            }
+            for (ImDrawCmd &c : d->CmdBuffer) {
+                float x1 = (c.ClipRect.x - ox) * sx, y1 = (c.ClipRect.y - oy) * sy;  // (as imgui_impl_vulkan.cpp does)
+                float x2 = (c.ClipRect.z - ox) * sx, y2 = (c.ClipRect.w - oy) * sy;
+                x1 = x1 < 0 ? 0 : x1, y1 = y1 < 0 ? 0 : y1, x2 = x2 > fw ? fw : x2, y2 = y2 > fh ? fh : y2;
+                if (x2 <= x1 || y2 <= y1) {
+                    c.ClipRect = ImVec4(0, 0, 0, 0);  // (nothing: skipped there too)
+                    continue;
+                }
+                float X0 = (float)(int32_t)x1, Y0 = (float)(int32_t)y1, X1 = X0 + (float)(uint32_t)(x2 - x1), Y1 = Y0 + (float)(uint32_t)(y2 - y1);
+                ImVec4 r = r90 ? ImVec4(fh - Y1, X0, fh - Y0, X1) : ImVec4(Y0, fw - X1, Y1, fw - X0);  // (whole pixels, turned)
+                c.ClipRect = ImVec4(r.x / sy, r.y / sx, r.z / sy, r.w / sx);  // (back in its units: the turned picture's scale is (sy, sx))
+            }
+            rot.CmdLists.push_back(d);
+        }
+        rot.CmdListsCount = g_snap.CmdListsCount;
+        rot.TotalIdxCount = g_snap.TotalIdxCount;
+        rot.TotalVtxCount = g_snap.TotalVtxCount;
+        rot.DisplayPos = ImVec2(0, 0);
+        rot.DisplaySize = ImVec2(h, w);
+        rot.FramebufferScale = ImVec2(sy, sx);
+        rot.Textures = nullptr;
+        rot.Valid = true;
+        rot_gen = g_snap_gen, rot_turn = t->turn;
+    }
+    ImGui_ImplVulkan_RenderDrawData(&rot, cb);
 #endif
 }

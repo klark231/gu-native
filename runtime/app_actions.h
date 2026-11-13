@@ -11,6 +11,7 @@ void ui_request_licenses(void);
 void ui_request_game_folder(void);
 void ui_request_save_import(void);
 void ui_request_save_export(void);
+void ui_request_save_folder(void);  // Settings -> Save folder (Android's SaveFolderActivity; a PC's: not yet)
 void ui_request_share_log(void);
 void ui_request_import(int kind);  // the import screen (Android's ImportActivity): 0 cheats, 1 a mod, 2 DLC
 #ifdef __ANDROID__

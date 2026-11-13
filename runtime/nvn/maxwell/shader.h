@@ -95,6 +95,10 @@ typedef struct {
                      // [GMAP_MAX].x = count)
 extern uint64_t maxwell_gmem_base, maxwell_gmem_size;
 extern bool maxwell_no_int64;
+// GLSL performance switches (set before translating; on by default, nvn/vulkan/device.c): fmin / fmax / saturate as GLSL.std.450 NMin /
+// NMax / NClamp (GL_EXT_spirv_intrinsics); a varying read as interpolated, where the shader multiplies it by w and by 1 / w;
+// maxwell_vs_trim: the renderer calls maxwell_trim_outputs
+extern bool maxwell_nminmax, maxwell_ipa_fold, maxwell_vs_trim;
 // Debug: when translating the shader whose code starts at maxwell_dbg_code, output register
 // maxwell_dbg_reg as captured after the instruction at maxwell_dbg_pc (greyscale, all targets).
 extern const uint8_t *maxwell_dbg_code;
@@ -107,5 +111,7 @@ extern const uint8_t *maxwell_dbg_vs;
 // code: shader binary (with the 0x50-byte SPH header for graphics stages)
 ShaderInfo *maxwell_translate(const uint8_t *code, size_t max_size, int stage, const ShaderKey *key);
 void maxwell_free(ShaderInfo *s);
+// A vertex shader's (GLSL) outputs not in keep, a fragment shader's attr_mask, become plain variables, not outputs.
+void maxwell_trim_outputs(ShaderInfo *vs, uint32_t keep);
 // Disassemble for debugging (writes text to f).
 void maxwell_disassemble(const uint8_t *code, size_t max_size, int stage, void *file);

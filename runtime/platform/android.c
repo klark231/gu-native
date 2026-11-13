@@ -564,11 +564,30 @@ void plat_sleep_until_ns(uint64_t t) {
     }
 }
 
+// (MHGU_PERF_SLEEP_COARSE) No 1 us timer slack set (a thread that never asked for a precise sleep keeps the system's
+// 50 us, and the kernel may wake it with others) and no yield spin over the last 50 us: one syscall, a little later.
+void plat_sleep_coarse_until_ns(uint64_t t) {
+    struct timespec due = {(time_t)(t / 1000000000ull), (long)(t % 1000000000ull)};
+    while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &due, NULL) == EINTR) {}
+}
+
 // ---- process
+static int g_thread_names;  // MHGU_PERF_THREADNAMES (plat_thread_name; set by plat_init, before the runtime's threads)
+
 void plat_init(void) {
     // send() on a dropped Local Play connection gives EPIPE here instead of killing the process: Windows reports
     // WSAEPIPE to the caller, which is what nn::socket expects.
     signal(SIGPIPE, SIG_IGN);
+    const char *e = getenv("MHGU_PERF_THREADNAMES");
+    __atomic_store_n(&g_thread_names, e ? atoi(e) > 0 : true, __ATOMIC_RELEASE);  // (unset: on)
+}
+
+// (platform.h) The kernel keeps 15 characters of it: a longer name is cut, never refused.
+void plat_thread_name(const char *name) {
+    if (!__atomic_load_n(&g_thread_names, __ATOMIC_ACQUIRE)) return;
+    char n[16];
+    snprintf(n, sizeof n, "%s", name);
+    pthread_setname_np(pthread_self(), n);
 }
 
 unsigned long plat_process_id(void) { return (unsigned long)getpid(); }
@@ -592,6 +611,7 @@ bool plat_exe_path(char *buf, size_t size) {
 static bool g_own_log;
 
 static void *log_tee(void *arg) {
+    plat_thread_name("logtee");
     struct { int fd; FILE *log; } *t = arg;
     char buf[4096], line[4096];
     size_t n = 0;

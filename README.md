@@ -11,6 +11,7 @@ Made with Claude Code (Opus 5.5). Many of the decisions were my own, because AI 
 [Lee esta guía en español](README.es.md)
 
 The newest version is on [Releases](../../releases/latest): the APK for Android and `MHGU-PC-<version>.zip` for PC.
+Talk with other players and ask for help in the community's [Discord](https://discord.gg/sk5xEjEMwF).
 
 ## Contents
 
@@ -32,36 +33,36 @@ The newest version is on [Releases](../../releases/latest): the APK for Android 
 
 #### Touch controls for the hunt
 
-- **Movement:** a fixed pad that doesn't follow your finger. Drag past its edge to run; this turns off while your weapon is out, so you don't run off in the middle of a fight
+- **Movement:** a fixed pad that doesn't follow your finger. Drag past its edge to run; this turns off while your weapon is out, so you don't run off in the middle of a fight. Slide up onto the small circle with a padlock that shows above the pad, which lights up, and lift your thumb there: the run locks and the hunter keeps running forward, and you steer with the camera, until you touch the pad or the circle again, draw your weapon or open a menu. To run only while you hold a button instead: under the gear, **Controls**, **Buttons on the screen**, turn off **Run with the stick**, and a **Run** button shows above the attacks
 - **Camera:** drag anywhere on the screen to turn it, as in a phone game. A double tap centers it
-- **Monster lock-on:** tap the target icon and the camera follows the monster until you tap it again, as in the newer Monster Hunter games. It only follows a monster in your zone. You can turn it off under the gear, **Controls**, **Lock-on**: the icon then turns the camera once, as in the original game
-- **A layout of their own for bows and bowguns:** with one in hand, in a hunt, the controls change by themselves: a large fire button under your thumb, reload, the scope with a tap or quick aim if you hold it, crouching fire, and arrows for the ammo. Drag on the fire button while you hold it to aim. It follows the game's Bow Controls option and has its own place in the editor
+- **Monster lock-on:** tap the padlock by **L**, or hold **L**, and the camera keeps turning to the monster until you do it again, as in the newer Monster Hunter games and the MH4U port. It follows the monster the game's Target Cam has chosen, or the nearest one if none is chosen; the target button (**ZL**, or whatever your **Control Type** uses) moves it to the other monster. With the game's **L/R Button Controls** swapped, the target button and **L**'s button swap as the game does: their badges show what each presses. Turning the camera yourself, or pressing **L**, only pauses it for a moment, and it only follows a monster in your zone. You can turn it off under the gear, **Controls**, **Lock-on (hold L)**
+- **A layout of their own for bows and bowguns:** with one in hand, in a hunt, the controls change by themselves: a large fire button under your thumb, reload, the scope with a tap or quick aim if you hold it, crouching fire, and arrows for the ammo (hold one to keep changing). Drag on the fire button while you hold it to aim. It follows the game's Bow Controls option and has its own place in the editor
 - **Change ammo with a swipe:** besides the arrows, swipe up or down on the item bar. The game's list now shows whole, with each ammo's name
-- **Shots with a monster locked on:** they go toward the middle of its body, even if it is higher or lower than you. To raise the shot, a bowgun goes into quick aim for a moment. Without the lock you aim as always
-- **Items:** the bar sits at the bottom center. Tap it to use the item and swipe it to change the item; a quick swipe no longer uses it by mistake. You can also turn on arrows beside it: under the gear, **Controls**, **Buttons on the screen**, **Item arrows**
-- **Hunter Arts:** tap each one's panel to use it
-- **Attacks:** three layouts to choose from: a diagonally split pill, separate buttons, or a U-shaped band in the corner of the screen
+- **Shots with a monster locked on:** a shot from a normal stance goes toward the middle of its body, even if it is higher or lower than you. To raise the shot, a bowgun goes into quick aim for a moment. Your own aim, crouching fire and the styles' moves are left to you, and without the lock you aim as always
+- **Items:** the bar sits at the bottom center. Tap it to use the item and swipe it to change the item; a quick swipe no longer uses it by mistake. Hold your finger on it to see the items before and after the selected one, as the game shows them while L is held: swipe meanwhile to turn it, and lift to close it without using anything. Arrows on each side of it turn it too (to hide them: under the gear, **Controls**, **Buttons on the screen**, **Item bar arrows**). As a Prowler, the arrows and the swipe change the Support Move
+- **Hunter Arts:** tap each one's panel to use it. It presses what the game's **Control Type** option uses for that art (types 1 to 4, and **L/R Button Controls** and **R Stick Controls** too), and it works with a controller connected as well
+- **Attacks:** three layouts to choose from: a diagonally split pill, separate buttons, or a U-shaped band in the corner of the screen. With **Keep guarding while sliding** on (under **Buttons on the screen**), a thumb that slides from guard onto the attacks keeps guarding, for moves like a lance's counter
 - **Other buttons:** dodge, guard and sheathe, each with its own icon
-- **Traditional layout:** under the gear, **Controls**, **Touch layout**. Instead of the controls changing with what you do (the menus', the bows' and bowguns'), you get an emulator's: A B X Y in a diamond, L R ZL ZR, + and -, the d-pad and the stick, always the same, with plain lettered buttons. It has its own layout in the editor (`touch_layout_traditional.txt`), apart from the Adaptive one, and **Run with the stick** decides whether the stick runs past its rim or the R button runs. In menus, move with the d-pad and confirm with A
 
 #### Menus and comfort
 
-- **Menus made for your thumb:** nothing of the layout changes when a menu of the game's opens: a small pad shows and moves the cursor, with the page buttons above it. The movement stick keeps walking (where the hunter can't walk, as at a town's item box or a shop, it moves the cursor), A and B stay where they are, and dragging on the screen moves the cursor too. The pad is moved and resized in the editor like the other buttons. To hide it: under the gear, **Controls**, **Buttons on the screen**, **Menu pad**
-- Your phone's keyboard works for typing your character's name
+- **Menus made for your thumb:** nothing of the layout changes when a menu of the game's opens: a small pad shows and moves the cursor, with the page buttons above it. The movement stick keeps walking (where the hunter can't walk, as at a town's item box or a shop, it moves the cursor; where the game shows a model, as at the smithy, the stick and dragging turn it, as on a controller), A and B stay where they are, and dragging on the screen moves the cursor too. The pad is moved and resized in the editor like the other buttons. To hide it: under the gear, **Controls**, **Buttons on the screen**, **Menu pad**
+- Your phone's keyboard works for typing your character's name, and in the settings menu's text with **Phone keyboard** (Enter accepts; Back hides the keyboard and keeps what you typed); the menu's own keys stay for a controller
 - The settings menu works by touch and matches the game's look
 - **Faster drinking and eating:** two optional cheats, off by default, under the gear, **Cheats**. They speed up the animation x1.7 or x2.5, but they don't let you walk while drinking
 - **Your own cheats and mods:** see [Cheats and mods](#cheats-and-mods)
 - Import your save from an emulator, another device or the PC game, and export it to take it there: see [Saves](#saves)
-- The game pauses by itself when you leave the app
+- The game pauses by itself when you leave the app, and while the settings menu is open if you play alone
 - Vibration on button taps, and the game's rumble on your phone, with or without a controller
 
 #### Customization
 
 - Press and hold the gear to open the editor (or **Controls**, **Customize controls and HUD**): move and resize each button, and move, resize or hide each part of the game's HUD: the clock, health and stamina, the sharpness and gauges, the party, the map, the target camera, the item bar and the Hunter Arts. Outside a hunt, frames show where each part goes, each with its name. A part you put over a button turns red, and so does the button; the default layout shows no red. The item bar can't be hidden there: it is how you pick and use items with your fingers
+- The editor's panel moves out of the way of what you are placing: drag it by its title (the grips at its ends). Tap its title and - / + or a pinch make it smaller, down to 60 %. It stays where you leave it, and as big
 - A part you moved stays where you put it: a chat line, a bow's or a bowgun's aim and the Quest Complete stamp no longer send it back to the game's place, and it doesn't jump when a menu of the game's opens. A part that would sit over that menu's window hides until the menu closes
 - The game's HUD is rearranged to stay clear of your thumbs (**Move the HUD for touch**). Turned off, the HUD is the same as with a controller. The editor's **HUD: controller** button arranges the HUD you get with a controller, without connecting one, and a controller's B closes the editor without saving
 - Adjustable control opacity and camera speed
-- **Buttons on the screen:** under the gear, **Controls**, **Buttons on the screen**, choose which ones show. You can add L, ZL, ZR, -, the d-pad and the stick clicks, which are hidden by default. In town ZL always shows, because it opens the multiplayer menu. In the game's menus you can add ZL and ZR too (**ZL in menus**, **ZR in menus**), which some menus use to change sections or show more information
+- **Buttons on the screen:** under the gear, **Controls**, **Buttons on the screen**, choose which ones show. You can add L, ZL, ZR, -, the d-pad and the stick clicks, which are hidden by default (the d-pad gives way to the menu pad while a menu of the game's is open). In town ZL always shows, because it opens the multiplayer menu. In the game's menus you can add ZL and ZR too (**ZL in menus**, **ZR in menus**), which some menus use to change sections or show more information
 - **Combined buttons:** on that same page, make up to 6 buttons of your own that press several at once, such as A+X. Place them with the editor, and you can also put them on a controller button
 
 #### Display and performance
@@ -71,8 +72,9 @@ The newest version is on [Releases](../../releases/latest): the APK for Android 
 - Adjustable 3D resolution, down to 25%, to gain performance on modest devices
 - **Shadows:** turn them off for more speed, under the gear, **Graphics & Audio**, **Shadows**. On a Moto g06 it cut the GPU's work per frame by about 15% in a hunt
 - **Low-end mode:** for weak phones. It turns off bloom, depth of field and shadows, uses lighter textures and keeps the HUD sharp over a smaller 3D picture
-- **Toaster mode:** the third choice of Low-end mode, for the weakest phones and for the battery: 25% 3D resolution, 30 fps, no reverb, and a lighter HUD and textures still. On a Moto g06 it held 30 fps and used about a third less power than Low-end mode at 60 fps
+- **Toaster mode:** the third choice of Low-end mode, for the weakest phones and for the battery: 25% 3D resolution, 30 fps, no reverb or grass, and a lighter HUD and textures still. On a Moto g06 it held 30 fps and used about a third less power than Low-end mode at 60 fps
 - **Bloom and depth of field** and **Reverb** (gear, **Graphics & Audio**): switches of their own. Off, the GPU or the processor does less
+- **Grass** (gear, **Graphics & Audio**): off, the tall grass and foliage of the maps are left out, faster where there is a lot of it (the Marshland's area 8)
 - Optional FPS and temperature counter
 - Uses less memory on devices with Mali GPUs and on phones with little RAM
 - The screen follows your FPS limit: at 60 fps it runs at 60 Hz even if it can do 120
@@ -85,7 +87,7 @@ The newest version is on [Releases](../../releases/latest): the APK for Android 
 
 - The touch controls hide as soon as you connect one and come back when you disconnect it, with no restart
 - The gear stays on the screen, so you can always open the settings. You can also press **+** and **-** together
-- Clicking the right stick locks onto the monster. While the lock is on, a padlock shows by the target icon, and a bowgun's shots aim at the monster's body, as with the touch controls
+- Clicking the right stick locks onto the monster (with the game's **Control Type 3**, whose click changes the target, hold it instead). While the lock is on, a padlock shows by the target icon, and a bowgun's shots aim at the monster's body, as with the touch controls
 - **Any controller:** if the game doesn't read yours well, go to the gear, **Controls**, **Map a controller**, and press each button once. It's kept for that model. If a controller can't be read until it is mapped, the app tells you when you connect it
 
 ### How well does it run?
@@ -211,6 +213,23 @@ The save is the same on both, so you can take it either way:
 
 Importing replaces all the characters on the device it goes to, and the save it replaces is kept in a copy, as above.
 
+#### Choose where your save is kept
+
+The save is in the app's own folder unless you choose another one, for example a folder that a sync app (Syncthing,
+FolderSync and the like) shares with your other devices. Go to the gear, **Menu Options**, **Save folder**, and choose the
+folder:
+
+- Your save goes in a folder named `MHGU save` inside the one you choose, so one shared folder can hold MHGU's and MH4U for
+  Android's (`MH4U save`). A folder that already holds a save, such as one **Export save** made, is used as it is.
+- Your save is copied there before anything changes. If the folder already has a save, you choose which one stays; the
+  other is kept in a copy, in `save_backups` in the app's own folder.
+- The game restarts to use the folder: save first. **Use the game's own folder**, on the same screen, goes back.
+- On two devices, hunt on one at a time, and let the sync app finish before you open the game on the other.
+
+When the game starts it checks the folder. If it can't reach it, if it is empty but had a save, if the sync app kept two
+versions of the save, or if another device has the game open, it says so and lets you choose what to do. If the folder
+can't be reached at a save, that save stays on the device, and the next start asks which one to keep.
+
 ### Cheats and mods
 
 - **Cheats:** `.txt` files in Atmosphere's format, for version 1.4.0 (its build id is `FB08F1D20FD1204F`). Under the gear, **Cheats**, **Add cheats**, pick the file, and turn each one on in that same page. They start off.
@@ -227,36 +246,37 @@ Two devices on the same Wi-Fi can play together:
 1. Both go to town, tap **ZL** and choose **Connect**.
 2. One player (the host) chooses **Create Hub** and confirms with **X**.
 3. The other chooses **Search Hubs** and picks that hub.
-4. If the hub doesn't show up: under the gear, **Network**, **Search hosts**, enter the host's IP and search again.
+4. If the hub doesn't show up: under the gear, **Multiplayer**, **Search hosts**, enter the host's IP and search again.
 
 Creating a hub, finding it and joining it were tested on a Motorola and an Anbernic, but not a full quest yet.
 
 #### Over the internet
 
-To play with friends far away you need a hub server. By default the game uses two public ones, `hunterhubid-gu-hub.duckdns.org` and `morerokk-mhgurecomp-ldnserver.duckdns.org`: your hubs are listed on both and a search shows the hubs of both. Anyone can host another with the small program in the `server` folder (one port, 39510 by default; see `server/README.md`).
+The app comes with a hub server already set, `hunterhubid-gu-hub.duckdns.org`, which players of the community run (not this
+project). Everyone on the same server finds the others' hubs, with no ports to open.
 
-1. Under the gear, **Network**, **Internet hubs**, **Hub servers** lists the servers one to a row: change one, remove it, or **Add a server** (up to 8; a name or IP, and `:port` if it isn't 39510). **Restore the default servers** brings back the two above.
-2. **Check hub server** tells you whether they answer.
-3. Optional: everyone sets the same **Matchmaking key**, so only your group sees your hubs.
-4. **Show all hubs** asks each server several times per search, so every hub is in the numbered lists from the first search.
-5. **Direct connections** (on by default): when both players have it on and the hub server supports it, your games send their packets straight to each other for a lower ping, and fall back to the server when your routers don't allow it. The other player's game then sees your IP address; turn it off to always go through the server.
+1. Play as in [Local play](#local-play): one creates the hub, the others search for it. Hubs from the internet show up next
+   to the ones on your Wi-Fi.
+2. To play only with your friends: under the gear, **Multiplayer**, everyone enters the same **Matchmaking key**. Only
+   players with that key see your hubs.
+3. **Hub server** picks another server: **Custom...** to type one (a name or IP, and `:port` if it isn't 39510; the small
+   program in the `server` folder runs one, see `server/README.md`), or **Off** for your local network only. **Check hub
+   server** says whether it answers and how many hubs it lists.
+4. The servers and keys you type and save stay in their lists, the last one first (up to 24), to pick them again; the **×**
+   beside one takes it out.
 
-The game speaks link versions 2 (gu-native) and 3 (the MHGURecomp PC build) and lists your hub under both, so players of either find it, and a search asks for both. Without a matchmaking key your hub is also listed in the phones' public room (`public-phone`, link 3), where the MHGURecomp Android build looks.
-4. Then play as in [Local play](#local-play): one creates the hub, the others search for it.
+The first time you play online a notice says which server the game connects to: like any server on the internet, it sees
+your IP address.
 
 Without a server: put every device on the same VPN (for example Tailscale or ZeroTier) and enter the host's VPN IP under **Search hosts**.
 
-Play over the internet hasn't been tested on Android yet.
-
-A phone and a PC should be able to play in the same hub when both run the same version, but that hasn't been tested yet.
-
-#### Crossplay with emulators
-
-Under the gear, **Network**, **Crossplay** lets you play with people on console emulators: **Ryujinx** (RyuLdn servers), **Yuzu Room** (rooms made by Eden, Suyu, Yuzu or Citron), **Mixed** (both), **Citra Room** (Azahar / Citra rooms, with Monster Hunter XX players on the 3DS) or **All Rooms** (a hub you host is on your LAN and hub servers, in the Yuzu room and in the Citra room at once). Each family of rooms has its own submenu there, with a room browser. **Room nickname** is your name in the rooms. Everyone on Switch emulators needs the same game version (1.4.0). Small monster sync and HP scaling are off in those hubs.
+Phones and PCs with 0.1.6 or later meet in the same hubs, through the server or on the same Wi-Fi. Tested in 0.1.9: two
+phones in one hub through the default server with a matchmaking key, and a PC joining a phone's hub through the server and
+on the same Wi-Fi; a full quest together not yet.
 
 #### Monster HP and Village quests in the Hub
 
-Adjustable monster HP (gear, **Misc**) and Village quests in the Hub (gear, **Network**) come from MHGURecomp, the project this
+Adjustable monster HP (gear, **Gameplay**) and Village quests in the Hub (gear, **Multiplayer**) come from MHGURecomp, the project this
 one is based on. They haven't been fully tested on Android yet.
 
 ### Where things are kept
@@ -264,7 +284,7 @@ one is based on. They haven't been fully tested on Android yet.
 | What | Where |
 |---|---|
 | Settings, the touch layout and the HUD's, controller mappings, the log | `Android/data/com.mhgu.recomp/files`: `mhgurecomp.ini`, `touch_layout.txt`, `gamepad_mappings.txt`, `log.txt` (the session before: `log_prev.txt`) |
-| Saves | `Android/data/com.mhgu.recomp/files/MHGURecomp/save`. The save an import replaces goes to `save_backups`, beside it |
+| Saves | `Android/data/com.mhgu.recomp/files/MHGURecomp/save`, or the folder you chose in **Save folder**. The save an import replaces goes to `save_backups`, in `MHGURecomp` |
 | Cheats and mods you add | Your game folder's `cheats` and `mods` |
 
 ### Update to a new version
@@ -302,22 +322,29 @@ dots, **Add games**.
 | Problem | What to do |
 |---|---|
 | `python` is not recognized | Install Python again, tick **Add python.exe to PATH**, and open a new terminal |
+| "Failed to build installable wheels" for lz4 | The tool from 0.1.9 on reads the game code without the lz4 package when your Python can't install it: download it again |
 | "there is no exefs/main" | The path must be the folder that holds `exefs` and `romfs` |
 | "This exefs is not version 1.4.0" | Use the `exefs` with the 1.4.0 update |
 | "romfs is incomplete" | Use the base game's `romfs` with the update applied. It has 35,531 files |
 | "libmhgugame.so is missing" | Do step 2, then copy the two new files to the folder on your device |
 | "This libmhgugame.so is from another version" | A new app version needs it again: repeat step 2 with the new download |
+| The game files screen says "EACCES" or "open failed" | Another app (a file manager, for example through Shizuku) made the app's folder in `Android/data`. From 0.1.9 the app takes it back, or keeps its files in its private folder and says so |
 | The game closes by itself | Close other apps and lower the 3D resolution. It's usually a lack of memory |
 | Black picture with only the touch controls, or it closes when you press A | The copy of `romfs` to your device didn't finish. Copy it again and check that it takes up 12.3 GB |
+| The game says **Game files incomplete** | Some files of `romfs` were cut short while copying, and the game can close or draw black where it reads them. Copy `romfs` again and check that it takes up 12.3 GB |
 | It closes after a few minutes of play | Update to 0.1.6 or newer: it uses video memory differently on PowerVR GPUs. If it still happens, share the log: it notes the memory every minute |
 | On a weak phone it runs slowly | Turn on Low-end mode, turn off **Shadows**, and try a 3D resolution of 33% or 25%. Still slow: Low-end mode, **Toaster** |
 
-If it still fails, open an [issue](../../issues) with your device model and the log. If the game closes because of an error, a screen lets you
-share it; if not, it's under the gear, **Menu Options**, **Share log**. Don't attach game files.
+If it still fails, ask in the [Discord](https://discord.gg/sk5xEjEMwF) or open an [issue](../../issues) with your device model and the log. If the game closes because of an error, a screen lets you
+share it; if not, it's under the gear, **Menu Options**, **Share log**. If the screen stays black and you can't reach the gear, a long
+press on the app's icon offers **Share log** too. Don't attach game files.
 
 ## PC (Windows)
 
 The same game folder plays on a Windows PC: `MHGU.exe` runs your game natively.
+
+The download has the program only: the game code (`mhgugame.dll` and `mhgugame.id`) is made once from your own copy, in
+[Setup step 2](#step-2-create-the-game-code-1).
 
 ### What it does
 
@@ -328,8 +355,9 @@ The same game folder plays on a Windows PC: `MHGU.exe` runs your game natively.
 - **The right click is a second attack (A), only with the weapon out:** it never talks to people, opens or gathers by mistake
 - **Every key can be changed,** up to two per button, mouse buttons included: **F1**, **Controls**, **Keybinds**. The camera
   and your combined buttons can go on keys too
-- **Monster lock-on:** a tap on Alt (R3) keeps the camera on the monster, and a padlock shows by the target icon. A bowgun's
-  shots then aim at the monster's body. It can be turned off: **F1**, **Controls**, **Lock-on**
+- **Monster lock-on:** a tap on Alt (R3) keeps the camera on the monster, and a padlock shows by the target icon. A shot
+  from a normal stance then aims at the monster's body; your own aim, crouching fire and the styles' moves are left to you.
+  It can be turned off: **F1**, **Controls**, **Lock-on**
 - **Type with your keyboard:** your character's name, and a chat line in a hub with **/**, in a quest too
 - **A touch screen:** on a PC with one, the phone's touch controls show when you touch it (**Controls**, **Touch controls**),
   and **Customize controls and HUD** places them
@@ -390,7 +418,7 @@ More in [Graphics and frame rate](#graphics-and-frame-rate).
 
 If the Discord app is open on the same PC, your profile there shows what you're doing: where you are, the monsters you hunt,
 the map and area, how many hunters are with you, your weapon, and your hunter's name and HR. It is on by default. To turn it
-off: **F1**, **Network**, **Discord Rich Presence**. To leave out your name and HR: **Show hunter name and HR**. The game only
+off: **F1**, **Multiplayer**, **Discord Rich Presence**. To leave out your name and HR: **Show hunter name and HR**. The game only
 talks to the Discord app on your PC.
 
 ### How well does it run?
@@ -581,20 +609,21 @@ From **F1**, **Menu Options**:
 ### Multiplayer
 
 Local play and hubs over the internet work as on the phone, with the same code and the same settings, under **F1**,
-**Network**: see [Local play](#local-play) and [Over the internet](#over-the-internet). In town, press ZL (Tab) and choose
+**Multiplayer**: see [Local play](#local-play) and [Over the internet](#over-the-internet). In town, press ZL (Tab) and choose
 **Connect**.
 
 - **Create Hub** is confirmed with X: R on a keyboard.
 - The first time you create a hub, Windows Firewall asks whether MHGU may use the network. Allow it, or nobody can find or
   join your hub. Only the host needs this. If you said no: Windows Security, **Firewall & network protection**, **Allow an
   app through firewall**.
-- The search only asks the PC's main network. Over a VPN, such as Tailscale or ZeroTier, enter the host's IP under **Search
-  hosts** and restart the game.
-- A PC and a phone should be able to play in the same hub when both run the same version.
-- Adjustable monster HP (**Misc**, with HP for single quests under **Per-quest overrides**) and Village quests in the Hub
-  (**Network**) come from MHGURecomp.
+- The search asks every network the PC is on. Over a VPN, such as Tailscale or ZeroTier, you can also enter the host's IP
+  under **Search hosts** and restart the game.
+- A PC and a phone play in the same hub (0.1.6 or later on both).
+- Adjustable monster HP (**Gameplay**, with HP for single quests under **Per-quest overrides**) and Village quests in the Hub
+  (**Multiplayer**) come from MHGURecomp.
 
-None of this has been tested on PC yet, nor a PC and a phone together.
+Tested on PC: joining a phone's hub through the hub server and on the same Wi-Fi. Not yet: creating a hub on the PC (it
+needs the firewall's permission) and a full quest.
 
 ### Where things are kept
 
@@ -637,7 +666,7 @@ To open `%APPDATA%`, type it in File Explorer's address bar and press Enter.
 | "romfs is incomplete" | Use the base game's `romfs` with the update applied. It has 35,531 files |
 | "SDL3.dll was not found" | Unzip the whole zip into a folder first: `MHGU.exe` doesn't start from inside the zip |
 | Smart App Control blocked it | It blocks programs that aren't signed, with no **Run anyway**, and `MHGU.exe` isn't signed: it only runs with Smart App Control off (Windows Security, **App & browser control**, **Smart App Control settings**). Think it over first: on many versions of Windows it can't be turned back on without reinstalling Windows |
-| "mhgugame.dll is missing" | Do step 2 again with your folder: it adds the PC's game code |
+| "mhgugame.dll is missing" | The download doesn't include it: do [Setup step 2](#step-2-create-the-game-code-1) (`python build_game.py --pc <your folder>`) and choose that folder |
 | "This mhgugame.dll is from another version" | A new PC version needs it again: repeat step 2 with the new download |
 | "This processor lacks instructions the game code needs" | The PC game needs a processor with SSE4.2: see [What you need](#what-you-need-1) |
 | "This program must be called MHGU.exe" | Rename it back to `MHGU.exe` |
@@ -650,7 +679,7 @@ To open `%APPDATA%`, type it in File Explorer's address bar and press Enter.
 | It runs slowly | Lower **3D resolution** or turn on **Low-end mode**; still slow, **Toaster**. On a laptop with two graphics cards, check that **GPU** shows the dedicated one |
 
 The log is in **F1**, **Menu Options**, **Log folder** (`log.txt`; if the game closed and you opened it again, that session's
-is `log_prev.txt`): attach it to an [issue](../../issues) with your PC's processor and graphics card. Don't attach game files.
+is `log_prev.txt`): attach it to an [issue](../../issues) with your PC's processor and graphics card. Don't attach game files. You can also ask in the [Discord](https://discord.gg/sk5xEjEMwF).
 
 ## Legal
 
@@ -674,7 +703,8 @@ Android the same way.
 
 MHGU for Android is free, and so is its PC version. The only official downloads are the links khorne-hub gives, starting with
 this repository's [Releases](https://github.com/khorne-hub/gu-native/releases). If you got it anywhere else, paid for it, or
-your copy came with ads, it is not the official one.
+your copy came with ads, it is not the official one. In the app, the GitHub button at the top of the settings menu, beside
+**Save**, opens this page in your browser, and the Discord button beside it the community's [Discord](https://discord.gg/sk5xEjEMwF).
 
 Every official APK is signed with the same key. Its certificate's SHA-256 fingerprint is:
 
@@ -683,7 +713,12 @@ D7:2F:6F:F1:55:E0:31:2C:9C:74:86:C5:30:64:60:38:E4:24:94:C0:AD:7C:D6:5F:4B:19:FF
 ```
 
 To check an APK: `apksigner verify --print-certs MHGU-<version>.apk` (Android SDK build-tools). A copy signed with another
-key can't be installed over the official app either.
+key can't be installed over the official app either. From 0.1.9 the app checks it too: a copy signed with another key says
+so once when it starts.
+
+The app also tells you when a new version is out. At most once a day it asks GitHub for this repository's latest release
+(nothing else is sent, not even the phone's model), and at the next start it offers to open the release page. It never
+downloads or installs anything by itself. Gear, **Menu Options**, **Check for updates** turns it off.
 
 The PC version has no such signature: each release lists the SHA-256 of its zip. To check yours on Windows, open a terminal
 in its folder and run `certutil -hashfile <file> SHA256`; the result must match the release's.

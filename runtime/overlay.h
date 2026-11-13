@@ -23,10 +23,6 @@ int overlay_face_position(int semantic); // A, B, X, Y -> physical south/east/we
 void overlay_toggle_settings(void); // host main thread: F1 or Start + Back
 // Any thread: a notice shown over the game for a few seconds (title on its own line; the latest replaces any other).
 void overlay_notice(const char *title, const char *text);
-// What the system keyboard is still composing while the menu is open (a word not yet committed, Chinese pinyin before
-// its characters are chosen): "" when nothing (any thread)
-void overlay_composition(char *out, size_t size);
-bool overlay_wants_text(void);  // a text box of the open menu (a Forge plugin's) has the focus (any thread)
 // What the player used last (runtime/host_input.c, from every event; any thread reads it): the port's menus show a
 // controller's buttons only after a controller's press, and the keys (or the mouse) after the keyboard's or the mouse's
 enum { USED_KEYS, USED_MOUSE, USED_PAD, USED_TOUCH };
@@ -52,6 +48,7 @@ typedef struct {
     VkPipelineCache cache;
     VkRenderPass pass;
     uint32_t width, height;
+    int turn;  // the window image drawn turned for the panel: 0, 1 (90 degrees) or 3 (270) quarter turns (device.c sc_turn)
 } OverlayTarget;
 void overlay_draw(VkCommandBuffer cb, const OverlayTarget *t);
 

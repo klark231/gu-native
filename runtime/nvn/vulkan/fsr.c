@@ -65,6 +65,17 @@ typedef struct {
     uint32_t fmt, w, h;  // what it stands in for: NVN format, size
 } Stand;
 static Stand st_h, st_p, st_d;  // the full-screen image H, the window texture P, the depth target
+// (MHGU_PERF_HUDSTART_FUSE, a test until measured: read in vk_fsr_init) bit 1: the HUD's depth stand-in is cleared as the
+// first pass that renders into it begins, not by a clear of its own before it (exec.c vk_depth_clear_later); bit 2: H is
+// scaled into H' as that pass's first draw, not by a blit before it, once the two are seen to give the same bytes on this
+// GPU (exec.c vk_color_fill_later)
+static int hud_fuse;
+void vk_depth_clear_later(TexBackend *b);
+void vk_depth_clear_forget(TexBackend *b);
+bool vk_color_fill_later(TexBackend *dst, TexBackend *src, int kind);
+void vk_color_fill_check(TexBackend *dst, TexBackend *src, int kind);
+void vk_color_fill_flush(TexBackend *b);
+void vk_color_fill_forget(TexBackend *b);
 
 static TexBackend *stand_image(NvnTexture *of, uint32_t w, uint32_t h, bool storage) {
     TexBackend *src = of->backend;
@@ -75,7 +86,7 @@ static TexBackend *stand_image(NvnTexture *of, uint32_t w, uint32_t h, bool stor
     VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = depth ? 0 : VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT,
                             .imageType = VK_IMAGE_TYPE_2D, .format = src->format, .extent = {w, h, 1}, .mipLevels = 1,
                             .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = usage, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+                            .usage = vk_usage_supported(src->format, usage), .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
     TexBackend *b = calloc(1, sizeof *b);
     if (vk_create_image(&ci, &b->image, &b->mem) != VK_SUCCESS) {
         LOG("[fsr] could not create a %ux%u image (format %d)\n", w, h, src->format);
@@ -92,7 +103,8 @@ static TexBackend *stand_image(NvnTexture *of, uint32_t w, uint32_t h, bool stor
     VkImageSubresourceRange rg = {b->aspect, 0, 1, 0, 1};
     if (depth) {
         VkClearDepthStencilValue far = {1.0f, 0};
-        vkCmdClearDepthStencilImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &far, 1, &rg);
+        if (ci.usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT)  // (textures.c depth_format: a GPU may not copy into it)
+            vkCmdClearDepthStencilImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &far, 1, &rg);
     } else {
         VkClearColorValue zero = {{0, 0, 0, 0}};
         vkCmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
@@ -113,6 +125,8 @@ static NvnTexture *stand(Stand *s, NvnTexture *of, uint32_t w, uint32_t h, bool 
     if (same) return &s->fake;
     if (s->fake.backend) {
         TexBackend *old = s->fake.backend;
+        vk_depth_clear_forget(old);
+        vk_color_fill_forget(old);
         vk_views_forget(old);
         vk_defer_image(old->image, old->mem);
         free(old);
@@ -1092,7 +1106,7 @@ static bool ctx_make(void) {
     if (ctx) return true;
     if (ctx_failed) return false;
     FfxVkPortableDeviceInfo di = {.structSize = sizeof di, .instance = g_vk.inst, .physicalDevice = g_vk.phys,
-                                  .device = g_vk.dev, .getDeviceProcAddr = vkGetDeviceProcAddr, .queue = g_vk.queue,
+                                  .device = g_vk.dev, .getDeviceProcAddr = vk_device_proc_addr(), .queue = g_vk.queue,
                                   .queueFamilyIndex = g_vk.qfam, .shaderFloat16Enabled = g_vk.fsr_fp16,
                                   .shaderStorageImageWriteWithoutFormatEnabled = g_vk.fsr_storage_wo_format};
     ctx_ci = (FfxVkPortableUpscaleCreateInfo){.structSize = sizeof ctx_ci, .maxRenderSize = {rw, rh}, .maxOutputSize = {ow, oh}};
@@ -1709,7 +1723,10 @@ static void hud_start(const char *why) {
                  (unsigned long long)g_present_count + 1, (void *)shot_taken);
         shot_taken = NULL;
     }
-    if (!frame_fsr) scale_to_stand(g_h, hs);
+    if (!frame_fsr && !((hud_fuse & 2) && vk_color_fill_later(hs->backend, vk_tex(g_h, true), 0))) {
+        scale_to_stand(g_h, hs);
+        if (hud_fuse & 2) vk_color_fill_check(hs->backend, vk_tex(g_h, true), 0);  // (the first time: the draw compared with it)
+    }
     {  // every change between FSR and plain scaling, with the reason (always logged; at most 500 lines)
         static int last = -1, nlog;
         const char *why_not = frame_fsr ? NULL : !depth || dn < 16 ? "no 3D scene this frame (fewer than 16 depth-writing draws)"
@@ -1720,14 +1737,62 @@ static void hud_start(const char *why) {
                 why_not ? why_not : "");
         last = frame_fsr;
     }
-    if (st_d.fake.backend) {  // the HUD's depth target starts empty (the game clears its own when it needs one)
+    if (st_d.fake.backend && (vk_format_features(((TexBackend *)st_d.fake.backend)->format) & VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) {
+        // the HUD's depth target starts empty (the game clears its own when it needs one; a depth format the GPU can't
+        // copy into can't be cleared this way: stand_image)
         TexBackend *b = st_d.fake.backend;
-        VkClearDepthStencilValue far = {1.0f, 0};
-        VkImageSubresourceRange rg = {b->aspect, 0, 1, 0, 1};
-        vkCmdClearDepthStencilImage(vk_cmd(), b->image, VK_IMAGE_LAYOUT_GENERAL, &far, 1, &rg);
-        vk_full_barrier(vk_cmd());
+        if (hud_fuse & 1) {
+            vk_depth_clear_later(b);
+        } else {
+            VkClearDepthStencilValue far = {1.0f, 0};
+            VkImageSubresourceRange rg = {b->aspect, 0, 1, 0, 1};
+            vkCmdClearDepthStencilImage(vk_cmd(), b->image, VK_IMAGE_LAYOUT_GENERAL, &far, 1, &rg);
+            vk_full_barrier(vk_cmd());
+        }
     }
     if (logging) snprintf(why_last, sizeof why_last, "%s, %u post draws before it, depth draws %u", why, h_draws, dn);
+}
+
+// (MHGU_FSR_LOG) a draw that decides where the HUD starts: its vertices, depth test and write, depth target and the
+// textures it samples (size, r: a render target), each kind once (at most 80 lines)
+static void draw_note(const FsrDraw *d, const char *what) {
+    if (!logging) return;
+    static uint64_t seen[64];
+    static int nseen, nlog;
+    char tl[200];
+    int n = 0;
+    tl[0] = 0;
+    uint64_t h = 0xcbf29ce484222325ull ^ (uint64_t)(uintptr_t)what;
+    for (int i = 0; i < d->ntex && n < 170; i++) {
+        NvnTexture *t = d->tex[i];
+        if (!t) continue;
+        n += snprintf(tl + n, sizeof tl - n, " %ux%u%s", t->width, t->height, is_rt(t) ? "r" : "");
+        h = (h ^ ((uint64_t)t->width << 20 ^ t->height ^ (uint64_t)is_rt(t) << 40)) * 0x100000001b3ull;
+    }
+    h = (h ^ (d->count > 6) ^ (uint64_t)d->depth_test << 1 ^ (uint64_t)d->depth_write << 2) * 0x100000001b3ull;
+    for (int i = 0; i < nseen; i++)
+        if (seen[i] == h) return;
+    if (nseen < 64) seen[nseen++] = h;
+    if (nlog++ >= 80) return;
+    LOG("[fsr] frame %llu: %s: %u vertices, depth test %d write %d, depth %ux%u, textures%s\n",
+        (unsigned long long)g_present_count + 1, what, d->count, d->depth_test, d->depth_write, d->depth ? d->depth->width : 0,
+        d->depth ? d->depth->height : 0, n ? tl : " none");
+}
+
+// A render target of the render size or half of it: the picture, or a copy of it (vk_fsr_draw)
+static bool picture_sized(const NvnTexture *t) {
+    for (uint32_t k = 1; k <= 2; k++) {
+        int dw = (int)t->width - (int)(rw / k), dh = (int)t->height - (int)(rh / k);
+        if (dw >= -1 && dw <= 1 && dh >= -1 && dh <= 1) return true;
+    }
+    return false;
+}
+
+// (tests: MHGU_FSR_SCENE_FX=0, the 3D effects drawn after the post passes start the HUD again, as before 0.1.9)
+static bool scene_fx(void) {
+    static int on = -1;
+    if (on < 0) on = !getenv("MHGU_FSR_SCENE_FX") || atoi(getenv("MHGU_FSR_SCENE_FX")) != 0;
+    return on;
 }
 
 void vk_fsr_draw(const FsrDraw *d) {
@@ -1751,15 +1816,45 @@ void vk_fsr_draw(const FsrDraw *d) {
         if (main_camera_draw(d)) menu_models++;  // (menus, see the top)
         else if (menu_camera_draw(d)) menu_cams++;
     }
+    if (redirect && logging && d->color0 == g_h) {  // (MHGU_FSR_LOG: a draw over the HUD that samples a picture of the render size)
+        for (int i = 0; i < d->ntex; i++)
+            if (d->tex[i] && (d->tex[i] == g_h || (is_rt(d->tex[i]) && picture_sized(d->tex[i])))) {
+                draw_note(d, "after the start of the HUD, sampling the picture");
+                break;
+            }
+    }
     if (redirect || !g_h || !d->color0) return;
     if (d->color0 == g_h) {
         bool post = d->count <= 6;
-        bool reads_rt = false;
-        for (int i = 0; i < d->ntex; i++) reads_rt |= d->tex[i] != g_h && is_rt(d->tex[i]);
+        bool reads_rt = false, reads_picture = false;
+        for (int i = 0; i < d->ntex; i++) {
+            NvnTexture *t = d->tex[i];
+            if (t == g_h) { reads_picture = true; continue; }  // (the picture being drawn into: never a HUD sprite)
+            if (!is_rt(t)) continue;
+            reads_rt = true;
+            reads_picture |= picture_sized(t);
+        }
         if (post && reads_rt) { h_draws++; return; }
+        // (a 3D effect drawn into H after the post passes is still the scene's: one tested against the scene's depth -
+        // Astalos' charged wings - or one that samples the picture: H itself, or a render target of the render size or half.
+        // Taken for the start of the HUD, it and what followed were drawn on the output-size stand-ins: over an empty
+        // depth target, so over the hunter and the monster, and sampling render-size images at output-size places, so
+        // smeared streaks, with Low-end mode's plain scaling or FSR only: #60)
+        bool depth_tested = d->depth_test && d->depth && d->depth->width == rw && d->depth->height == rh;
+        if (!menu_2d && (depth_tested || reads_picture) && scene_fx()) {
+            draw_note(d, depth_tested ? "with the scene (depth-tested)" : "with the scene (samples the picture)");
+            static int nlog;
+            if (nlog < 3 && (logging || nlog < 1))
+                nlog++, LOG("[fsr] frame %llu: a draw into the full-screen image %s (%u vertices) before the HUD: drawn with the "
+                            "scene\n", (unsigned long long)g_present_count + 1,
+                            depth_tested ? "tested against the scene's depth" : "that samples the picture", d->count);
+            h_draws++;
+            return;
+        }
         if (!menu_2d) menu_2d = true, scene_depth(&menu_2d_scene);
         bool late = menu_models_late || menu_cams_late;  // (menus: their models first)
         if (late && (menu_models < menu_models_late || menu_cams < menu_cams_late || d->depth_write)) return;
+        draw_note(d, late ? "the HUD starts after the menu's 3D models" : "the HUD starts");
         hud_start(late ? "after the menu's 3D models" : "first HUD draw");
         return;
     }
@@ -1901,6 +1996,7 @@ NvnTexture *vk_fsr_present(NvnTexture *t) {
     redirect = false;
     frame_fsr = false;
     last_target = last_src = NULL;
+    if (show && show->backend) vk_color_fill_flush(show->backend);  // (MHGU_PERF_HUDSTART_FUSE: H' shown before drawn into)
     return show;
 }
 
@@ -1911,6 +2007,9 @@ void vk_fsr_init(void) {
     if (!g_fsr_output[0]) return;
 #endif
     rw = g_render_size[0], rh = g_render_size[1], ow = g_fsr_output[0], oh = g_fsr_output[1];
+    logging = getenv("MHGU_FSR_LOG") != NULL;  // (plain scaling too: where the HUD starts)
+    hud_fuse = getenv("MHGU_PERF_HUDSTART_FUSE") ? atoi(getenv("MHGU_PERF_HUDSTART_FUSE")) : g_vk.api12 ? 3 : 0;  // (unset: 3; a Vulkan 1.1 driver 0)
+    if (hud_fuse) LOG("[perf] MHGU_PERF_HUDSTART_FUSE=%d\n", hud_fuse);
     if (!g_config.fsr) {  // (RenderScale below 100: config.c)
         plain_only = true;
         g_fsr_on = true;
@@ -1918,7 +2017,6 @@ void vk_fsr_init(void) {
             ow, oh);
         return;
     }
-    logging = getenv("MHGU_FSR_LOG") != NULL;
     FfxVkPortableDeviceCapabilities caps = {.structSize = sizeof caps};
     if (ffxVkPortableQueryDeviceCapabilities(g_vk.phys, &caps) != FFX_VK_PORTABLE_OK || !caps.fsr3ComputePrerequisites ||
         !g_vk.fsr_storage_wo_format) {

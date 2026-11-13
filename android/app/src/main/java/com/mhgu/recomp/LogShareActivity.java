@@ -129,8 +129,7 @@ public class LogShareActivity extends Activity {
         File report = LogProvider.report(this);
         try (OutputStream out = new FileOutputStream(report)) {
             out.write(device().getBytes(StandardCharsets.UTF_8));
-            File home = getExternalFilesDir(null);
-            if (home == null) home = getFilesDir();
+            File home = AppHome.home(this);
             append(out, new File(home, "log.txt"), "this session");
             append(out, new File(home, "log_prev.txt"), "the session before");
         } catch (IOException e) {

@@ -72,13 +72,38 @@
 
 #include "../hle.h"
 
-#define G_USERINFO      0x1a97f78u  // sUserInfo *: +0x446e the pages turn with ZL / ZR, not L / R (an option)
+// sUserInfo *: the options of the Options' third page, a byte each, written as soon as one is changed there (measured on a
+// Motorola g06: Control Type stepped from Type 1 to Type 3 wrote +0x446c 0 -> 2; each value written there in a hunt
+// changed the input shown beside the Hunter Arts at once: Type 2 B, Type 3 X, Type 4 and R Stick Controls swapped the
+// right stick)
+#define G_USERINFO      0x1a97f78u
+#define UI_CONTROL_TYPE 0x446cu  // Control Type: 0..3, Type 1..4
+#define UI_LR_SWAP      0x446eu  // L/R Button Controls: not 0, L / R and ZL / ZR swapped (the menus turn pages with ZL / ZR)
+#define UI_RSTICK_SWAP  0x446fu  // R Stick Controls: not 0, the right stick and the d-pad swapped
+
+static uint32_t user_info(void) {
+    uint32_t ui = LD32(G_USERINFO);
+    return ui >= 0x08000000u && ui < 0xF0000000u && !(ui & 3) ? ui : 0;
+}
 
 // The game's option for the page buttons, on both platforms: the touch controls' menu pad presses and labels its page
 // tabs by it (runtime/touch.cpp), the mouse's side buttons press that pair (page_bits)
 bool menu_pages_zl(void) {
-    uint32_t ui = LD32(G_USERINFO);
-    return ui >= 0x08000000u && ui < 0xF0000000u && !(ui & 3) && LD8(ui + 0x446e) != 0;
+    uint32_t ui = user_info();
+    return ui && LD8(ui + UI_LR_SWAP) != 0;
+}
+
+// The player's controls in the game's Options (both platforms): what performs a Hunter Art goes by them (runtime/touch.cpp
+// art_press)
+int game_control_type(void) {
+    uint32_t ui = user_info();
+    uint8_t t = ui ? LD8(ui + UI_CONTROL_TYPE) : 0;
+    return t <= 3 ? t : 0;
+}
+bool game_lr_swapped(void) { return menu_pages_zl(); }
+bool game_rstick_swapped(void) {
+    uint32_t ui = user_info();
+    return ui && LD8(ui + UI_RSTICK_SWAP) != 0;
 }
 
 #define FN_PAD_UPDATE   0x5ddf1cu  // sFestaPad::update (r0 = the pad system)

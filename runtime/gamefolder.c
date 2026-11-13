@@ -32,6 +32,14 @@ static bool is_file(const char *p) {
 }
 static const char *T(int lang, const char *en) { return settings_text(lang, en); }
 
+// mhgugame.dll missing: the download never brings it (it is made from the player's own copy, the guide's PC step 2)
+static const char NO_LIB[] = "mhgugame.dll is missing from that folder. The download doesn't include it, on purpose: it is the "
+                             "game code, made once on this PC from your own copy with the guide's tool (step 2 of its PC "
+                             "setup): python build_game.py --pc <your folder>.";
+static const char NO_LIB_PC[] = "mhgugame.dll, the game code for PC, is missing from that folder: the download doesn't include "
+                                "it. Run the guide's tool on it again with --pc: python build_game.py --pc <your folder>. It "
+                                "keeps libmhgugame.so and only adds the PC's.";
+
 int gamefolder_language(void) {
     // (the settings' Language when they say Spanish; before the first run, the system's)
     FILE *f = fopen("mhgurecomp.ini", "r");
@@ -101,10 +109,7 @@ void gamefolder_problem(const char *dir, int lang, char *why, size_t size) {
     }
     if (!lib_dir[0] || !is_file(p)) {
         snprintf(p, sizeof p, "%s/libmhgugame.so", dir);
-        snprintf(why, size, "%s", is_file(p)
-            ? T(lang, "mhgugame.dll, the game code for PC, is missing from that folder. Run the guide's tool on it again: it "
-                      "keeps libmhgugame.so and only adds the PC's.")
-            : T(lang, "mhgugame.dll is missing from that folder. Make it on this PC with the guide's tool."));
+        snprintf(why, size, "%s", T(lang, is_file(p) ? NO_LIB_PC : NO_LIB));
         return;
     }
     char id[64] = "";
@@ -259,6 +264,10 @@ bool gamefolder_check_picked(const char *picked, int lang, char *utf8, size_t ut
     gamefolder_problem(native, lang, why, why_size);
     snprintf(utf8, utf8_size, "%s", ways[use]);
     return !why[0];
+}
+
+bool gamefolder_lib_missing(const char *why, int lang) {
+    return why && (!strcmp(why, T(lang, NO_LIB)) || !strcmp(why, T(lang, NO_LIB_PC)));
 }
 
 void gamefolder_remember(const char *utf8) { write_saved(utf8); }

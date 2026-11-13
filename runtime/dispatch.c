@@ -103,11 +103,71 @@ uint32_t hle_alloc(uint32_t size) {
     return a;
 }
 
+// The perf pass's MHGU_PERF_DISPATCH=1 (0 or unset: the old way), read once: rt_dispatch's misses (dispatch_slow2,
+// below). MHGU_PERF_DISPATCH_STATS=1: each thread's misses in the log every 10 s, either way. (Read at the first
+// guest thread's cache, which kernel_init may make before dispatch_init.)
+static int env_on(const char *name) {
+    const char *e = getenv(name);
+    return e && *e && strcmp(e, "0") ? 1 : 0;
+}
+static int dispatch_v2(void) {
+    static int v = -1;
+    if (v < 0) v = env_on("MHGU_PERF_DISPATCH");
+    return v;
+}
+static int dispatch_stats(void) {
+    static int v = -1;
+    if (v < 0) v = env_on("MHGU_PERF_DISPATCH_STATS");
+    return v;
+}
+
+// (MHGU_PERF_DISPATCH) A table's first function at or after each 4 KB page of its range: a lookup searches its page's
+// functions only, not all of them (the same lower bound, so the same function).
+static uint32_t *page_first[2];
+
+static void page_index_build(int t) {
+    FnTable *ft = &tables[t];
+    if (!ft->count) return;
+    uint64_t lo_page = ft->lo >> 12, pages = (ft->hi >> 12) - lo_page + 2;  // (+1: the page after the last one's end)
+    uint32_t *first = malloc(pages * sizeof *first), i = 0;
+    if (!first) return;
+    for (uint64_t p = 0; p < pages; p++) {
+        uint64_t start = (lo_page + p) << 12;
+        while (i < ft->count && ft->addrs[i] < start) i++;
+        first[p] = i;
+    }
+    page_first[t] = first;
+}
+
 void dispatch_init(void) {
     const GameLibTables *g = gamelib_tables();
     uint32_t nm = *g->main_count, ns = *g->sdk_count;
     tables[0] = (FnTable){g->main_addrs, g->main_fns, nm, g->main_addrs[0], g->main_addrs[nm - 1]};
     tables[1] = (FnTable){g->sdk_addrs, g->sdk_fns, ns, g->sdk_addrs[0], g->sdk_addrs[ns - 1]};
+    if (dispatch_v2()) {
+        page_index_build(0), page_index_build(1);
+        LOG("[dispatch] perf: two ways, HLE functions cached, lookups by page%s\n", dispatch_stats() ? " (stats on)" : "");
+    }
+}
+
+// dispatch_lookup by page_first (MHGU_PERF_DISPATCH): the same function, fewer steps
+static GuestFn dispatch_lookup_paged(uint32_t addr) {
+    for (int t = 0; t < 2; t++) {
+        FnTable *ft = &tables[t];
+        if (addr < ft->lo || addr > ft->hi) continue;
+        uint32_t lo = 0, hi = ft->count;
+        if (page_first[t]) {
+            uint32_t p = (addr >> 12) - (ft->lo >> 12);
+            lo = page_first[t][p], hi = page_first[t][p + 1];
+        }
+        while (lo < hi) {
+            uint32_t mid = (lo + hi) / 2;
+            if (ft->addrs[mid] < addr) lo = mid + 1;
+            else hi = mid;
+        }
+        if (lo < ft->count && ft->addrs[lo] == addr) return ft->fns[lo];
+    }
+    return NULL;
 }
 
 GuestFn dispatch_lookup(uint32_t addr) {
@@ -192,7 +252,6 @@ void fnhook_keep_entry(uint32_t addr, uint32_t w0, uint32_t w1) {
         __atomic_store_n(&nkept, n + 1, __ATOMIC_RELEASE);
     }
     pthread_mutex_unlock(&kept_lock);
-    interp_code_changed();
 }
 
 bool fnhook_entry_word(uint32_t pc, uint32_t *w) {
@@ -240,7 +299,6 @@ bool fnhook_set(uint32_t addr, uint32_t detour) {
     if (detour) __atomic_fetch_or(&g_fnhook[addr >> 5], bit, __ATOMIC_RELEASE);
     else __atomic_fetch_and(&g_fnhook[addr >> 5], (uint8_t)~bit, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&hook_lock);
-    interp_code_changed();  // (code_word reads the bit)
     return true;
 }
 
@@ -338,8 +396,14 @@ static inline DEntry *dc_of(Cpu *c) {
     return __builtin_expect(dc != NULL, 1) ? dc : dc_tls();
 }
 
+// (MHGU_PERF_DISPATCH) A thread's cache has a second way, DCACHE more entries right after the first, and its miss
+// counts after that (MHGU_PERF_DISPATCH_STATS). The thread-local fallback has the first way only.
+typedef struct { uint64_t t0; uint32_t slow, way1, hle, lookups; } DStats;
+#define DC_WAYS2 (2 * DCACHE * sizeof(DEntry))
+static inline DStats *dc_stats(DEntry *dc) { return (DStats *)((char *)dc + DC_WAYS2); }
+
 void dispatch_thread_init(Cpu *c) {
-    DEntry *dc = calloc(DCACHE, sizeof *dc);
+    DEntry *dc = dispatch_v2() || dispatch_stats() ? calloc(1, DC_WAYS2 + sizeof(DStats)) : calloc(DCACHE, sizeof *dc);
     memcpy(c->_pad + CPU_DCACHE, &dc, sizeof dc);
 }
 void dispatch_thread_done(Cpu *c) {  // (its thread has left the guest's code for good: kernel.c thread_main)
@@ -349,8 +413,13 @@ void dispatch_thread_done(Cpu *c) {  // (its thread has left the guest's code fo
     free(dc);
 }
 
+static GuestFn dispatch_slow2(Cpu *c, DEntry *dcache);
+static void dstats_count(Cpu *c, int what);
+
 static GuestFn dispatch_slow(Cpu *c, DEntry *dcache) {
+    if (dispatch_v2()) return dispatch_slow2(c, dcache);
     uint32_t pc = c->pc;
+    if (dispatch_stats()) dstats_count(c, pc >= HLE_BASE && pc < HLE_BASE + HLE_SIZE ? 2 : 3);
     if (pc >= HLE_BASE && pc < HLE_BASE + HLE_SIZE) {
         rt_unwind_point();
         int i = (int)((pc - HLE_BASE) / 16);
@@ -372,6 +441,85 @@ static GuestFn dispatch_slow(Cpu *c, DEntry *dcache) {
         FATAL("no function at %x (lr=%x %s+%x)\n", pc, c->r[14], s ? s : "?", off);
     }
     unsigned h = (pc >> 2) & (DCACHE - 1);
+    dcache[h].addr = pc;
+    dcache[h].fn = f;
+    return f;
+}
+
+// The second way's index: a hash of the address, so addresses that share a slot of the first way (16 KB apart) mostly
+// don't share one here
+static inline unsigned way1_index(uint32_t pc) { return ((pc >> 2) * 2654435761u) >> (32 - 12); }
+_Static_assert(DCACHE == 1 << 12, "way1_index");
+
+// (MHGU_PERF_DISPATCH_STATS) what: 1 found in the second way, 2 an HLE function, 3 looked up
+static void dstats_count(Cpu *c, int what) {
+    DEntry *own;
+    memcpy(&own, c->_pad + CPU_DCACHE, sizeof own);
+    if (!own) return;  // (the thread-local fallback: no counts)
+    DStats *st = dc_stats(own);
+    st->slow++;
+    if (what == 1) st->way1++;
+    else if (what == 2) st->hle++;
+    else if (what == 3) st->lookups++;
+    if (st->slow & 1023) return;
+    uint64_t now = plat_now_ns();
+    if (!st->t0) st->t0 = now;
+    if (now - st->t0 < 10000000000ull) return;
+    LOG("[dispatch] t%x: %u misses in %.1f s (%u in the second way, %u HLE, %u looked up)\n", kernel_current_thread_handle(),
+        st->slow, (now - st->t0) / 1e9, st->way1, st->hle, st->lookups);
+    st->t0 = now;
+    st->slow = st->way1 = st->hle = st->lookups = 0;
+}
+
+// rt_dispatch's miss with MHGU_PERF_DISPATCH: rt_dispatch reads the first way only, as before; a miss here
+// - looks in the second way (way1_index); found, it goes to the first way and the first way's entry to the second;
+// - caches HLE functions too (the old way called this for every one: every NVN call of the render thread). They pass
+//   rt_unwind_point here only, which does nothing in this runtime: nothing sets g_rt_unwind (a reboot that sets it
+//   would have to drop them from every cache);
+// - finds a recompiled function by its page's functions only (dispatch_lookup_paged);
+// - keeps the first way's old entry in the second way.
+// Each address gets the same function as the old way; overrides are still looked up each time (there are none).
+static GuestFn dispatch_slow2(Cpu *c, DEntry *dcache) {
+    uint32_t pc = c->pc;
+    DEntry *own;
+    memcpy(&own, c->_pad + CPU_DCACHE, sizeof own);
+    DEntry *w1 = own && own == dcache ? own + DCACHE : NULL;  // (NULL: the thread-local fallback, one way)
+    unsigned h = (pc >> 2) & (DCACHE - 1), h1 = way1_index(pc);
+    if (w1 && w1[h1].addr == pc && w1[h1].fn) {
+        DEntry hit = w1[h1], old = dcache[h];
+        w1[h1] = (DEntry){0, NULL};
+        if (old.fn) w1[way1_index(old.addr)] = old;
+        dcache[h] = hit;
+        if (dispatch_stats()) dstats_count(c, 1);
+        return hit.fn;
+    }
+    GuestFn f = NULL;
+    if (pc >= HLE_BASE && pc < HLE_BASE + HLE_SIZE) {
+        rt_unwind_point();
+        int i = (int)((pc - HLE_BASE) / 16);
+        if (i < hle_count) {
+            if (!hle_slots[i].fn) {
+                unimpl_pc = pc;
+                return hle_unimplemented;
+            }
+            f = hle_slots[i].fn;
+        }
+    }
+    if (dispatch_stats()) dstats_count(c, f ? 2 : 3);
+    if (!f) {
+        for (int i = 0; i < override_count; i++)
+            if (overrides[i].addr == pc) return overrides[i].fn;
+        if (pc & 1) FATAL("jump to Thumb code at %x (lr=%x)\n", pc, c->r[14]);
+        f = dispatch_lookup_paged(pc);
+        if (!f && interp_owns(pc)) f = interp_entry;
+        if (!f && pc >= FORGE_TRAMP && pc < FORGE_STUBS) f = trampoline;
+        if (!f) {
+            uint32_t off;
+            const char *s = loader_symbol_at(c->r[14], &off);
+            FATAL("no function at %x (lr=%x %s+%x)\n", pc, c->r[14], s ? s : "?", off);
+        }
+    }
+    if (w1 && dcache[h].fn) w1[way1_index(dcache[h].addr)] = dcache[h];
     dcache[h].addr = pc;
     dcache[h].fn = f;
     return f;

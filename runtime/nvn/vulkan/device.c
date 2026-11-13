@@ -10,6 +10,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <math.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -82,6 +83,7 @@ static uint32_t instance_api;  // the Vulkan version asked of the instance
 extern bool maxwell_no_int64;   // (nvn/maxwell/translate.c)
 
 static uint32_t msaa_floor(uint32_t s);
+bool vk_gpu_adreno(void);
 #ifdef __ANDROID__
 PFN_vkGetInstanceProcAddr gpu_driver_loader(void);  // (platform/android_gpu.c)
 bool gpu_driver_surface(SDL_Window *win, VkInstance inst, VkSurfaceKHR *out);
@@ -446,6 +448,11 @@ static void VKAPI_PTR dm_freed(VmaAllocator a, uint32_t type, VkDeviceMemory m, 
 }
 #endif
 
+// The bytes VMA gave images (textures and render targets), for the [mem] line: added here, taken off as each is destroyed
+// (textures.c vk_collect_dead)
+static _Atomic int64_t image_bytes;
+void vk_image_bytes_add(int64_t n) { atomic_fetch_add_explicit(&image_bytes, n, memory_order_relaxed); }
+
 VkResult vk_create_image(const VkImageCreateInfo *ci, VkImage *img, VmaAllocation *mem) {
 #ifndef __ANDROID__
     VkImage im;
@@ -459,6 +466,7 @@ VkResult vk_create_image(const VkImageCreateInfo *ci, VkImage *img, VmaAllocatio
         if (ai.pool && vmaAllocateMemoryForImage(g_vk.vma, im, &ai, &a, NULL) == VK_SUCCESS) {
             if (vmaBindImageMemory(g_vk.vma, a, im) == VK_SUCCESS) {
                 reserve_used(ai.pool);
+                vk_image_bytes_add((int64_t)r.memoryRequirements.size);
                 return *img = im, *mem = a, VK_SUCCESS;
             }
             vmaFreeMemory(g_vk.vma, a);
@@ -467,7 +475,10 @@ VkResult vk_create_image(const VkImageCreateInfo *ci, VkImage *img, VmaAllocatio
     }
 #endif
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    return vmaCreateImage(g_vk.vma, ci, &ai, img, mem, NULL);
+    VmaAllocationInfo info;
+    VkResult r = vmaCreateImage(g_vk.vma, ci, &ai, img, mem, &info);
+    if (r == VK_SUCCESS) vk_image_bytes_add((int64_t)info.size);
+    return r;
 }
 
 VkResult vk_create_buffer(const VkBufferCreateInfo *bi, VkBuffer *buf, VmaAllocation *mem) {
@@ -494,6 +505,98 @@ VkResult vk_create_buffer(const VkBufferCreateInfo *bi, VkBuffer *buf, VmaAlloca
     return vmaCreateBuffer(g_vk.vma, bi, &ai, buf, mem, NULL);
 }
 
+// ---- PowerVR: one driver compile at a time
+// Its shader compiler crashed building several pipelines at once: a phone that had played once closed at every later start,
+// while three workers built the saved pipelines (issues #73, #99). 0.1.8 then built every shader and pipeline on the render
+// thread, and the start built every saved program and pipeline there before its first picture: a black screen for minutes
+// on a Helio G35 (#157). The builds stay on the workers instead (one: exec.c compile_workers), and every call into the
+// driver's compiler takes compiler_lock, from any thread (the worker, the render thread's own pipelines, the overlay's):
+// volk's pointers are replaced, which those callers go through, and FSR's backend, which looks the functions up itself,
+// gets the same ones from vk_device_proc_addr. Never two at once, and the render thread keeps presenting while the saved
+// ones build. MHGU_VK_POWERVR=1 treats another GPU as a PowerVR (this and the rest it gets).
+bool vk_gpu_powervr(void) {
+    static int v = -1;
+    if (v < 0 && g_vk.props.deviceName[0])
+        v = strstr(g_vk.props.deviceName, "PowerVR") != NULL || getenv("MHGU_VK_POWERVR") != NULL;
+    return v > 0;
+}
+
+#ifdef VOLK_H_
+static pthread_mutex_t compiler_lock = PTHREAD_MUTEX_INITIALIZER;
+static PFN_vkCreateShaderModule drv_create_module;
+static PFN_vkCreateGraphicsPipelines drv_create_graphics;
+static PFN_vkCreateComputePipelines drv_create_compute;
+static PFN_vkGetPipelineCacheData drv_cache_data;
+static _Atomic uint64_t compiler_calls, compiler_wait_max;  // (the [mem] line: vk_mem_summary)
+static void compiler_enter(void) {
+    uint64_t t0 = plat_now_ns();
+    pthread_mutex_lock(&compiler_lock);
+    uint64_t w = plat_now_ns() - t0, m = atomic_load(&compiler_wait_max);
+    while (w > m && !atomic_compare_exchange_weak(&compiler_wait_max, &m, w)) {}
+    atomic_fetch_add(&compiler_calls, 1);
+}
+static VKAPI_ATTR VkResult VKAPI_CALL one_create_module(VkDevice d, const VkShaderModuleCreateInfo *ci,
+                                                        const VkAllocationCallbacks *a, VkShaderModule *m) {
+    compiler_enter();
+    VkResult r = drv_create_module(d, ci, a, m);
+    pthread_mutex_unlock(&compiler_lock);
+    return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL one_create_graphics(VkDevice d, VkPipelineCache c, uint32_t n,
+                                                          const VkGraphicsPipelineCreateInfo *ci,
+                                                          const VkAllocationCallbacks *a, VkPipeline *p) {
+    compiler_enter();
+    VkResult r = drv_create_graphics(d, c, n, ci, a, p);
+    pthread_mutex_unlock(&compiler_lock);
+    return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL one_create_compute(VkDevice d, VkPipelineCache c, uint32_t n,
+                                                         const VkComputePipelineCreateInfo *ci,
+                                                         const VkAllocationCallbacks *a, VkPipeline *p) {
+    compiler_enter();
+    VkResult r = drv_create_compute(d, c, n, ci, a, p);
+    pthread_mutex_unlock(&compiler_lock);
+    return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL one_cache_data(VkDevice d, VkPipelineCache c, size_t *size, void *data) {
+    pthread_mutex_lock(&compiler_lock);  // (the cache the compiles write to: not read while one runs)
+    VkResult r = drv_cache_data(d, c, size, data);
+    pthread_mutex_unlock(&compiler_lock);
+    return r;
+}
+// The upscalers' SDKs look the device's functions up themselves (FSR 3.1's backend asks getDeviceProcAddr for
+// vkCreateShaderModule and vkCreateComputePipelines, and builds its pipelines on the render thread when its context is
+// made), so they get the ones above too: never beside the worker's build
+static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL one_device_proc(VkDevice d, const char *name) {
+    PFN_vkVoidFunction f = !strcmp(name, "vkCreateShaderModule") ? (PFN_vkVoidFunction)one_create_module
+                         : !strcmp(name, "vkCreateGraphicsPipelines") ? (PFN_vkVoidFunction)one_create_graphics
+                         : !strcmp(name, "vkCreateComputePipelines") ? (PFN_vkVoidFunction)one_create_compute
+                         : !strcmp(name, "vkGetPipelineCacheData") ? (PFN_vkVoidFunction)one_cache_data : NULL;
+    if (!f) return vkGetDeviceProcAddr(d, name);
+    LOG("[vk] PowerVR: %s handed to an upscaler takes the compiler's lock\n", name);
+    return f;
+}
+#endif
+
+PFN_vkGetDeviceProcAddr vk_device_proc_addr(void) {
+#ifdef VOLK_H_
+    if (drv_create_graphics) return one_device_proc;  // (PowerVR: one compile at a time)
+#endif
+    return vkGetDeviceProcAddr;
+}
+
+static void one_compiler_install(void) {
+#ifdef VOLK_H_
+    if (!vk_gpu_powervr() || drv_create_graphics) return;
+    drv_create_module = vkCreateShaderModule, vkCreateShaderModule = one_create_module;
+    drv_create_graphics = vkCreateGraphicsPipelines, vkCreateGraphicsPipelines = one_create_graphics;
+    drv_create_compute = vkCreateComputePipelines, vkCreateComputePipelines = one_create_compute;
+    drv_cache_data = vkGetPipelineCacheData, vkGetPipelineCacheData = one_cache_data;
+    LOG("[vk] PowerVR: one shader / pipeline build at a time, on one worker (its compiler crashed building several at once)%s\n",
+        strstr(g_vk.props.deviceName, "PowerVR") ? "" : " (MHGU_VK_POWERVR)");
+#endif
+}
+
 static void create_device(void) {
     uint32_t ne = 0;
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
@@ -516,6 +619,9 @@ static void create_device(void) {
     if (g_vk.stencil_export) ext[n_ext++] = VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME;
     no_exclusive = surface_caps2 && has_ext(ep, ne, "VK_EXT_full_screen_exclusive") && !getenv("MHGU_VK_EXCLUSIVE");
     if (no_exclusive) ext[n_ext++] = "VK_EXT_full_screen_exclusive";
+#ifdef __ANDROID__
+    if (vk_pacing_device_ext(ep, ne)) ext[n_ext++] = VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME;  // (MHGU_PERF_PRESENT_TIME)
+#endif
 #ifndef __ANDROID__
     mem_budget_ext = has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);  // (how much mem_reserve may set aside)
     if (mem_budget_ext) ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
@@ -539,6 +645,25 @@ static void create_device(void) {
     g_vk.has_timeline = g_vk.api12 && f12_have.timelineSemaphore;
     g_vk.mirror_clamp = g_vk.api12 ? f12_have.samplerMirrorClampToEdge : mirror_ext;
     maxwell_no_int64 = !have.features.shaderInt64 || getenv("MHGU_VK_NO_INT64");  // (the env: tests)
+    // The translator's performance switches, read once here, before any program is translated; on unless set to 0.
+    // NMin / NMax / NClamp only on Vulkan 1.2 drivers but a PowerVR's, until others are checked (old Adreno drivers are 1.1)
+    {
+        const char *e;
+        // (unset: on, measured in 0.1.9's perf pass; 0 the old way)
+        bool nmm = (e = getenv("MHGU_PERF_NMINMAX")) ? atoi(e) > 0 : true;
+        maxwell_nminmax = nmm && g_vk.api12 && !vk_gpu_powervr();
+        // (VSTRIM, and the render pass and descriptor switches in exec.c and fsr.c: off by default on a Vulkan 1.1 driver,
+        // where none was ever checked; a Mali-G57 on 1.1.177 drew the 3D picture almost black with 0.1.9's defaults.)
+        // IPA stays on there: without it a varying the shader multiplies by 1 / w is read as v * gl_FragCoord.w * (1 / w),
+        // a round trip through position w that an Adreno 618 on 1.1.128 doesn't survive far away - with 0.1.9.1 the
+        // Volcano's distant plants and trees were black bars and white noise, with 0.1.9 (IPA on) they were right. The
+        // varying read as it is is also the exact value
+        maxwell_ipa_fold = (e = getenv("MHGU_PERF_IPA")) ? atoi(e) > 0 : true;
+        maxwell_vs_trim = (e = getenv("MHGU_PERF_VSTRIM")) ? atoi(e) > 0 : g_vk.api12;
+        if (nmm || maxwell_ipa_fold || maxwell_vs_trim)
+            LOG("[shader] translator switches: NMINMAX %d%s, IPA %d, VSTRIM %d\n", maxwell_nminmax,
+                nmm && !maxwell_nminmax ? " (asked: not on this driver)" : "", maxwell_ipa_fold, maxwell_vs_trim);
+    }
     if (!g_vk.has_timeline) {
         VkPhysicalDeviceSubgroupProperties sg = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
         VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &sg};
@@ -549,6 +674,9 @@ static void create_device(void) {
     }
     g_vk.divisor = g_vk.divisor && div_have.vertexAttributeInstanceRateDivisor;
     g_vk.custom_border = g_vk.custom_border && cbc_have.customBorderColors && cbc_have.customBorderColorWithoutFormat;
+    // (tests: a GPU without them, as an Adreno 640 on 1.1.128 has no custom border colours and a Mali no divisor: #171)
+    if (getenv("MHGU_VK_NO_DIVISOR")) g_vk.divisor = false;
+    if (getenv("MHGU_VK_NO_BORDER")) g_vk.custom_border = false;
 
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT div = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT, .vertexAttributeInstanceRateDivisor = VK_TRUE};
@@ -622,8 +750,10 @@ static void create_device(void) {
             VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
         }
     }
+    one_compiler_install();  // (PowerVR: before anything is compiled)
 #ifdef __ANDROID__
     gpu_driver_check();
+    vk_pacing_device();  // (MHGU_PERF_PRESENT_TIME: present_pacing.c)
     {   // (Vulkan 1.2's, and only by the device: the libvulkan of an older Android doesn't know them)
         PFN_vkWaitSemaphores wait = (PFN_vkWaitSemaphores)vkGetDeviceProcAddr(g_vk.dev, "vkWaitSemaphores");
         PFN_vkGetSemaphoreCounterValue value = (PFN_vkGetSemaphoreCounterValue)vkGetDeviceProcAddr(g_vk.dev, "vkGetSemaphoreCounterValue");
@@ -635,6 +765,14 @@ static void create_device(void) {
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
     LOG("[vk] features: divisor %d, custom border %d, BC %d, ASTC %d, exclusive full screen off %d\n", g_vk.divisor,
         g_vk.custom_border, h->textureCompressionBC, h->textureCompressionASTC_LDR, no_exclusive);
+    {   // (a player's log tells what the GPU allows: no PowerVR here to read it from, #100)
+        const VkPhysicalDeviceLimits *l = &g_vk.props.limits;
+        LOG("[vk] limits: vertex streams %u, inputs %u; a stage: uniform buffers %u, storage buffers %u, textures %u, samplers %u, "
+            "%u in all; images up to %u, samplers %u, allocations %u\n", l->maxVertexInputBindings, l->maxVertexInputAttributes,
+            l->maxPerStageDescriptorUniformBuffers, l->maxPerStageDescriptorStorageBuffers, l->maxPerStageDescriptorSampledImages,
+            l->maxPerStageDescriptorSamplers, l->maxPerStageResources, l->maxImageDimension2D, l->maxSamplerAllocationCount,
+            l->maxMemoryAllocationCount);
+    }
 
     // MSAA (settings): as many samples as asked for that colour and depth attachments both support and shaders can
     // read from depth (its resolve is a shader: exec.c vk_ms_resolve)
@@ -659,7 +797,7 @@ static void create_device(void) {
     // write tracking had armed only 16 runs. A driver that prefers an allocation of its own for each image gets one
     // VkDeviceMemory each from VMA, and one mapping each on such a GPU. Told it is Vulkan 1.0, VMA never asks: images
     // share its blocks, a few hundred megabytes each, as on the GPUs where the map entries stay flat
-    if (strstr(g_vk.props.deviceName, "PowerVR") && !getenv("MHGU_VMA_DEDICATED")) {
+    if (vk_gpu_powervr() && !getenv("MHGU_VMA_DEDICATED")) {
         ai.vulkanApiVersion = VK_API_VERSION_1_0;
         LOG("[vk] PowerVR: images share VMA's memory blocks (no allocation of their own)\n");
     }
@@ -737,7 +875,7 @@ static void pipeline_cache_save(void) {
 // device here does it, so those drivers keep 2x below 720 lines, and nothing else changes
 // [Performance] AdrenoFix Off: never (an Adreno 610 on 1.1.128 was dark and flickering with it, at 40 to 70%; and 2x costs)
 static uint32_t msaa_floor(uint32_t s) {
-    if (s > 1 || g_vk.api12 || !strstr(g_vk.props.deviceName, "Adreno") || g_config.render_h >= 720 || !(g_vk.msaa_counts & 2)) return s;
+    if (s > 1 || g_vk.api12 || !vk_gpu_adreno() || g_config.render_h >= 720 || !(g_vk.msaa_counts & 2)) return s;
     if (g_config.adreno_fix) {
         static bool said;
         if (!said) LOG("[vk] MSAA as set: AdrenoFix is off (this driver may repeat a small picture without MSAA)\n");
@@ -749,17 +887,46 @@ static uint32_t msaa_floor(uint32_t s) {
     told = true;
     return 2;
 }
-bool vk_gpu_adreno(void) { return strstr(g_vk.props.deviceName, "Adreno") != NULL; }
+// (tests: MHGU_VK_ADRENO=1 takes the Adreno-only paths on another GPU - one sample's alpha to coverage as an alpha test,
+// AdrenoFix's MSAA floor on a Vulkan 1.1 driver, the clears as draws under 1.1.128 - and MHGU_VK_ADRENO=0 leaves them out on
+// an Adreno: a Mali phone can show what they do, issues #70, #161, #171)
+bool vk_gpu_adreno(void) {
+    static int v = -1;
+    if (v < 0) {
+        if (!g_vk.props.deviceName[0]) return false;  // (no device chosen yet)
+        const char *e = getenv("MHGU_VK_ADRENO");
+        v = e ? atoi(e) != 0 : strstr(g_vk.props.deviceName, "Adreno") != NULL;
+        if (e) LOG("[vk] MHGU_VK_ADRENO=%d: the Adreno-only paths %s\n", v, v ? "taken" : "left out");
+    }
+    return v;
+}
 bool vk_gpu_adreno_fix_applies(void) { return vk_gpu_adreno() && !g_vk.api12; }  // ([Performance] AdrenoFix: its menu row)
 
-// (platform/android_perf.c, the minute's [mem] line) VMA's VkDeviceMemory blocks, its allocations and their bytes
+// (platform/android_perf.c, the minute's [mem] line) VMA's VkDeviceMemory blocks, its allocations and their bytes, and
+// what uses them: images (textures, render targets), the vertex cache and the staging ring (exec.c)
 void vk_mem_summary(char *out, size_t size) {
     out[0] = 0;
     if (!g_vk.vma) return;
     VmaTotalStatistics t;
     vmaCalculateStatistics(g_vk.vma, &t);
-    snprintf(out, size, ", GPU memory %u blocks, %u allocations, %llu MB", t.total.statistics.blockCount,
-             t.total.statistics.allocationCount, (unsigned long long)(t.total.statistics.blockBytes >> 20));
+    uint64_t staging = 0, vc = 0;
+    int chunks = 0;
+    vk_exec_mem(&staging, &chunks, &vc);
+    int64_t img = atomic_load_explicit(&image_bytes, memory_order_relaxed), bcn = vk_bcn_bytes();
+    int n = snprintf(out, size,
+                     ", GPU memory %u blocks, %u allocations, %llu MB (used %llu: images %lld, of which decoded BC %lld, vertex cache %llu, "
+                     "staging %llu in %d)",
+                     t.total.statistics.blockCount, t.total.statistics.allocationCount,
+                     (unsigned long long)(t.total.statistics.blockBytes >> 20), (unsigned long long)(t.total.statistics.allocationBytes >> 20),
+                     (long long)(img > 0 ? img >> 20 : 0), (long long)(bcn > 0 ? bcn >> 20 : 0), (unsigned long long)(vc >> 20),
+                     (unsigned long long)(staging >> 20), chunks);
+#ifdef VOLK_H_
+    if (drv_create_graphics && n > 0 && (size_t)n < size)  // (PowerVR: the driver's compiles so far, one at a time)
+        snprintf(out + n, size - (size_t)n, ", %llu compiles one at a time (longest wait %.0f ms)",
+                 (unsigned long long)atomic_load(&compiler_calls), atomic_load(&compiler_wait_max) / 1e6);
+#else
+    (void)n;
+#endif
 }
 
 // MSAA can't change while FSR runs (it does the anti-aliasing) or with Low-end mode (it has none). A desktop's plain
@@ -797,12 +964,27 @@ void vk_set_msaa(uint32_t n) {
 // ================================================================== swapchain
 static int swapchain_vsync = -1;
 static int configured_msaa = -1;
+static bool swapchain_paced;  // FIFO, its presents timed to the display's vsyncs (Android: present_pacing.c)
+#ifdef __ANDROID__
+// Should the swapchain be the timed one now? (MHGU_PERF_PRESENT_TIME, the settings' VSync on, the FPS limit a whole fraction
+// of the display's rate; never with MHGU_VK_PRESENT or MHGU_VSYNC given)
+static bool paced_wanted(void) {
+    static int env = -1;
+    if (env < 0) env = getenv("MHGU_VK_PRESENT") || getenv("MHGU_VSYNC");
+    return !env && config_live_vsync() && vk_pacing_fifo();
+}
+#endif
 static VkPresentModeKHR present_mode(void) {
     swapchain_vsync = config_live_vsync();
     // MAILBOX by default: no tearing, and the game paces itself (its own 30 fps vsync waits); with FIFO the game's frames
     // also queued behind the display's, dropping to ~26 fps on the R9. FIFO where there is no mailbox.
     const char *e = getenv("MHGU_VK_PRESENT"), *v = getenv("MHGU_VSYNC");
     if (!e && v) e = atoi(v) ? "fifo" : "immediate";
+    swapchain_paced = false;
+#ifdef __ANDROID__
+    // (FIFO for presents timed to the display: MAILBOX would let a newer picture replace one waiting for its time)
+    if (!e && paced_wanted()) e = "fifo", swapchain_paced = true;
+#endif
     if (!e) e = swapchain_vsync ? "mailbox" : "immediate";  // (mhgurecomp.ini VSync)
     VkPresentModeKHR want = !strcmp(e, "fifo") ? VK_PRESENT_MODE_FIFO_KHR
                           : !strcmp(e, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_MAILBOX_KHR;
@@ -818,6 +1000,38 @@ static VkPresentModeKHR present_mode(void) {
 
 static VkRenderPass sc_pass;
 static VkFramebuffer sc_fb[VK_SC_MAX];
+// The window image drawn turned for the panel (Android, MHGU_PERF_PREROTATE=1): a phone's panel is portrait, and a picture
+// presented upright in landscape (IDENTITY) is turned by the system on every frame. Where the display hardware turns it
+// as it scans out (an Anbernic RG406V's DPU) that costs nothing, but a Moto g06's MediaTek composer sends the layer through
+// its MDP block ("MM" in dumpsys SurfaceFlinger), which reads the whole picture and writes a turned copy every frame. So
+// the swapchain takes the surface's own transform and portrait size, and its one pass draws turned:
+// the game's picture (exec.c vk_present_draw), the overlay (overlay.cpp) and a screenshot's pixels turned back upright.
+// sc_extent stays the window's (landscape) size, what everything is drawn for; sc_phys is the images' own.
+// Only at 90 degrees (transform 0x2: the Moto, the Anbernic and the Galaxy as they are usually held): there the screen
+// shows the same pixels as upright (the settings menu held over a frame, both ways: 0 of 691200 differ). At 270 (0x8)
+// a pixel centre right on an edge goes to the other side of it (Vulkan draws one on a top or left edge, and the turn makes
+// ImGui's glyph edges, which sit on half pixels across, bottom and top ones): 266 pixels of the menu's text differed, up
+// to 48 levels. There the system keeps turning the picture, as before ("prerotate 2" in the control file tries it).
+static int sc_turn;           // quarter turns the window image is drawn with: 0, 1 (90 degrees) or 3 (270)
+static VkExtent2D sc_phys;    // the window images' own size (sc_extent turned when sc_turn is odd)
+static VkSurfaceTransformFlagBitsKHR sc_transform;  // the swapchain's preTransform
+int vk_window_turn(void) { return sc_turn; }
+#ifdef __ANDROID__
+int g_prerotate_test = -1;  // (MHGU_CONTROL "prerotate 0|1|2": tests, the same frame both ways, 2 at 270 too; -1: the switch)
+static bool sc_wants_turn;     // (the switch or a test on: the panel's transform looked at again at a SUBOPTIMAL)
+// The quarter turns to draw with for the surface as it is now: 1 at 90 degrees with the switch on, else 0
+static int turn_wanted(const VkSurfaceCapabilitiesKHR *caps) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("MHGU_PERF_PREROTATE");
+        on = e ? *e == '1' : 1;  // (unset: on)
+    }
+    int t = __atomic_load_n(&g_prerotate_test, __ATOMIC_RELAXED), want = t >= 0 ? t : on;
+    VkSurfaceTransformFlagsKHR cur = caps->currentTransform;
+    if (!want || !(caps->supportedTransforms & cur)) return 0;
+    return cur == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR ? 1 : cur == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR && want == 2 ? 3 : 0;
+}
+#endif
 
 static void create_swapchain(void) {
     VkSurfaceCapabilitiesKHR caps;
@@ -858,7 +1072,15 @@ static void create_swapchain(void) {
         ext.width = ext.height, ext.height = t;
     }
     if (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    sc_turn = w > 0 && h > 0 ? turn_wanted(&caps) : 0;
+    {
+        VkSurfaceCapabilitiesKHR any = caps;
+        any.currentTransform = VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR, any.supportedTransforms = ~0u;
+        sc_wants_turn = turn_wanted(&any) != 0;  // (the switch on: a swapchain left upright looks again at a SUBOPTIMAL)
+    }
+    if (sc_turn) transform = caps.currentTransform;  // (MHGU_PERF_PREROTATE: drawn turned for the panel)
 #endif
+    VkExtent2D phys = sc_turn ? (VkExtent2D){ext.height, ext.width} : ext;
     // (Android drivers often only offer INHERIT)
     VkCompositeAlphaFlagBitsKHR alpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     if (!(caps.supportedCompositeAlpha & alpha))
@@ -881,7 +1103,7 @@ static void create_swapchain(void) {
     VkSwapchainKHR old = g_vk.swapchain;
     VkSwapchainCreateInfoKHR ci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_vk.surface, .minImageCount = count,
-        .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = ext, .imageArrayLayers = 1,
+        .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = phys, .imageArrayLayers = 1,
         .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = transform,
         .compositeAlpha = alpha, .presentMode = present_mode(), .clipped = VK_TRUE,
@@ -908,6 +1130,7 @@ static void create_swapchain(void) {
     if (sc_pass && sf.format != g_vk.sc_format) { vkDestroyRenderPass(g_vk.dev, sc_pass, NULL); sc_pass = VK_NULL_HANDLE; }
     g_vk.sc_format = sf.format;
     g_vk.sc_extent = ext;
+    sc_phys = phys, sc_transform = transform;
     if (!sc_pass) {  // the window image: cleared, then presented (copied from for screenshots first)
         VkAttachmentDescription a = {.format = sf.format, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
                                      .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -933,11 +1156,15 @@ static void create_swapchain(void) {
                                     .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
         VK_CHECK(vkCreateImageView(g_vk.dev, &vi, NULL, &g_vk.sc_views[i]));
         VkFramebufferCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = sc_pass, .attachmentCount = 1,
-                                      .pAttachments = &g_vk.sc_views[i], .width = ext.width, .height = ext.height, .layers = 1};
+                                      .pAttachments = &g_vk.sc_views[i], .width = phys.width, .height = phys.height, .layers = 1};
         VK_CHECK(vkCreateFramebuffer(g_vk.dev, &fi, NULL, &sc_fb[i]));
     }
-    LOG("[vk] swapchain %ux%u, %u images (asked for %u, least %u), format %d\n", ext.width, ext.height, g_vk.sc_count, count,
-        caps.minImageCount, sf.format);
+    LOG("[vk] swapchain %ux%u, %u images (asked for %u, least %u), format %d%s%s\n", ext.width, ext.height, g_vk.sc_count, count,
+        caps.minImageCount, sf.format, swapchain_paced ? ", FIFO with presents timed to the display" : "",
+        sc_turn == 1 ? ", drawn turned 90 degrees for the panel" : sc_turn == 3 ? ", drawn turned 270 degrees for the panel" : "");
+#ifdef __ANDROID__
+    vk_pacing_swapchain();  // (the display's period, the cadence anew)
+#endif
 }
 
 static void recreate_swapchain(void) {
@@ -972,6 +1199,7 @@ static Frame cur_frame;
 // The activity's window comes and goes (runtime/ui.c: 1 in the background, 2 back with a new window): nothing is
 // drawn meanwhile, and on return the surface and swapchain are made again for the new window.
 volatile int g_android_window_state;
+volatile uint64_t g_android_bg_ns;
 static void android_window_check(void) {
     int st = __atomic_load_n(&g_android_window_state, __ATOMIC_ACQUIRE);
     if (st != 2) return;
@@ -982,14 +1210,15 @@ static void android_window_check(void) {
     if (g_vk.surface) vkDestroySurfaceKHR(g_vk.inst, g_vk.surface, NULL);
     g_vk.surface = VK_NULL_HANDLE;
     if (!make_surface()) {
-        LOG("[vk] SDL_Vulkan_CreateSurface after resume: %s\n", SDL_GetError());
+        static int nlog;
+        if (nlog++ < 5) LOG("[vk] SDL_Vulkan_CreateSurface after resume: %s\n", SDL_GetError());
         return;  // (tried again next frame)
     }
     create_swapchain();
     if (g_vk.swapchain) {
         int was = 2;  // (unless it went to the background again meanwhile: that stays for frame_begin)
         __atomic_compare_exchange_n(&g_android_window_state, &was, 0, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
-        LOG("[vk] window back: surface and swapchain made again\n");
+        LOG("[vk] window back after %.0f s: surface and swapchain made again\n", g_android_bg_ns ? (plat_now_ns() - g_android_bg_ns) / 1e9 : 0.0);
     }
 }
 
@@ -1031,6 +1260,14 @@ static bool frame_begin(void) {
     if (msaa != configured_msaa) { vk_set_msaa((uint32_t)msaa); configured_msaa = msaa; }
     if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height ||
         config_live_vsync() != swapchain_vsync) recreate_swapchain();
+#ifdef __ANDROID__
+    else if (paced_wanted() != swapchain_paced) recreate_swapchain();  // (the FPS limit or the display's rate changed)
+    else if (__atomic_load_n(&g_prerotate_test, __ATOMIC_RELAXED) >= 0) {  // (a test's switch: made again when it changes)
+        static int was = -1;
+        int t = __atomic_load_n(&g_prerotate_test, __ATOMIC_RELAXED);
+        if (t != was) was = t, recreate_swapchain();
+    }
+#endif
     if (!g_vk.swapchain) return false;
     slot = (slot + 1) % FRAMES;
     if (!acquire_sem[slot]) acquire_sem[slot] = binary_semaphore();
@@ -1050,11 +1287,11 @@ static bool frame_begin(void) {
     vk_full_barrier(cb);  // (the game's image is complete before it is sampled)
     VkClearValue black = {.color.float32 = {0, 0, 0, 1}};
     VkRenderPassBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = sc_pass,
-                                .framebuffer = sc_fb[cur_frame.image], .renderArea = {{0, 0}, g_vk.sc_extent},
+                                .framebuffer = sc_fb[cur_frame.image], .renderArea = {{0, 0}, sc_phys},
                                 .clearValueCount = 1, .pClearValues = &black};
     vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);
-    VkViewport vp = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};
-    VkRect2D sc = {{0, 0}, g_vk.sc_extent};
+    VkViewport vp = {0, 0, (float)sc_phys.width, (float)sc_phys.height, 0, 1};
+    VkRect2D sc = {{0, 0}, sc_phys};
     vkCmdSetViewport(cb, 0, 1, &vp);
     vkCmdSetScissor(cb, 0, 1, &sc);
     cur_frame.ok = true;
@@ -1062,9 +1299,17 @@ static bool frame_begin(void) {
 }
 
 // A screenshot being written: the window image's pixels (B8G8R8A8 or R8G8B8A8), made RGBA and saved as PNG.
-typedef struct { char path[300]; uint8_t *px; uint32_t w, h; bool bgr; } ShotJob;
+typedef struct { char path[300]; uint8_t *px; uint32_t w, h; bool bgr; int turn; } ShotJob;
 static void *shot_thread(void *arg) {
     ShotJob *j = arg;
+    if (j->px && j->turn) {  // (drawn turned for the panel: the window's w x h from the image's h x w, MHGU_PERF_PREROTATE)
+        uint32_t *src = (uint32_t *)j->px, *dst = malloc((size_t)j->w * j->h * 4), W = j->w, H = j->h;
+        for (uint32_t y = 0; dst && y < H; y++)
+            for (uint32_t x = 0; x < W; x++)
+                dst[(size_t)y * W + x] = j->turn == 1 ? src[(size_t)x * H + (H - 1 - y)] : src[(size_t)(W - 1 - x) * H + y];
+        free(j->px);
+        j->px = (uint8_t *)dst;
+    }
     if (j->px) {
         uint64_t n = (uint64_t)j->w * j->h;
         for (uint64_t i = 0; j->bgr && i < n; i++) { uint8_t t = j->px[i * 4]; j->px[i * 4] = j->px[i * 4 + 2]; j->px[i * 4 + 2] = t; }
@@ -1078,8 +1323,9 @@ static void *shot_thread(void *arg) {
     return NULL;
 }
 
-// End the window image's render pass and present it. shot_path: also save the window image as PNG.
-static void frame_end(const char *shot_path) {
+// End the window image's render pass and present it. shot_path: also save the window image as PNG. new_frame: a game
+// frame (false: the last picture again, the settings menu holding the game).
+static void frame_end(const char *shot_path, bool new_frame) {
     if (!cur_frame.ok) return;
     VkCommandBuffer cb = vk_cmd();
     vkCmdEndRenderPass(cb);
@@ -1087,7 +1333,7 @@ static void frame_end(const char *shot_path) {
     VkSpan shot = {0};
     uint32_t img = cur_frame.image;
     if (shot_path) {  // PRESENT_SRC -> TRANSFER_SRC, copy, back
-        uint32_t w = g_vk.sc_extent.width, h = g_vk.sc_extent.height;
+        uint32_t w = sc_phys.width, h = sc_phys.height;
         shot = vk_readback((uint64_t)w * h * 4);
         VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                                   .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT, .oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
@@ -1108,6 +1354,11 @@ static void frame_end(const char *shot_path) {
     vk_submit_extra(cur_frame.acquired, done_sem[img]);
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &done_sem[img],
                            .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
+#ifdef __ANDROID__
+    if (swapchain_paced) vk_pacing_present(&pi, new_frame);  // (its time on the display's vsync grid: present_pacing.c)
+#else
+    (void)new_frame;
+#endif
     uint64_t t0 = HITCH_ON ? plat_now_ns() : 0;
     VkResult r = vkQueuePresentKHR(g_vk.queue, &pi);
     if (HITCH_ON) hitch_add(HC_PRESENT, plat_now_ns() - t0, 0);
@@ -1116,6 +1367,16 @@ static void frame_end(const char *shot_path) {
     // portrait panel held sideways): the compositor turns it, which is fine; remaking the swapchain for it drained the
     // GPU every frame - half the frame time on a Galaxy S25. Only a swapchain out of date is made again.)
     if (r == VK_ERROR_OUT_OF_DATE_KHR) recreate_swapchain();
+    else if (r == VK_SUBOPTIMAL_KHR && sc_wants_turn) {  // (MHGU_PERF_PREROTATE: the phone turned round since? 4 a second at most)
+        static uint64_t asked;
+        uint64_t now = plat_now_ns();
+        VkSurfaceCapabilitiesKHR caps;
+        if (now - asked >= 250000000ull && (asked = now) &&
+            vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps) == VK_SUCCESS && turn_wanted(&caps) != sc_turn) {
+            LOG("[vk] the panel's transform is now 0x%x: the swapchain made again\n", caps.currentTransform);
+            recreate_swapchain();
+        }
+    }
 #else
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) recreate_swapchain();
 #endif
@@ -1125,7 +1386,7 @@ static void frame_end(const char *shot_path) {
         vk_wait_seq(seq);
         ShotJob *j = malloc(sizeof *j);
         if (!j) { LOG("[vk] saving %s failed: out of memory\n", shot_path); return; }
-        j->w = g_vk.sc_extent.width, j->h = g_vk.sc_extent.height;
+        j->w = g_vk.sc_extent.width, j->h = g_vk.sc_extent.height, j->turn = sc_turn;
         j->bgr = g_vk.sc_format == VK_FORMAT_B8G8R8A8_UNORM || g_vk.sc_format == VK_FORMAT_B8G8R8A8_SRGB;
         j->px = malloc((size_t)j->w * j->h * 4);
         snprintf(j->path, sizeof j->path, "%s", shot_path);
@@ -1152,6 +1413,10 @@ void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, floa
 
 static uint64_t g_frames;
 uint64_t vk_frame_counter(void) { return g_frames; }
+// The picture presented last (after FSR's), for vk_present_again, and when (plat_now_ns): the update thread's menu pause
+static NvnTexture *g_last_picture;
+static volatile uint64_t g_last_present_ns;
+uint64_t vk_last_present_ns(void) { return __atomic_load_n(&g_last_present_ns, __ATOMIC_ACQUIRE); }
 
 // The MHGU_SHOT_AT list: is this frame one of them?
 static bool shot_frame(uint64_t f) {
@@ -1168,7 +1433,10 @@ void backend_present(NvnTexture *t) {
     extern void vi_frame_presented(void);
     vi_frame_presented();  // (the frame rate target back in place; MHGU_STEPLOG's count: runtime/hle/vi.c)
     vk_lock();
+    extern void vk_color_fill_flush(TexBackend *b);
+    vk_color_fill_flush(NULL);  // (MHGU_PERF_HUDSTART_FUSE, MHGU_PERF_FXAA_COPYDRAW: a picture still to be drawn, now)
     if (g_fsr_on) t = vk_fsr_present(t);  // FSR: its output-size picture with the HUD (fsr.c)
+    g_last_picture = t;
     TexBackend *b = vk_tex(t, true);
     b->presented = true;
     vk_end_pass();
@@ -1187,7 +1455,7 @@ void backend_present(NvnTexture *t) {
         if (vh > wh) vh = wh, vw = wh * a;
         vk_present_draw(vk_cmd(), b, (float)((ww - vw) / 2), (float)((wh - vh) / 2), (float)vw, (float)vh);
         OverlayTarget ot = {g_vk.inst, g_vk.phys, g_vk.dev, g_vk.qfam, g_vk.queue, g_vk.pcache, sc_pass,
-                            g_vk.sc_extent.width, g_vk.sc_extent.height};
+                            g_vk.sc_extent.width, g_vk.sc_extent.height, sc_turn};
         overlay_draw(vk_cmd(), &ot);  // (Forge plugins' ImGui overlay, over the game: runtime/overlay.cpp)
         char path[300];
         extern char g_shot_request[256];  // (runtime/host_input.c: MHGU_CONTROL "shot <name>")
@@ -1203,7 +1471,7 @@ void backend_present(NvnTexture *t) {
             if (g_shot_request[0]) { snprintf(path, sizeof path, "%s", g_shot_request); g_shot_request[0] = 0; }
             else snprintf(path, sizeof path, "shots/frame_%05llu.png", (unsigned long long)(g_frames + 1));
         }
-        frame_end(shot ? path : NULL);
+        frame_end(shot ? path : NULL, true);
     } else {
         vk_submit_extra(VK_NULL_HANDLE, VK_NULL_HANDLE);
     }
@@ -1213,6 +1481,7 @@ void backend_present(NvnTexture *t) {
     if (g_frames == 120) gpu_driver_good();  // (a driver of the player's own has drawn: it stays)
 #endif
     touch_hud_frame();  // (the touch controls: where this frame's HUD parts were, runtime/touch.cpp)
+    ui_loop_wake();  // (a frame: the window loop runs a pass now if it waits between events, MHGU_PERF_INPUT_WAKE, ui.c)
 #ifndef __ANDROID__
     mousemenu_frame();  // (and the mouse in the game's menus: where this frame's menu pieces were, runtime/hle/mousemenu.c)
 #endif
@@ -1247,10 +1516,58 @@ void backend_present(NvnTexture *t) {
         t0 = now, n0 = g_frames;
     }
     if (HITCH_ON) hitch_frame(HT_RENDER, 0);  // ((debug) MHGU_HITCHLOG: present to present, runtime/hitchlog.c)
+    __atomic_store_n(&g_last_present_ns, plat_now_ns(), __ATOMIC_RELEASE);
     // (the app in the background, [Application] PauseInBackground: the presenting thread stops here, outside the
     // Vulkan lock, until it is back; the next frame then makes the window's surface again: frame_begin)
     extern void vi_pause_wait(void);
     vi_pause_wait();
+}
+
+// The settings menu holds the game (runtime/overlay.cpp, [Application] PauseInMenu): the last picture again, with the
+// overlay's newest frame over it, while the game's presenting thread waits (runtime/hle/vi.c vi_menu_hold). false: there
+// is no picture yet.
+bool vk_present_again(void) {
+    vk_lock();
+    NvnTexture *t = g_last_picture;
+    if (!t) { vk_unlock(); return false; }
+    TexBackend *b = vk_tex(t, true);
+    vk_end_pass();
+    if (frame_begin()) {
+        double ww = g_vk.sc_extent.width, wh = g_vk.sc_extent.height;
+#ifdef __ANDROID__
+        double a = (double)t->width / t->height;
+#else
+        double a = g_render_aspect > 0 ? g_render_aspect : (double)t->width / t->height;
+#endif
+        double vw = ww, vh = ww / a;
+        if (vh > wh) vh = wh, vw = wh * a;
+        void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, float vw, float vh);  // (exec.c)
+        vk_present_draw(vk_cmd(), b, (float)((ww - vw) / 2), (float)((wh - vh) / 2), (float)vw, (float)vh);
+        OverlayTarget ot = {g_vk.inst, g_vk.phys, g_vk.dev, g_vk.qfam, g_vk.queue, g_vk.pcache, sc_pass,
+                            g_vk.sc_extent.width, g_vk.sc_extent.height, sc_turn};
+        overlay_draw(vk_cmd(), &ot);
+        frame_end(NULL, false);
+    } else {
+        vk_submit_extra(VK_NULL_HANDLE, VK_NULL_HANDLE);
+    }
+    vk_unlock();
+    return true;
+}
+
+// (runtime/overlay.cpp, the settings menu holding the game with MHGU_PERF_MENU_PRESENT=1) the window needs a present
+// whatever the menu shows: back from the background (a new surface to make), no swapchain, the window's size or the
+// VSync setting changed (frame_begin makes it again)
+bool vk_present_needed(void) {
+#ifdef __ANDROID__
+    if (__atomic_load_n(&g_android_window_state, __ATOMIC_ACQUIRE)) return true;
+#endif
+    int w = 0, h = 0;
+    SDL_GetWindowSizeInPixels(ui_window(), &w, &h);
+    vk_lock();
+    bool need = !g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height ||
+                config_live_vsync() != swapchain_vsync;
+    vk_unlock();
+    return need;
 }
 
 // ================================================================== init
@@ -1282,13 +1599,36 @@ static void exit_handler(void) {
     _exit(0);
 }
 
+#ifdef __ANDROID__
+// The first surface, while the game starts. Sent to the background before it (Home in the first seconds of loading),
+// the activity has no window ("Android native window is not available") and the game stopped there with an error.
+// It waits for the window on its own thread instead (SDL's main thread keeps the lifecycle: runtime/ui.c), and goes on
+// once the app is back; the first frame then makes the surface and swapchain again, as after any return. Only a window
+// missing for 5 s with the app in the foreground is an error.
+static bool start_surface(void) {
+    uint64_t fg = plat_now_ns();  // (since when the app is in the foreground)
+    bool waited = false;
+    while (!make_surface()) {
+        if (__atomic_load_n(&g_android_window_state, __ATOMIC_ACQUIRE) == 1) fg = plat_now_ns();
+        else if (plat_now_ns() - fg > 5000000000ull) return false;
+        if (!waited) LOG("[vk] no window for the surface (%s): the app is in the background, waiting for it\n", SDL_GetError());
+        waited = true;
+        SDL_Delay(50);
+    }
+    if (waited) LOG("[vk] the window is back: the start goes on\n");
+    return true;
+}
+#else
+#define start_surface() make_surface()
+#endif
+
 void backend_init(void) {
     static bool done;
     if (done) return;
     done = true;
     if (!ui_window()) FATAL("no window\n");
     create_instance();
-    if (!make_surface()) FATAL("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
+    if (!start_surface()) FATAL("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
     pick_device();
     create_device();
     vk_exec_init();

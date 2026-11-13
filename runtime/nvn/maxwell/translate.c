@@ -24,6 +24,11 @@
 
 uint64_t maxwell_gmem_base, maxwell_gmem_size;
 bool maxwell_no_int64;  // the driver has no shaderInt64 (seen: a Mali-G57 MC2 on Vulkan 1.1): GLSL without 64-bit integers
+// GLSL performance switches (MHGU_PERF_*, set once at start by the renderer: nvn/vulkan/device.c). Off, the output is
+// the same text as without them.
+bool maxwell_nminmax;   // fmin / fmax / saturate as GLSL.std.450 NMin / NMax / NClamp (glsl_prelude_nminmax)
+bool maxwell_ipa_fold;  // an IPA.MULTIPLY by the reciprocal of position w reads the varying as it is (ipa_w_track)
+bool maxwell_vs_trim;   // vertex outputs the fragment shader doesn't read become plain variables (maxwell_trim_outputs)
 const uint8_t *maxwell_dbg_code;
 uint32_t maxwell_dbg_pc;
 int maxwell_dbg_reg;
@@ -81,10 +86,11 @@ typedef struct {
     bool glsl;               // emit Vulkan GLSL: dialect-specific constructs here, the rest via glsl_rewrite()
     bool uses_gmem_store;    // STG present: the gmem buffer is not readonly
     uint32_t cbuf_need[18];  // highest constant vec4 index + 1 per cbuf (array size of the GLSL block)
-    bool guarded;            // the instruction being translated has a predicate: its write may not happen
-    uint8_t tex_alpha[256];  // register holds a texture sample's alpha here
-    uint8_t inf_now[256];    // register may hold 1 / a texture's alpha here (fragment FMZ multiplies, emit_insn)
-    uint8_t inf_ever[256];   // ... has held one so far: what a branch target may see
+    // (maxwell_ipa_fold, fragment GLSL) what a register holds at this point of the straight-line code: 1 position w as
+    // the IPA of 0x7c gives it (gl_FragCoord.w), 2 its reciprocal (MUFU.RCP of a 1); 0 anything else. ipa_w_mark: the
+    // value the instruction being translated leaves in register ipa_w_reg (-1 none)
+    uint8_t ipa_w[256];
+    int ipa_w_reg, ipa_w_mark;
 } Ctx;
 
 #define NO64(c) ((c)->glsl && maxwell_no_int64)
@@ -178,16 +184,7 @@ static const char *operand_c_for_ffma(Ctx *c, uint64_t w, char *buf, const char 
 static void set_reg(Ctx *c, int r, const char *expr) {
     if (r == RZ) return;
     c->reg_used[r] = 1;
-    if (!c->guarded) c->inf_now[r] = c->tex_alpha[r] = 0;
     sp(&c->body, "    r%d = %s;\n", r, expr);
-}
-
-// FMUL / FFMA with FMZ: on the Switch 0 x anything is 0, in Vulkan 0 x infinity is NaN, which comes out black (an
-// environment cube's rgb / alpha where alpha is 0). Only a register straight from 1 / a texture's alpha gets the
-// check on the zero, in fragment shaders: it costs GPU time (on every FMZ multiply it would be most of them), and the
-// depth pre-pass needs its vertex shaders' math untouched. A stale flag only adds a check that is right anyway.
-static bool fmz_check(const Ctx *c, uint64_t mode, int ra, int rb) {
-    return c->glsl && c->stage == STAGE_FRAGMENT && mode == 1 && ((ra != RZ && c->inf_now[ra]) || (rb != RZ && c->inf_now[rb]));
 }
 
 static const char *fneg_abs(const char *e, bool neg, bool abs_, char *buf) {
@@ -277,6 +274,8 @@ static void attr_load(Ctx *c, int dst, uint32_t addr, const char *idx) {
                 // pass value times a register - usually w (from the pass of position w: Metal's attr again), but a
                 // shader may pass its own (the Mysterious Woods mist: 1/(v4.w * pos.w), a projective screen lookup)
                 if (c->ipa_mode == 0) sprintf(e, "as_type<uint>(in.v%d[%d] * in.pos.w)", a, comp);
+                else if (c->ipa_mode == 1 && c->ipa_mul != RZ && c->ipa_w[c->ipa_mul] == 2)  // (times w, times 1 / w)
+                    sprintf(e, "as_type<uint>(in.v%d[%d])", a, comp);
                 else if (c->ipa_mode == 1 && c->ipa_mul != RZ) {
                     char mb[16];
                     sprintf(e, "as_type<uint>(in.v%d[%d] * in.pos.w * as_type<float>(%s))", a, comp, reg(c, c->ipa_mul, mb));
@@ -284,10 +283,9 @@ static void attr_load(Ctx *c, int dst, uint32_t addr, const char *idx) {
             }
         } else if (addr == 0x3FC) {
             c->uses_front_facing = true;
-            // (GLSL: all ones made from -1.0 in the rscale table, [66].x: Intel's Windows driver for Gen9 (1.3.215)
-            // turns float(int()) of a constant mask into +1 for front faces, lighting them as back faces; -1.0 and
-            // not the all-ones word itself, a NaN as a float, which that driver may not keep bit for bit)
-            if (c->glsl) c->uses_rscale = true, strcpy(e, "(front_facing ? uint(int(rscale[66][0])) : 0u)");
+            // (GLSL: the all-ones word from the rscale table, [66].x: Intel's Windows driver for Gen9 (1.3.215)
+            // turns float(int()) of a constant mask into +1 for front faces, lighting them as back faces)
+            if (c->glsl) c->uses_rscale = true, strcpy(e, "(front_facing ? as_type<uint>(rscale[66][0]) : 0u)");
             else strcpy(e, "(front_facing ? 0xFFFFFFFFu : 0u)");
         }
         else if (addr == 0x2E0 || addr == 0x2E4) { sprintf(e, "as_type<uint>(point_coord[%d])", (addr >> 2) & 1); }
@@ -540,12 +538,7 @@ static void write_tex_result(Ctx *c, int slot, const char *call, uint32_t mask, 
     for (int comp = 0; comp < 4; comp++) {
         if (!(mask & (1u << comp))) continue;
         int r = regs[n++];
-        if (r != RZ) {
-            c->reg_used[r] = 1;
-            if (comp == 3) c->tex_alpha[r] = 1;
-            else if (!c->guarded) c->tex_alpha[r] = 0;
-            sp(&c->body, "      r%d = as_type<uint>(t[%d]);\n", r, comp);
-        }
+        if (r != RZ) { c->reg_used[r] = 1; sp(&c->body, "      r%d = as_type<uint>(t[%d]);\n", r, comp); }
     }
     sp(&c->body, "    }\n");
 }
@@ -888,7 +881,6 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         prn = false;
     }
     bool guarded = !(pr == PT && !prn);
-    c->guarded = guarded;
     if (pr == PT && prn) return;  // @!pt: never executes
     if (guarded) sp(&c->body, "  if (%s) {\n", P(pr, prn));
     // control flow taking a condition-code test (BRA, EXIT, KIL, SYNC, BRK, CONT): T is the usual unconditional form
@@ -945,6 +937,7 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         attr_load(c, d, addr, NULL);
         c->ipa_mode = -1;
         if (bits(w, 51, 1) && d != RZ) sp(&c->body, "    r%d = as_type<uint>(saturate(as_type<float>(r%d)));\n", d, d);
+        else if (addr == 0x7C && mode == 0 && !idx && d != RZ && !guarded && !cc_guard) c->ipa_w_reg = d, c->ipa_w_mark = 1;
     } else if (OPM(0xefd8000000000000ull, 0xfff8000000000000ull)) {  // LD attribute
         int n = 1 + (int)bits(w, 47, 2);
         uint32_t addr = (uint32_t)bits(w, 20, 10);
@@ -1030,9 +1023,10 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         case 8: sprintf(t, "sqrt(%s)", x); break;
         default: fail(c, "mufu %d", fn); return;
         }
-        bool of_alpha = fn == 4 && a != RZ && c->tex_alpha[a];
         set_reg(c, d, FRES(t, bits(w, 50, 1)));
-        if (of_alpha && d != RZ) c->inf_now[d] = c->inf_ever[d] = 1;
+        if (fn == 4 && a != RZ && d != RZ && c->ipa_w[a] == 1 && !bits(w, 48, 1) && !bits(w, 46, 1) && !bits(w, 50, 1) &&
+            !guarded && !cc_guard)
+            c->ipa_w_reg = d, c->ipa_w_mark = 2;  // (1 / gl_FragCoord.w: attr_load)
     } else if (OPM(0x5c90000000000000ull, 0xfff8000000000000ull) || OPM(0x4c90000000000000ull, 0xfff8000000000000ull) ||
                OPM(0x3890000000000000ull, 0xfef8000000000000ull)) {  // RRO: range reduction (no-op for us)
         const char *x = NA(F(B(true)), bits(w, 45, 1), bits(w, 49, 1));
@@ -1048,8 +1042,7 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
     } else if (OPM(0x5c68000000000000ull, 0xfff8000000000000ull) || OPM(0x4c68000000000000ull, 0xfff8000000000000ull) ||
                OPM(0x3868000000000000ull, 0xfef8000000000000ull)) {  // FMUL
         static const char *const scale[] = {"", " * 0.5f", " * 0.25f", " * 0.125f", " * 8.0f", " * 4.0f", " * 2.0f", ""};
-        bool fmz = fmz_check(c, bits(w, 44, 2), a, b_form(w) == B_REG ? (int)bits(w, 20, 8) : RZ);
-        sprintf(t, fmz ? "(fmz_mul(%s, %s)%s)" : "(%s * %s%s)", F(R(a)), NA(F(B(true)), bits(w, 48, 1), false), scale[bits(w, 41, 3)]);
+        sprintf(t, "(%s * %s%s)", F(R(a)), NA(F(B(true)), bits(w, 48, 1), false), scale[bits(w, 41, 3)]);
         set_reg(c, d, FRES(t, bits(w, 50, 1)));
     } else if (OPM(0x1e00000000000000ull, 0xff00000000000000ull)) {  // FMUL32I
         sprintf(t, "(%s * as_type<float>(0x%08xu))", F(R(a)), (uint32_t)bits(w, 20, 32));
@@ -1059,8 +1052,7 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         const char *bv;
         char cbuf_c[256], bbuf[256];
         const char *cv = operand_c_for_ffma(c, w, cbuf_c, &bv, bbuf);
-        int rb = (w >> 59) == 0xa && ((w >> 56) & 7) ? (int)bits(w, 39, 8) : b_form(w) == B_REG ? (int)bits(w, 20, 8) : RZ;  // (as in operand_c_for_ffma)
-        sprintf(t, fmz_check(c, bits(w, 53, 2), a, rb) ? "fmz_fma(%s, %s, %s)" : "fma(%s, %s, %s)", F(R(a)), NA(F(bv), bits(w, 48, 1), false), NA(F(cv), bits(w, 49, 1), false));
+        sprintf(t, "fma(%s, %s, %s)", F(R(a)), NA(F(bv), bits(w, 48, 1), false), NA(F(cv), bits(w, 49, 1), false));
         set_reg(c, d, FRES(t, bits(w, 50, 1)));
     } else if (OPM(0x0c00000000000000ull, 0xfc00000000000000ull)) {  // FFMA32I
         sprintf(u, "as_type<float>(0x%08xu)", (uint32_t)bits(w, 20, 32));
@@ -1799,13 +1791,15 @@ static void glsl_rewrite(Ctx *c, Str *o, const char *src) {
     }
 }
 
-static const char glsl_prelude[] =
+static const char glsl_prelude_ext[] =
     "#version 460\n"
     "#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require\n"
     "#extension GL_KHR_shader_subgroup_basic : require\n"
     "#extension GL_KHR_shader_subgroup_shuffle : require\n"
     "#extension GL_KHR_shader_subgroup_shuffle_relative : require\n"
-    "#extension GL_EXT_texture_shadow_lod : require\n"
+    "#extension GL_EXT_texture_shadow_lod : require\n";
+
+static const char glsl_prelude[] =
     "#define cbr(cb, off) cb[min((off) >> 4, uint(cb.length() - 1))][((off) >> 2) & 3u]\n"
     "uint as_u(float x) { return floatBitsToUint(x); }\n"
     "uint as_u(uint x) { return x; }\n"
@@ -1818,14 +1812,27 @@ static const char glsl_prelude[] =
     "int sx8(uint v) { return bitfieldExtract(int(v), 0, 8); }\n"
     "int sx8(int v) { return bitfieldExtract(v, 0, 8); }\n"
     "int sx16(uint v) { return bitfieldExtract(int(v), 0, 16); }\n"
-    "int sx16(int v) { return bitfieldExtract(v, 0, 16); }\n"
-    // MSL semantics: saturate(NaN) = 0, fmin/fmax return the non-NaN operand
+    "int sx16(int v) { return bitfieldExtract(v, 0, 16); }\n";
+
+// MSL semantics: saturate(NaN) = 0, fmin/fmax return the non-NaN operand
+static const char glsl_prelude_minmax[] =
     "float saturate(float x) { return isnan(x) ? 0.0f : clamp(x, 0.0f, 1.0f); }\n"
     "vec2 saturate(vec2 x) { return vec2(saturate(x.x), saturate(x.y)); }\n"
     "float fmin(float a, float b) { return isnan(a) ? b : (isnan(b) ? a : min(a, b)); }\n"
-    "float fmax(float a, float b) { return isnan(a) ? b : (isnan(b) ? a : max(a, b)); }\n"
-    "float fmz_mul(float a, float b) { return (a == 0.0f || b == 0.0f) ? 0.0f : a * b; }\n"
-    "float fmz_fma(float a, float b, float c) { return (a == 0.0f || b == 0.0f) ? c : fma(a, b, c); }\n"
+    "float fmax(float a, float b) { return isnan(a) ? b : (isnan(b) ? a : max(a, b)); }\n";
+
+// (maxwell_nminmax) The same, one instruction each: GLSL.std.450's NMin and NMax (79, 80) give the operand that isn't
+// NaN, and NClamp (81) is NMin(NMax(x, 0), 1), so NaN saturates to 0. GLSL has no names for them: GL_EXT_spirv_intrinsics.
+static const char glsl_prelude_nminmax[] =
+    "spirv_instruction(set = \"GLSL.std.450\", id = 79) float nmin_(float a, float b);\n"
+    "spirv_instruction(set = \"GLSL.std.450\", id = 80) float nmax_(float a, float b);\n"
+    "spirv_instruction(set = \"GLSL.std.450\", id = 81) float nclamp_(float x, float lo, float hi);\n"
+    "float saturate(float x) { return nclamp_(x, 0.0f, 1.0f); }\n"
+    "vec2 saturate(vec2 x) { return vec2(saturate(x.x), saturate(x.y)); }\n"
+    "float fmin(float a, float b) { return nmin_(a, b); }\n"
+    "float fmax(float a, float b) { return nmax_(a, b); }\n";
+
+static const char glsl_prelude_tail[] =
     "uint clz(uint v) { return v == 0u ? 32u : uint(31 - findMSB(v)); }\n"
     "uint popcount(uint v) { return uint(bitCount(v)); }\n"
     "uint mulhi(uint a, uint b) { uint hi, lo; umulExtended(a, b, hi, lo); return hi; }\n"
@@ -1880,7 +1887,9 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     if (c->fail) { free(body.buf); free(c->body.buf); free(c); return info; }
     int set = stage == STAGE_FRAGMENT ? 1 : 0;
     Str s = {0};
-    sp(&s, "%s", glsl_prelude);
+    sp(&s, "%s", glsl_prelude_ext);
+    if (maxwell_nminmax) sp(&s, "#extension GL_EXT_spirv_intrinsics : require\n");
+    sp(&s, "%s%s%s", glsl_prelude, maxwell_nminmax ? glsl_prelude_nminmax : glsl_prelude_minmax, glsl_prelude_tail);
     if (maxwell_no_int64) sp(&s, "%s", glsl_prelude_no64);
     for (int i = 0; i < 18; i++) {
         if (!(info->cbuf_mask & (1u << i))) continue;
@@ -1903,7 +1912,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     if (c->uses_rscale && stage != STAGE_VERTEX) {
         sp(&s, "layout(std140, set = %d, binding = 18) uniform RScale { vec4 rscale[%d]; };\n", set,
            c->uses_front_facing ? 67 : key && key->flip_x ? 66 : 65);  // ([65]: mirror mode's render target width,
-                                                                        // [66].x: -1.0, see attr_load)
+                                                                        // [66].x: all ones, see attr_load)
         info->uses_rscale = true;
     }
     bool tint = stage == STAGE_FRAGMENT && !dbg && (c->omap_target & 0x7) == 0x7 && (!key || key->rt_kind[0] == 0);
@@ -2034,6 +2043,25 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     return info;
 }
 
+// (maxwell_ipa_fold) After an instruction's text (from at): a register it assigns, under any condition, no longer holds
+// what ipa_w says; then the instruction's own mark. Every register write is spelled "r<n> = ..." in the body.
+static void ipa_w_track(Ctx *c, size_t at) {
+    const char *b = c->body.buf, *e = b + c->body.len;
+    for (const char *p = b + at; p < e; p++) {
+        if (*p != 'r' || (p > b && id_char(p[-1]))) continue;
+        const char *q = p + 1;
+        int r = 0;
+        while (q < e && *q >= '0' && *q <= '9' && r < 1000) r = r * 10 + (*q++ - '0');
+        if (q == p + 1 || (q < e && id_char(*q))) continue;
+        while (q < e && *q == ' ') q++;
+        if (e - q < 3) continue;
+        bool set = (q[0] == '=' && q[1] != '=') || (q[0] && strchr("+-*/%&|^", q[0]) && q[1] == '=') ||
+                   ((q[0] == '<' || q[0] == '>') && q[1] == q[0] && q[2] == '=');
+        if (set && r < 256) c->ipa_w[r] = 0;
+    }
+    if (c->ipa_w_reg >= 0) c->ipa_w[c->ipa_w_reg] = (uint8_t)c->ipa_w_mark;
+}
+
 ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, const ShaderKey *key) {
     ShaderInfo *info = calloc(1, sizeof *info);
     info->stage = stage;
@@ -2094,15 +2122,19 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     static int annotate = -1;
     if (annotate < 0) annotate = getenv("MHGU_SAVE_MSL") != NULL;
     c->branchy = any_branch;
+    bool ipa_fold = maxwell_ipa_fold && c->glsl && stage == STAGE_FRAGMENT;
     for (size_t i = 0; i < end && !c->fail; i++) {
         if (i % 4 == 0) continue;
         uint32_t pc = (uint32_t)(i * 8);
         if (any_branch && label[i]) {
             sp(&c->body, "  case %uu:\n", pc);
-            for (int r = 0; r < 256; r++) c->inf_now[r] |= c->inf_ever[r];  // (reached by a jump past the last write too)
+            memset(c->ipa_w, 0, sizeof c->ipa_w);  // (reached from elsewhere too)
         }
         if (annotate) sp(&c->body, "    // pc %x: %016llx\n", pc, (unsigned long long)((const uint64_t *)code)[i]);
+        size_t at = c->body.len;
+        c->ipa_w_reg = -1;
         emit_insn(c, ((const uint64_t *)code)[i], pc);
+        if (ipa_fold) ipa_w_track(c, at);
         if (dbg && pc == maxwell_dbg_pc) {
             int rr = maxwell_dbg_reg % 1000, half = maxwell_dbg_reg / 1000;  // +1000: low f16, +2000: high f16
             c->reg_used[rr] = 1;
@@ -2266,6 +2298,22 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     free(c->body.buf);
     free(c);
     return info;
+}
+
+// (maxwell_vs_trim) A GLSL vertex shader's outputs not in keep (its fragment shader's attr_mask) become plain variables:
+// their math and stores are then dead code to the driver's compiler. Only those declarations change.
+void maxwell_trim_outputs(ShaderInfo *vs, uint32_t keep) {
+    if (!vs || !vs->msl || vs->stage != STAGE_VERTEX) return;
+    for (int i = 0; i < 32; i++) {
+        if (!(vs->out_mask & ~keep & (1u << i))) continue;
+        char decl[48], var[24];
+        int n = snprintf(decl, sizeof decl, "layout(location = %d) out vec4 v%d;\n", i, i);
+        int m = snprintf(var, sizeof var, "vec4 v%d;\n", i);
+        char *at = strstr(vs->msl, decl);
+        if (!at) continue;  // (MSL)
+        memcpy(at, var, (size_t)m);
+        memmove(at + m, at + n, strlen(at + n) + 1);
+    }
 }
 
 void maxwell_free(ShaderInfo *s) {

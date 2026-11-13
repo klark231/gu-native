@@ -62,10 +62,7 @@ public class ImportActivity extends Activity {
     private Button add, closeButton;
     private Dialog browser;
 
-    private File home() {
-        File f = getExternalFilesDir(null);
-        return f != null ? f : getFilesDir();
-    }
+    private File home() { return AppHome.home(this); }
     private String sub() { return kind == CHEATS ? "cheats" : kind == MOD ? "mods" : "dlc"; }
 
     /** The game's folder (GameFolderActivity's choice), or null. */

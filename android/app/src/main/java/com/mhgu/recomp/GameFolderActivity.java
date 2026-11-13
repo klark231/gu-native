@@ -13,7 +13,6 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
-import android.provider.DocumentsContract;
 import android.provider.Settings;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
@@ -30,9 +29,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.List;
 import java.util.Locale;
 
 /**
@@ -54,10 +51,7 @@ public class GameFolderActivity extends Activity {
     private TextView status;
     private Button pick;
 
-    private File home() {
-        File f = getExternalFilesDir(null);
-        return f != null ? f : getFilesDir();
-    }
+    private File home() { return AppHome.home(this); }
     private File savedFile() { return new File(home(), "game_folder.txt"); }
     private File rejectedFile() { return new File(home(), "game_folder_bad.txt"); }
     private File ownLib() { return new File(getFilesDir(), "game/libmhgugame.so"); }
@@ -99,10 +93,12 @@ public class GameFolderActivity extends Activity {
         declareGame();
         es = "es".equals(Locale.getDefault().getLanguage());
         change = getIntent().getBooleanExtra(EXTRA_CHANGE, false);
+        if (!change) AppHome.ensure(this);  // (a folder of the app's that another app made: given back, or the private one)
         boolean rejected = rejectedFile().exists();
-        File chosen = saved(), own = new File(home(), "data");
+        File ext = AppHome.external(this), chosen = saved(), own = new File(ext != null ? ext : home(), "data");
+        if (!change) Notices.checkInBackground(this);
         if (!change && !rejected && haveLib() && (looksRight(chosen) || (chosen == null && looksRight(own)))) {
-            startGame();
+            proceed();
             return;
         }
         build();
@@ -127,10 +123,42 @@ public class GameFolderActivity extends Activity {
         }
     }
 
+    /** This process passed the entry screen's checks and started the game (GameActivity sends any other start here). */
+    static volatile boolean gameStarted;
+
     private void startGame() {
+        gameStarted = true;
         startActivity(new Intent(this, GameActivity.class));
         overridePendingTransition(0, 0);
         finish();
+    }
+
+    /**
+     * The files are right: what is left before the game (each in the game's style, over a plain wine screen): the app's
+     * folder moved to the private one (AppHome), the save folder's start gate (SaveFolderActivity.gate), the
+     * unofficial-build and update notices (Notices), then the game.
+     */
+    private void proceed() {
+        if (status == null) {
+            android.view.View plain = new android.view.View(this);
+            plain.setBackgroundColor(WINE);
+            setContentView(plain);
+        }
+        String moved = AppHome.movedNotice(this);
+        if (moved != null) {
+            Look.notice(this, es ? "EL JUEGO USA SU CARPETA PRIVADA" : "THE GAME USES ITS PRIVATE FOLDER",
+                    es ? "Otra app (un administrador de archivos, por ejemplo con Shizuku) creó la carpeta del juego, " + moved
+                         + ", y Android no deja que el juego escriba en ella. Así que el juego guarda sus ajustes, su registro y "
+                         + "tu partida en su carpeta privada, y copió ahí lo que pudo leer. Para llevar tu partida a otro lado usa "
+                         + "Ajustes, Exportar partida o Carpeta de partidas."
+                       : "Another app (a file manager, for example through Shizuku) made the game's folder, " + moved + ", and "
+                         + "Android won't let the game write in it. So the game keeps its settings, its log and your save in its "
+                         + "private folder, and copied there what it could read. To take your save elsewhere, use Settings, "
+                         + "Export save or Save folder.",
+                    new Look.Choice(es ? "Continuar" : "Continue", true, this::proceed));
+            return;
+        }
+        SaveFolderActivity.gate(this, () -> Notices.beforeGame(this, this::startGame));
     }
 
     // ---- the screen
@@ -170,14 +198,14 @@ public class GameFolderActivity extends Activity {
     /** The folder as it must look: folders in gold, what goes in them in cream. */
     private CharSequence tree() {
         String[] lines = {
-            es ? "Tu carpeta" : Zh.t("Your folder"),
+            es ? "Tu carpeta" : "Your folder",
             "├─ exefs",
             "│    main",
             "│    main.npdm",
             "│    rtld, sdk, subsdk0",
             "├─ romfs",
             "│    nativeNX",
-            es ? "│    ... 35.500 archivos" : Zh.t("│    ... 35,500 files"),
+            es ? "│    ... 35.500 archivos" : "│    ... 35,500 files",
             "├─ libmhgugame.so",
             "└─ libmhgugame.id",
         };
@@ -326,7 +354,11 @@ public class GameFolderActivity extends Activity {
     }
 
     private void openPicker() {
-        openBrowser(null);
+        FolderBrowser.open(this, null, es ? "ELIGE LA CARPETA DEL JUEGO" : "CHOOSE THE GAME'S FOLDER",
+                GameFolderActivity::holdsGame,
+                (dir, game) -> game ? (es ? "✓ Aquí está el juego: exefs y romfs." : "✓ The game is here: exefs and romfs.")
+                                    : (es ? "Entra a la carpeta que tiene exefs y romfs." : "Go into the folder that holds exefs and romfs."),
+                this::verify, this::systemPicker, false);
     }
 
     /** Android's own folder picker: the browser's second way (some show nothing at the root, or refuse it). */
@@ -339,138 +371,15 @@ public class GameFolderActivity extends Activity {
         }
     }
 
-    // ---- the app's own folder browser. Android's picker (HyperOS on a POCO F6, seen twice) showed the storage's root
-    // empty and refused it; with access to all files the folders can be listed here, in the game's style
-    private android.app.Dialog browser;
-
-    /** The storage roots: the phone's own and each SD card's (from the app's folders on them). */
-    private List<File> roots() {
-        List<File> out = new ArrayList<>();
-        out.add(Environment.getExternalStorageDirectory());
-        File[] mine = getExternalFilesDirs(null);
-        if (mine != null)
-            for (File f : mine) {
-                if (f == null) continue;
-                String p = f.getAbsolutePath();
-                int cut = p.indexOf("/Android/data/");
-                if (cut <= 0) continue;
-                File root = new File(p.substring(0, cut));
-                if (!root.equals(out.get(0)) && root.isDirectory()) out.add(root);
-            }
-        return out;
-    }
-
-    private boolean holdsGame(File d) {
+    private static boolean holdsGame(File d) {
         return new File(d, "exefs").isDirectory() && new File(d, "romfs").isDirectory();
-    }
-
-    private void openBrowser(File at) {
-        if (browser != null) browser.dismiss();
-        List<File> roots = roots();
-        int pad = dp(12);
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setBackground(plate(PANEL, 8));
-        box.setPadding(pad, pad, pad, pad);
-        TextView title = text(es ? "ELIGE LA CARPETA DEL JUEGO" : "CHOOSE THE GAME'S FOLDER", 17, GOLD, true);
-        title.setGravity(Gravity.CENTER);
-        box.addView(title);
-        // the roots, as tabs
-        LinearLayout tabs = new LinearLayout(this);
-        tabs.setGravity(Gravity.CENTER);
-        for (int i = 0; i < roots.size(); i++) {
-            File r = roots.get(i);
-            boolean on = at != null ? at.getAbsolutePath().startsWith(r.getAbsolutePath()) : i == 0;
-            Button t = button(i == 0 ? (es ? "Memoria interna" : "Phone storage")
-                                     : (es ? "Tarjeta SD" : "SD card") + (roots.size() > 2 ? " " + i : ""), on);
-            t.setOnClickListener(v -> openBrowser(r));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40));
-            lp.setMargins(dp(4), dp(6), dp(4), dp(4));
-            tabs.addView(t, lp);
-        }
-        box.addView(tabs);
-        File dir = at != null ? at : roots.get(0);
-        File root = roots.get(0);
-        for (File r : roots) if (dir.getAbsolutePath().startsWith(r.getAbsolutePath())) root = r;
-        String shown = dir.getAbsolutePath().substring(root.getAbsolutePath().length());
-        TextView where = text((shown.isEmpty() ? "/" : shown), 13, CREAM, false);
-        where.setPadding(dp(4), dp(2), dp(4), dp(4));
-        box.addView(where);
-        boolean game = holdsGame(dir);
-        TextView hint = text(game ? (es ? "✓ Aquí está el juego: exefs y romfs." : "✓ The game is here: exefs and romfs.")
-                                  : (es ? "Entra a la carpeta que tiene exefs y romfs." : "Go into the folder that holds exefs and romfs."),
-                13, game ? GOLD : CREAM, game);
-        hint.setPadding(dp(4), 0, dp(4), dp(6));
-        box.addView(hint);
-        // the folders here
-        LinearLayout list = new LinearLayout(this);
-        list.setOrientation(LinearLayout.VERTICAL);
-        final File here = dir, top = root;
-        if (!dir.equals(root)) {
-            Button up = button("⬑  " + (es ? "Subir" : "Up"), false);
-            up.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-            up.setOnClickListener(v -> openBrowser(here.getParentFile()));
-            list.addView(up, rowParams());
-        }
-        File[] kids = dir.listFiles(f -> f.isDirectory() && !f.getName().startsWith("."));
-        if (kids != null) {
-            Arrays.sort(kids, (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
-            for (File k : kids) {
-                boolean has = holdsGame(k);
-                Button b = button((has ? "✓  " : "▸  ") + k.getName(), has);
-                b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-                b.setOnClickListener(v -> openBrowser(k));
-                list.addView(b, rowParams());
-            }
-        }
-        if (kids == null || kids.length == 0) {
-            TextView none = text(es ? "(no hay carpetas)" : "(no folders)", 13, CREAM, false);
-            none.setPadding(dp(6), dp(8), dp(6), dp(8));
-            list.addView(none);
-        }
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(list);
-        box.addView(scroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
-        // use it, Android's picker, cancel
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER);
-        row.setPadding(0, dp(8), 0, 0);
-        Button use = button(es ? "Usar esta carpeta" : "Use this folder", true);
-        use.setOnClickListener(v -> { browser.dismiss(); verify(here); });
-        Button other = button(es ? "Selector de Android" : "Android's picker", false);
-        other.setOnClickListener(v -> { browser.dismiss(); systemPicker(); });
-        Button cancel = button(es ? "Cancelar" : "Cancel", false);
-        cancel.setOnClickListener(v -> browser.dismiss());
-        for (Button b : new Button[] {use, other, cancel}) {
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(44));
-            lp.setMargins(dp(5), 0, dp(5), 0);
-            row.addView(b, lp);
-        }
-        box.addView(row);
-        browser = new android.app.Dialog(this);
-        browser.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
-        browser.setContentView(box);
-        android.view.Window w = browser.getWindow();
-        if (w != null) {
-            w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
-            android.util.DisplayMetrics m = getResources().getDisplayMetrics();
-            w.setLayout(Math.min(dp(640), (int) (m.widthPixels * .92f)), (int) (m.heightPixels * .92f));
-        }
-        browser.show();
-        use.requestFocus();
-    }
-
-    private LinearLayout.LayoutParams rowParams() {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(42));
-        lp.setMargins(0, dp(3), 0, dp(3));
-        return lp;
     }
 
     @Override
     protected void onActivityResult(int code, int result, Intent data) {
         super.onActivityResult(code, result, data);
         if (code != PICK || result != RESULT_OK || data == null || data.getData() == null) return;
-        File dir = pathOf(data.getData());
+        File dir = FolderBrowser.pathOf(data.getData());
         if (dir == null) {
             status.setTextColor(ALERT);
             status.setText(Zh.t(es ? "No se puede usar esa ubicación. Busca la carpeta en la memoria del teléfono o en la tarjeta SD."
@@ -478,24 +387,6 @@ public class GameFolderActivity extends Activity {
             return;
         }
         verify(dir);
-    }
-
-    /** A picked folder as a plain path (null: a provider with no real folder behind it). */
-    private File pathOf(Uri tree) {
-        try {
-            String id = DocumentsContract.getTreeDocumentId(tree);
-            String authority = tree.getAuthority();
-            if ("com.android.providers.downloads.documents".equals(authority) && id.startsWith("raw:"))
-                return new File(id.substring(4));
-            if (!"com.android.externalstorage.documents".equals(authority)) return null;
-            int colon = id.indexOf(':');
-            if (colon < 0) return null;
-            String volume = id.substring(0, colon), rest = id.substring(colon + 1);
-            File base = "primary".equalsIgnoreCase(volume) ? Environment.getExternalStorageDirectory() : new File("/storage", volume);
-            return rest.isEmpty() ? base : new File(base, rest);
-        } catch (Exception e) {
-            return null;
-        }
     }
 
     // ---- is it the right thing? (a background thread: the walk over romfs takes seconds)
@@ -610,12 +501,22 @@ public class GameFolderActivity extends Activity {
     }
 
     private void accept(File dir) {
-        try (FileOutputStream out = new FileOutputStream(savedFile())) {
-            out.write(dir.getAbsolutePath().getBytes("UTF-8"));
+        try {
+            AppHome.write(savedFile(), dir.getAbsolutePath());
         } catch (Exception e) {
-            status.setTextColor(ALERT);
-            status.setText(String.valueOf(e));
-            return;
+            // (the app's folder can't be written at all: AppHome moves to the private one, and the choice goes there)
+            android.util.Log.e("MHGU", "game_folder.txt: " + e);
+            AppHome.ensure(this);
+            try {
+                AppHome.write(savedFile(), dir.getAbsolutePath());
+            } catch (Exception e2) {
+                status.setTextColor(ALERT);
+                status.setText(Zh.t(es ? "No se pudo guardar la carpeta elegida: Android no deja que el juego escriba en " + home()
+                                    + ". Comparte el registro desde la pantalla de error o desde Ajustes."
+                                  : "The folder chosen couldn't be kept: Android won't let the game write in " + home()
+                                    + ". Share the log from the error screen or from Settings."));
+                return;
+            }
         }
         rejectedFile().delete();
         if (change) {
@@ -624,6 +525,6 @@ public class GameFolderActivity extends Activity {
             pick.setEnabled(false);
             return;
         }
-        startGame();
+        proceed();
     }
 }

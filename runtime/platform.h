@@ -46,6 +46,11 @@ bool plat_committed(uint64_t addr, uint64_t *end);int plat_written_pages(uint64_
 // ---- time
 uint64_t plat_now_ns(void);                // monotonic
 void plat_sleep_until_ns(uint64_t t);      // precise wait for plat_now_ns() >= t
+#ifdef __ANDROID__
+// (the perf pass's MHGU_PERF_SLEEP_COARSE) one sleep to t, the thread's timer slack as it is and no spin at the end:
+// for waits that need no precision. It may end some tens of microseconds after t.
+void plat_sleep_coarse_until_ns(uint64_t t);
+#endif
 #ifdef _WIN32
 // An event waited for with a precise timeout (nvn/vulkan/exec.c: a draw's short wait for its shader build;
 // runtime/kernel.c kwait: a guest thread's waits). winpthreads' timed waits end on the system's 15.6 ms tick whatever
@@ -84,6 +89,14 @@ void plat_fatal_notice(void);
 int plat_thread_create(void *(*fn)(void *), void *arg, size_t stack);
 #ifdef _WIN32
 void plat_thread_below_normal(void);  // the calling thread gives way to the game's (nvn/vulkan/exec.c: shader builds)
+#endif
+// The calling thread's name as the system's tools show it (top, simpleperf, /proc/<pid>/task/<tid>/comm; up to 15
+// characters): "vsync", "upload-2", "g44-50". Without it every thread the runtime makes is "SDLThread" on Android, the
+// name of the one that made it. MHGU_PERF_THREADNAMES (Android, on by default; read once, by plat_init); =0, and elsewhere, nothing.
+#ifdef __ANDROID__
+void plat_thread_name(const char *name);
+#else
+static inline void plat_thread_name(const char *name) { (void)name; }
 #endif
 const char *rt_out_of_memory_text(void);  // (runtime/kernel.c) the message when the system has no memory left
 

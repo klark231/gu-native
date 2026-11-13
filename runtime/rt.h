@@ -40,6 +40,8 @@
 #define ALIAS_SIZE    0x28000000u
 #define STACK_BASE    0xD0000000u   // stack region (main thread stack, mapped thread stacks)
 #define STACK_SIZE    0x20000000u
+#define PLUGIN2_BASE  0xF0100000u   // Forge plugins that do not fit in PLUGIN_BASE..PLUGIN_END (unassigned above the stacks)
+#define PLUGIN2_END   0xF8100000u
 #define GUEST_SPACE   0x100000000ull
 
 // ---- loader.c
@@ -135,7 +137,11 @@ extern volatile uint64_t g_present_count;  // frames the game presented (the ren
 union SDL_Event;
 void host_input_event(const union SDL_Event *e);
 void host_input_update(void);            // recompute the controller state the game reads (each loop pass)
+int host_input_busy(void);               // (MHGU_PERF_INPUT_WAKE) something runs by the clock (HIB_*): the loop keeps its pace
+enum { HIB_OUTPUT = 1, HIB_PADMAP, HIB_SCRIPT, HIB_PAD, HIB_RUMBLE, HIB_MENU, HIB_TOUCH, HIB_EVENT, HIB_COUNT };
+void ui_loop_wake(void);                 // (MHGU_PERF_INPUT_WAKE) any thread: the window loop runs a pass now (a frame, a rumble)
 bool host_input_press(const char *button, unsigned frames);  // scripted press from the next frame (UI thread)
+bool host_input_real_pad(void);          // a controller in the player's hands is connected (the touch controls' rule; any thread)
 void quickhunt_poll(void);               // (debug) MHGU_QUICKHUNT's presses (runtime/hle/quickhunt.c; UI thread)
 
 // ---- helpers

@@ -158,6 +158,25 @@ public class SDLControllerManager
     }
 
     private static final java.util.HashMap<Integer, Boolean> sPadKeyboards = new java.util.HashMap<>();
+    // MHGU: devices whose A, B, X or Y came though Android didn't list them (SDLJoystickHandler.faceButtonPressed)
+    static final java.util.Set<Integer> sFaceSeen = java.util.Collections.synchronizedSet(new java.util.HashSet<Integer>());
+
+    // MHGU: a key press of a device SDL reads as a joystick (handleKeyEvent): A, B, X or Y of one added without them
+    // adds it again with them. True: that press is spent (the controller isn't open yet: SDL would send it as a key,
+    // Enter or Escape, whose release then goes to the controller and the key stays down)
+    static boolean faceButtonCheck(int deviceId, int keyCode) {
+        if (keyCode != KeyEvent.KEYCODE_BUTTON_A && keyCode != KeyEvent.KEYCODE_BUTTON_B &&
+                keyCode != KeyEvent.KEYCODE_BUTTON_X && keyCode != KeyEvent.KEYCODE_BUTTON_Y) {
+            return false;
+        }
+        if (mJoystickHandler == null || !mJoystickHandler.faceButtonPressed(deviceId)) {
+            return false;
+        }
+        InputDevice device = InputDevice.getDevice(deviceId);
+        Log.i("MHGU", "input: " + (device != null ? device.getName() : "?") +
+                " sends A, B, X, Y without listing them: added again with them, read as a controller");
+        return true;
+    }
 
     static boolean padKeyboard(InputDevice device) {
         int id = device.getId();
@@ -192,6 +211,7 @@ class SDLJoystickHandler {
         SDLJoySensorListener sensorListener;
         Sensor accelerometerSensor;
         Sensor gyroscopeSensor;
+        int button_mask;  // MHGU: the buttons it was added with (faceButtonPressed)
     }
     static class RangeComparator implements Comparator<InputDevice.MotionRange> {
         @Override
@@ -316,9 +336,10 @@ class SDLJoystickHandler {
                     }
 
                     mJoysticks.add(joystick);
+                    joystick.button_mask = getButtonMask(joystickDevice);
                     SDLControllerManager.nativeAddJoystick(joystick.device_id, joystick.name, joystick.desc,
                             getVendorId(joystickDevice), getProductId(joystickDevice),
-                            getButtonMask(joystickDevice), joystick.axes.size(), getAxisMask(joystick.axes), joystick.hats.size()/2, can_rumble, has_rgb_led,
+                            joystick.button_mask, joystick.axes.size(), getAxisMask(joystick.axes), joystick.hats.size()/2, can_rumble, has_rgb_led,
                             has_accelerometer, has_gyroscope);
                 }
             }
@@ -361,6 +382,30 @@ class SDLJoystickHandler {
                 }
             }
         }
+    }
+
+    // MHGU: a controller that sends A, B, X and Y though Android doesn't list them among its keys (InputDevice.hasKeys:
+    // seen with a pad that passes itself off as another maker's, its keys in that one's layout) was added without them,
+    // so SDL made it no gamepad mapping. It was then never opened: its A and B reached the menus only as Enter and
+    // Escape, by the opposite places to the game's, and the game read nothing of it (#87). Its first press of one of
+    // them adds it again with the four of them, and SDL then reads it as any controller.
+    synchronized boolean faceButtonPressed(int device_id) {
+        SDLJoystick joystick = getJoystick(device_id);
+        if (joystick == null || (joystick.button_mask & 0xF) != 0 || !SDLControllerManager.sFaceSeen.add(device_id)) {
+            return false;
+        }
+        SDLControllerManager.nativeRemoveJoystick(device_id);
+        if (Build.VERSION.SDK_INT >= 31 /* Android 12.0 (S) */ && joystick.lightsSession != null) {
+            try {
+                joystick.lightsSession.close();
+            } catch (Exception e) {
+                // (already gone)
+            }
+            joystick.lightsSession = null;
+        }
+        mJoysticks.remove(joystick);
+        pollInputDevices();
+        return true;
     }
 
     synchronized protected SDLJoystick getJoystick(int device_id) {
@@ -543,6 +588,9 @@ class SDLJoystickHandler {
             if (has_keys[i]) {
                 button_mask |= masks[i];
             }
+        }
+        if (SDLControllerManager.sFaceSeen.contains(joystickDevice.getId())) {
+            button_mask |= 0xF;  // MHGU: A, B, X, Y seen pressed though not listed (faceButtonPressed)
         }
         return button_mask;
     }

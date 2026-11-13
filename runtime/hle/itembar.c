@@ -10,6 +10,11 @@
 // animation. The handler is hooked: after it, a notch of
 // the wheel does the same, past the same checks. One notch per update, at most a few waiting; notches while the
 // handler doesn't run (towns, menus, cutscenes) are dropped; those while the player may not pick an item wait 0.6 s.
+// The bar held open (the touch controls' long press on it, #109): the vfuncs +0x25c / +0x260 / +0x264 (0x4a3018,
+// 0x4a302c, 0x4a3040, the same for every weapon's class) test, set and clear bits of the hunter's word +0x2770. Bit 0 is
+// the bar open: the handler clears it, then sets it while the player's action 6 (L held) is down and bit 20 (0x100000) is
+// not, and the HUD draws the bar with its neighbouring items while it is set. After the handler, while a hold is asked
+// for, it is set too, past the same checks, with nothing pressed: the camera's L isn't touched.
 #include <pthread.h>
 
 #include "../hle.h"
@@ -23,6 +28,10 @@
 #define VF_CAN_SELECT    0x230u     // vfunc (player, 1) 1: may pick an item now
 #define PL_ITEM_SLOT     0x3298u    // u16: the selected pouch slot
 #define PL_ITEM_FLAGS    0x253cu    // bit 1: turned right, bit 2: turned left (the bar's animation)
+#define PL_BAR_BITS      0x2770u    // bit 0: the bar open (its neighbouring items shown), bit 20: not now
+#define BAR_OPEN         0x1u
+#define BAR_BLOCKED      0x100000u
+#define HOLD_NS          250000000ull  // a hold not asked for again within this is over (the touch side stopped)
 #define MAX_WAITING      4
 #define ACTIVE_NS        200000000ull  // notches older than the handler's last run by this much are dropped
 
@@ -30,6 +39,7 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_steps;                  // notches waiting: < 0 left, > 0 right
 static volatile uint64_t g_seen_ns;  // when the handler last ran
 static uint64_t g_steps_ns;          // when the last one came
+static volatile uint64_t g_hold_ns;  // when the bar was last asked to be held open (0: not)
 #define KEEP_NS 600000000ull         // a notch the player may not take now (a swing, a roll) waits this long
 
 void itembar_scroll(int steps) {
@@ -42,6 +52,8 @@ void itembar_scroll(int steps) {
     if (g_steps < -MAX_WAITING) g_steps = -MAX_WAITING;
     pthread_mutex_unlock(&g_lock);
 }
+
+void itembar_hold(bool open) { g_hold_ns = open ? plat_now_ns() : 0; }
 
 static uint32_t call(Cpu *c, uint32_t fn, uint32_t r0, uint32_t r1, uint32_t r2) {
     uint32_t saved[16];
@@ -60,12 +72,26 @@ static void item_bar(Cpu *c) {
     fnhook_call_original(c, FN_ITEM_BAR);
     uint64_t now = plat_now_ns(), seen = g_seen_ns;
     g_seen_ns = now;
-    if (pl == weapon_hunter()) mousecam_lock_shot();  // (the hunt camera's handler doesn't run while a gun aims)
+    bool local = pl == weapon_hunter();
+    if (local) mousecam_lock_shot();  // (the hunt camera's handler doesn't run while a gun aims)
+    uint64_t hold = g_hold_ns;
+    if (hold && local && now - hold < HOLD_NS && sane(pl) && call(c, FN_PL_IS_LOCAL, pl, 0, 0) == 1 &&
+        call(c, FN_PL_BUSY, pl, 0, 0) == 0) {  // (held open: as the handler opens it for L, past its checks)
+        uint32_t vt = LD32(pl), can_select = vt ? LD32(vt + VF_CAN_SELECT) : 0;
+        uint32_t bits = LD32(pl + PL_BAR_BITS);
+        if (can_select && call(c, can_select, pl, 1, 0) == 1 && !(bits & BAR_BLOCKED)) ST32(pl + PL_BAR_BITS, bits | BAR_OPEN);
+    }
     pthread_mutex_lock(&g_lock);
     if (seen && now - seen >= ACTIVE_NS) g_steps = 0;  // (scrolled while it didn't run)
     int dir = g_steps > 0 ? 1 : g_steps < 0 ? -1 : 0;
     pthread_mutex_unlock(&g_lock);
     if (!dir || !sane(pl) || call(c, FN_PL_IS_LOCAL, pl, 0, 0) != 1) return;  // (another player's: not ours)
+    if (weapon_prowler(pl)) {  // (a Prowler's bar holds Support Moves, chosen with L + Y / A: runtime/touch.cpp)
+        pthread_mutex_lock(&g_lock);
+        g_steps = 0;
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
     uint32_t vt = LD32(pl);
     uint32_t can_select = vt ? LD32(vt + VF_CAN_SELECT) : 0;  // (vtables are in main's image: not heap addresses)
     bool may = call(c, FN_PL_BUSY, pl, 0, 0) == 0 && can_select && call(c, can_select, pl, 1, 0) == 1;

@@ -186,6 +186,7 @@ static bool drain(void) {
 
 static void *discord_thread(void *arg) {
     (void)arg;
+    plat_thread_name("discord");
     char sent[sizeof g_want] = "", want[sizeof g_want];
     uint64_t next_try = 0, last_sent = 0;
     unsigned nonce = 0;
@@ -224,12 +225,21 @@ static void *discord_thread(void *arg) {
 }
 
 void discord_init(void) {
+#ifdef __ANDROID__
+    // MHGU_PERF_NODISCORD=1: no thread at all. A phone has no Discord app to talk to (its local connection is the desktop
+    // app's, and the menu hides the rows), and the thread woke every second and tried its sockets every 15 s for nothing;
+    // presence_tick then builds no activity either (discord_running)
+    const char *e = getenv("MHGU_PERF_NODISCORD");
+    if (e ? atoi(e) > 0 : true) return;  // (unset: none)
+#endif
     pthread_mutex_lock(&g_mu);
     snprintf(g_want, sizeof g_want, "null");
     pthread_mutex_unlock(&g_mu);
     pthread_t th;
     if (!pthread_create(&th, NULL, discord_thread, NULL)) pthread_detach(th), g_started = true;
 }
+
+bool discord_running(void) { return g_started; }
 
 // ---- the activity as JSON
 static void put(char **p, char *end, const char *s) {

@@ -8,10 +8,7 @@ hubs of the same port version, no Ryujinx players).
   `mhgurecomp.ini`, or the settings menu). Friends who all enter the same key only see each other's hubs; without a
   key a hub is public and seen by everyone else without a key. The game sends a hash of the key, never the key.
 - Joining goes through the server: it pipes the player's connection to one the host opens for them, and passes the
-  game's UDP packets between the two. Nobody needs a forwarded port. When both players allow direct connections
-  (`[Multiplayer] Direct`, on by default), the server also tells each game the other's address so their packets can go
-  straight between them (lower ping) when their routers let them; the relay stays as the fallback. A player with
-  Direct off never has their IP address shown to anyone.
+  game's UDP packets between the two. Nobody needs a forwarded port, and players never see each other's IP address.
 - Players on the same LAN still find each other directly (LAN search comes first).
 
 One small executable, no database, no configuration file. Uses one port, TCP and UDP (default 39510).
@@ -43,7 +40,7 @@ Open the port for **TCP and UDP** in the firewall (and forward it, if the server
 | `-max-conns-per-ip` | 24 | connections at once from one IP address |
 | `-max-hubs` | 2000 | hubs listed at once |
 | `-max-hubs-per-ip` | 4 | hubs from one IP address |
-| `-list-max` | 56 | hubs in one search answer (the most one answer can carry; the game takes 24 networks per search and the client lists the rest on the next searches, up to 500 hubs). The answer is always the same for the same hubs: free places first, then the fullest, then the newest. With more hubs than that, the last ones are left out |
+| `-list-max` | 18 | hubs in one search answer, as many as the game's Join Hub list shows (3 pages of 6). With more hubs than that, each search gets a random choice of them (hubs with a free place before full ones), so a Retry shows others. The answer is sorted: free places first, then the fullest, then the newest |
 | `-bandwidth` | 1048576 | bytes a second per player link and direction (a hub uses far less) |
 | `-v` | off | log hubs and joins (never IP addresses) |
 
@@ -81,14 +78,6 @@ JOIN, ATTACH carry "MHGS", the server protocol version, the port's link protocol
 join the two connections are spliced and carry the games' own link (runtime/net/ldn.c), which the server does not
 read. UDP datagrams "MHGR" + pair id + the sender's secret + payload are passed, without that prefix, to the other end
 of the pair.
-
-Direct connections (hole punching): a datagram of exactly that prefix + `MHGQ` + 12 zero bytes asks for the other
-end's public UDP address and is not passed on. Once both ends of a pair have asked (each game asks only when its
-player has `[Multiplayer] Direct = On`: that is their consent to show their address), the server answers the asker
-with `MHGP`, the pair id, the asker's secret, the other end's IPv4 address and port, 2 zero bytes and the pair's
-direct key (32 bytes, the query's size); the games mark their direct datagrams with that key. The games then try to
-reach each other directly and use the relay whenever that does not work, so a server older than this simply keeps
-every game on the relay.
 
 Safety: sizes capped, every NetworkInfo checked before it is listed, LIST / JOIN rate limited per IP address,
 connections and hubs per IP address limited, handshakes time out, the relay only forwards between the two ends of a

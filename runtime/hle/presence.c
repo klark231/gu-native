@@ -32,6 +32,7 @@
 #include "../net/discord.h"
 #include "../net/net.h"
 #include "../romfs.h"
+#include "mousecam.h"
 
 #define G_GAMECONTROL  0x1a8ca48u
 #define G_SPLAYER      0x1a85b58u
@@ -148,8 +149,31 @@ static void quest_targets(uint32_t qd, char *out, size_t size) {
     }
 }
 
-// ---- once a second, from the game's input polling
+// ---- [area] in log.txt at each change of the local hunter's zone in a quest, "[area] m02d area 4", so a crash or a
+// black area is tied to the area entered (#181). The stage is the quest's (+0x10) as the romfs names its folders
+// (nativeNX/arc/stage): m<nn>d, and 101-104 the first four's other time of day, m01n-m04n. Every poll, a few loads;
+// written only when the stage or the zone changes, and once more at the next quest (forgotten in a town).
+static void area_log(void) {
+    static int last_zone = -1;
+    static uint32_t last_stage;
+    uint32_t gc = LD32(G_GAMECONTROL);
+    if (!sane(gc)) return;
+    if (LD8(gc + GC_TOWN) != TOWN_NONE) { last_zone = -1; return; }
+    uint32_t sq = LD32(G_SQUEST), qd = sane(sq) ? LD32(sq + 0xa4) : 0, h = sane(qd) ? weapon_hunter() : 0;
+    if (!h) return;
+    uint32_t stage = LD8(qd + 0x10);
+    int zone = LD8(h + PL_ZONE);
+    if (zone > 31 || (zone == last_zone && stage == last_stage)) return;
+    last_zone = zone, last_stage = stage;
+    LOG("[area] m%02u%c area %d\n", stage % 100, stage >= 100 ? 'n' : 'd', zone);
+}
+
+// ---- once a second, from the game's input polling (the area's line above: every poll)
 void presence_tick(void) {
+    area_log();
+#ifdef __ANDROID__
+    if (!discord_running()) return;  // (MHGU_PERF_NODISCORD: nobody to tell)
+#endif
     static uint64_t next;
     static int64_t since;
     static int last_place = -2;

@@ -72,6 +72,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
                 <category android:name="android.intent.category.GAME" />
             </intent-filter>
+            <!-- una pulsación larga en el ícono: Compartir registro (un juego que se queda en negro no llega a su menú) -->
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity>
 
         <!-- Ajustes -> Licencias -->
@@ -80,13 +82,16 @@
             android:screenOrientation="sensorLandscape"
             android:exported="false" />
 
-        <!-- Compartir el registro: en su propio proceso, que sigue vivo cuando el del juego se cerró por un error -->
+        <!-- Compartir el registro: en su propio proceso, que sigue vivo cuando el del juego se cerró por un error.
+             exported: el atajo del ícono (res/xml/shortcuts.xml) lo abre el launcher, y hay launchers que lo abren como
+             ellos mismos y no como esta app: a una actividad sin exportar Android se la niega ("not exported") y el atajo
+             no hace nada. Sin intent-filter: solo se llega por su nombre, y no envía nada sin que el jugador elija a dónde. -->
         <activity android:name=".LogShareActivity"
             android:process=":share"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
             android:screenOrientation="sensorLandscape"
             android:excludeFromRecents="true"
-            android:exported="false" />
+            android:exported="true" />
         <provider android:name=".LogProvider"
             android:authorities="${applicationId}.logs"
             android:process=":share"
@@ -104,6 +109,12 @@
             android:exported="false" />
 
         <activity android:name=".SaveExportActivity"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+            android:screenOrientation="sensorLandscape"
+            android:exported="false" />
+
+        <!-- Ajustes -> Carpeta de partidas (y la pantalla de arranque si esa carpeta tiene un problema) -->
+        <activity android:name=".SaveFolderActivity"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
             android:screenOrientation="sensorLandscape"
             android:exported="false" />

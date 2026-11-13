@@ -20,6 +20,9 @@ int gamefolder_language(void);
 // Android: true when it can be played, with its UTF-8 spelling and the runtime's; else why says what is wrong.
 bool gamefolder_check_picked(const char *picked, int language, char *utf8, size_t utf8_size, char *native, size_t native_size,
                              char *why, size_t why_size);
+// true when why (from gamefolder_problem, in that language) says mhgugame.dll is missing: the screen then offers the
+// guide's PC step that makes it
+bool gamefolder_lib_missing(const char *why, int language);
 // Keeps the folder (UTF-8) for the next start: game_folder.txt beside the settings. The one kept ("" when none).
 void gamefolder_remember(const char *utf8);
 void gamefolder_saved(char *utf8, size_t size);

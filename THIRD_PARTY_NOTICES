@@ -43,9 +43,6 @@ what only one of them contains is marked "Android only" or "PC only".
   which you can replace with your own build: libmhguffmpeg.so in the APK, mhguffmpeg.dll beside MHGU.exe. GNU Lesser
   General Public License 2.1 or later: FFmpeg.txt, among the program's licenses, has its text, where the source is
   and how it was configured.
-- Crossplay (crates/mhgu-crossplay): the Rust code that talks to Ryujinx's RyuLdn servers and to Yuzu-family rooms was
-  ported from MHGU Relink's crate of the same name. MIT License. It builds with rusty_enet (ENet in Rust, MIT) and zstd
-  (MIT); cargo downloads them at build time, they are not in this repository.
 
 The libraries below are not part of this repository either. Each keeps its own license, whose text ships with the
 program: in the app (Credits & Licenses, Licenses), and on PC in the licenses folder beside MHGU.exe too.

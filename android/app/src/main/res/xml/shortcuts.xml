@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A long press on the app's icon: Share log. For a game that shows nothing at all (a black screen), whose own menus
+     can't be reached: the log of the session still running, and the one before. LogShareActivity is exported for it: some
+     launchers start the intent as themselves, and a non-exported activity refuses them -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="share_log"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/share_log"
+        android:shortcutLongLabel="@string/share_log">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.mhgu.recomp"
+            android:targetClass="com.mhgu.recomp.LogShareActivity" />
+    </shortcut>
+</shortcuts>

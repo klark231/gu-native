@@ -18,7 +18,19 @@
 // The switch: the list job runs again (as at the area's loading; ~0.4 s the first time, then a few ms) and the UI goes
 // back to its first state, which lays out the menu anew. Only in the rank menu (UI state 1) and star menu (2): in the
 // quest list L / R page through a quest's details.
-//   MHGU_VQ_TRACE=1   log the filter's verdicts (once per counter type and quest group)
+// Maps: a Village quest's supply box holds one Map (a Hub quest's four). Started from the Hub or the Pub (the test
+// hpscale.c uses for its HP), the box gets a Map in its last 3 slots too, the bottom right. The box (sQuest +0x1a54):
+// +4 cQuestData, +0xc 40 slots {u16 item, u16 count}, +0xc0 a bit per slot that is in the box now (delayed
+// deliveries' slots are filled at the start and their bits set when they arrive). At a quest's start 0x5abc00 clears
+// it, 0x5accbc fills it from the quest's rSupplyList (quest\supp\supp_<number>: 40 slots {item, count, group}, the
+// group-0 items from slot 0 on, skipping empty ones) and then 0x5ace14 adds the deliveries' items after them (or from
+// slot 32 on, for one kind). The maps go in after that, in the last empty slots: they never take a delivery's place.
+// Text: a quest's rQuestData points at its name and description in each language, and the list job loads it from the
+// loose files. Simplified and Traditional Chinese came with a title update and have no loose text: theirs is only in
+// the area's quest bundles (loc\arc\quest\vq for the villages, gq and gq2 for the Hub and the Pub; 0x35339c picks them
+// by area type), and without it the game shows English. So in those two languages, while a Hub or Pub counter shows
+// Village quests, vq is held loaded as it is in a village (the other languages' text is the same in both places).
+//   MHGU_VQ_TRACE=1   log the filter's verdicts (once per counter type and quest group), and the supply box
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,6 +55,12 @@
 #define FN_QUEST_UNLOCKED 0x74af8cu   // (quest number, 0xff, 0) -> unlocked in this save (the counters' check)
 #define G_RESOURCES       0x2326a64u  // the resource manager * (vtable +0x30: getResource(dti, path, mode))
 #define DTI_QUESTDATA     0x1a8ab98u  // rQuestData
+#define DTI_ARCHIVE       0x2324df0u  // rArchive
+#define FN_RES_RELEASE    0xa87660u   // (resource): drops a reference
+#define RES_FLAGS         0x50u       // resource: bit 0 loaded
+#define GC_LANGUAGE       0xa5u       // sGameControl: the game's language (from the save)
+#define LANG_CHT          7
+#define LANG_CHS          8
 #define SEL_LIST          0x24u       // sQuestSelector: rQuestData *[LIST_MAX], +0x28 their number
 #define SEL_COUNT         0x28u
 #define LIST_MAX          0x360u
@@ -55,11 +73,22 @@
 #define AREA_HUB          0
 #define AREA_VILLAGE      1           // (any village: they share the Village quest categories)
 #define AREA_PUB          7
+#define FN_SUPPLY_DELIVER 0x5ace14u   // (supply box): the delayed deliveries' items, after the box's own (0x5accbc)
+#define BOX_QUEST         0x4u        // supply box: cQuestData * (+0x8 quest number)
+#define BOX_SLOTS         0xcu        // supply box: 40 x {u16 item, u16 count}
+#define BOX_IN            0xc0u       // supply box: a bit per slot in the box now
+#define BOX_COUNT         40u
+#define ITEM_MAP          0x6b3u      // Map (the supply item)
+#define HUB_MAPS          3u          // added: 4 with the quest's own
 
 static bool g_village;  // the counter shows Village quests
 static int g_trace;
 
 static bool hub_area(uint8_t a) { return a == AREA_HUB || a == AREA_PUB; }
+
+// The setting is on, or was turned off while the counter shows Village quests: those stay whole until ui_update
+// switches back, so a quest list or accept screen that is open isn't changed underneath it.
+static bool village_active(void) { return g_village || config_live_village_in_hub(); }
 
 static uint32_t area_addr(void) {
     uint32_t gc = LD32(G_GAMECONTROL);
@@ -101,6 +130,7 @@ static bool locked_village_quest(Cpu *c, uint32_t q) {
 
 static void quest_filter(Cpu *c) {
     uint32_t q = c->r[1], type = c->r[2];
+    if (!village_active()) { fnhook_call_original(c, FN_QUEST_FILTER); return; }
     if (g_village && hub_area((uint8_t)type)) c->r[2] = AREA_VILLAGE;
     fnhook_call_original(c, FN_QUEST_FILTER);
     if ((c->r[0] & 1) && hub_area((uint8_t)type) && locked_village_quest(c, q)) c->r[0] = 0;
@@ -133,11 +163,46 @@ static void ui_draw(Cpu *c) { as_village_menu(c, FN_UI_DRAW); }
 // "You do not meet the requirements" when it isn't there. So a quest missing from the list is loaded as the list job
 // loads each (the resource loc\quest\questData\questData_<number>) and added to the list, which has room for 864.
 static uint32_t g_path;  // (guest memory for the resource path)
+
+// Holds the Village quest bundle while it is wanted, in the languages whose text is only there (see the top).
+static uint32_t g_vq_arc;
+static void village_text(Cpu *c, bool want) {
+    uint32_t gc = LD32(G_GAMECONTROL), mgr = LD32(G_RESOURCES);
+    uint8_t lang = gc ? LD8(gc + GC_LANGUAGE) : 0;
+    want = want && (lang == LANG_CHT || lang == LANG_CHS);
+    if (want && !g_vq_arc && mgr) {
+        uint64_t t0 = plat_now_ns();
+        snprintf((char *)G2H(g_path), 64, "loc\\arc\\quest\\vq");
+        g_vq_arc = call4(c, LD32(LD32(mgr) + 0x30), mgr, DTI_ARCHIVE, g_path, 2);  // (getResource: starts the load)
+        // it must be in before the list job asks for the quests, or those would come from the loose files again
+        while (g_vq_arc && !(LD32(g_vq_arc + RES_FLAGS) & 1) && plat_now_ns() - t0 < 5000000000ull)
+            plat_sleep_until_ns(plat_now_ns() + 1000000);
+        LOG("[vqhub] Village quest text bundle: %s (%.0f ms)\n",
+            !g_vq_arc ? "not found" : LD32(g_vq_arc + RES_FLAGS) & 1 ? "loaded" : "still loading",
+            (plat_now_ns() - t0) / 1e6);
+    } else if (!want && g_vq_arc) {
+        call1(c, FN_RES_RELEASE, g_vq_arc);
+        g_vq_arc = 0;
+    }
+}
+
+// Every list job starts here, at a switch and when an area loads (the counter may still be on the Village list). A
+// Village list made while an area loads comes out nearly empty (8 quests instead of 402, probably the unlock check
+// not being ready), so it is made again the first time the counter's menu is up (ui_update).
+static bool g_reloading, g_list_stale;
+static void list_load(Cpu *c) {
+    uint32_t a = area_addr();
+    bool village = g_village && a && hub_area(LD8(a));
+    village_text(c, village);
+    if (!g_reloading) g_list_stale = village;
+    fnhook_call_original(c, FN_LIST_LOAD);
+}
+
 static void quest_lookup(Cpu *c) {
     uint32_t sel = c->r[0], q = c->r[1], args[2] = {c->r[0], c->r[1]};
     fnhook_call_original(c, FN_QUEST_LOOKUP);
     uint32_t a = area_addr();
-    if (c->r[0] || !sel || !q || q > 9999999 || !a || !hub_area(LD8(a))) return;
+    if (c->r[0] || !village_active() || !sel || !q || q > 9999999 || !a || !hub_area(LD8(a))) return;
     static uint32_t failed[16];  // (asked every frame for what the board shows: don't load what isn't there again)
     for (int i = 0; i < 16; i++) if (failed[i] == q) return;
     if (locked_village_quest(c, q)) {
@@ -148,6 +213,8 @@ static void quest_lookup(Cpu *c) {
     }
     uint32_t list = LD32(sel + SEL_LIST), n = LD32(sel + SEL_COUNT), mgr = LD32(G_RESOURCES);
     if (!list || n >= LIST_MAX || !mgr) return;
+    uint32_t group = q / 10000 % 100;
+    if (group == 0 || group == 3 || group == 10 || group == 13) village_text(c, true);  // (posted from the Village list)
     snprintf((char *)G2H(g_path), 64, "loc\\quest\\questData\\questData_%07u", q);
     uint32_t res = call4(c, LD32(LD32(mgr) + 0x30), mgr, DTI_QUESTDATA, g_path, 2);  // (getResource, loading now)
     if (!res) {
@@ -166,17 +233,16 @@ static void reload_list(Cpu *c) {
     uint32_t sel = LD32(G_SELECTOR);
     if (!sel) return;
     uint64_t t0 = plat_now_ns();
+    g_reloading = true;
+    g_list_stale = false;
     call1(c, FN_LIST_LOAD, sel);
+    g_reloading = false;
     while (!call1(c, FN_LIST_DONE, sel) && plat_now_ns() - t0 < 5000000000ull)
         plat_sleep_until_ns(plat_now_ns() + 1000000);
     // the categories (quest numbers per star...) are built anew too, as when a stage starts, for the new mode
-    uint32_t a = area_addr();
-    uint8_t was = a ? LD8(a) : 0xff;
-    if (g_village && hub_area(was)) ST8(a, AREA_VILLAGE);
     call1(c, FN_CATEGORIES, sel);
-    if (a) ST8(a, was);
-    LOG("[vqhub] quest counter: %s quests (list loaded in %.0f ms)\n", g_village ? "Village" : "Hub",
-        (plat_now_ns() - t0) / 1e6);
+    LOG("[vqhub] quest counter: %s quests, %u listed (loaded in %.0f ms)\n", g_village ? "Village" : "Hub",
+        LD32(sel + SEL_COUNT), (plat_now_ns() - t0) / 1e6);
 }
 
 static void ui_update(Cpu *c) {
@@ -188,13 +254,45 @@ static void ui_update(Cpu *c) {
     held = b;
     uint32_t ui = c->r[0], a = area_addr();
     uint8_t st = LD8(ui + UI_STATE);
-    if (a && hub_area(LD8(a)) && (st == UI_RANK_MENU || st == UI_STAR_MENU) &&
-        (pressed & ((1ull << BTN_L) | (1ull << BTN_R)))) {
-        g_village = !g_village;
-        reload_list(c);
-        ST8(ui + UI_STATE, 0);  // (lays the menu out again)
+    bool on = config_live_village_in_hub();
+    if (a && hub_area(LD8(a)) && (st == UI_RANK_MENU || st == UI_STAR_MENU)) {
+        bool swap = on ? (pressed & ((1ull << BTN_L) | (1ull << BTN_R))) != 0 : g_village;  // (off: back to the Hub's quests)
+        if (swap) g_village = !g_village;
+        if (swap || g_list_stale) {
+            reload_list(c);
+            ST8(ui + UI_STATE, 0);  // (lays the menu out again)
+        }
     }
     as_village_menu(c, FN_UI_UPDATE);
+}
+
+// The hooks are set whatever the setting: each follows [Village Quests] VillageQuestsInHub as it is now (a Save in the
+// settings menu turns it on or off; when off, the counter goes back to the Hub's quests at its rank or star menu).
+// A Village quest started from the Hub or the Pub: a Map for each hunter, as in a Hub quest (see the top).
+static void supply_deliver(Cpu *c) {
+    uint32_t box = c->r[0];
+    fnhook_call_original(c, FN_SUPPLY_DELIVER);
+    uint32_t qd = box ? LD32(box + BOX_QUEST) : 0, q = qd ? LD32(qd + 8) : 0;
+    bool maps = q && village_active() && hpscale_village_from_hub(q);
+    uint32_t added = 0;
+    for (uint32_t i = BOX_COUNT; maps && i-- > 0 && added < HUB_MAPS;) {
+        uint32_t slot = box + BOX_SLOTS + 4 * i, in = box + BOX_IN + 4 * (i / 32);
+        if (LD16(slot)) continue;
+        ST16(slot, ITEM_MAP);
+        ST16(slot + 2, 1);
+        ST32(in, LD32(in) | 1u << (i % 32));
+        added++;
+    }
+    if (added) LOG("[vqhub] Village quest %07u from the Hub: %u Map(s) added to the supply box\n", q, added);
+    if (g_trace && box) {
+        char s[BOX_COUNT * 16] = "", *p = s;
+        for (uint32_t i = 0; i < BOX_COUNT; i++) {
+            uint32_t slot = box + BOX_SLOTS + 4 * i, in = LD32(box + BOX_IN + 4 * (i / 32)) >> (i % 32) & 1;
+            if (LD16(slot))
+                p += snprintf(p, (size_t)(s + sizeof s - p), " %u:%x x%u%s", i, LD16(slot), LD16(slot + 2), in ? "" : "(later)");
+        }
+        LOG("[vqhub] quest %07u supply box:%s\n", q, s);
+    }
 }
 
 // Quest demos in a session. A quest's monster demo (event table 0x17a06fc, type 1 entries: event ev\NNN, area, quest)
@@ -253,15 +351,15 @@ static void spawn_update(Cpu *c) {
     fnhook_call_original(c, FN_SPAWN_UPDATE);
 }
 
-
 void villagehub_init(void) {
     g_trace = getenv("MHGU_VQ_TRACE") != NULL;
-    if (!g_config.village_in_hub) return;
     g_demo_test = getenv("MHGU_VQ_DEMO_TEST") != NULL;
-    fnhook_set(FN_SPAWN_UPDATE, hle_register("villagehub:spawn_update", spawn_update));
     g_path = hle_alloc(64);
+    fnhook_set(FN_SPAWN_UPDATE, hle_register("villagehub:spawn_update", spawn_update));
+    fnhook_set(FN_SUPPLY_DELIVER, hle_register("villagehub:supply_deliver", supply_deliver));
     fnhook_set(FN_QUEST_FILTER, hle_register("villagehub:quest_filter", quest_filter));
     fnhook_set(FN_QUEST_LOOKUP, hle_register("villagehub:quest_lookup", quest_lookup));
+    fnhook_set(FN_LIST_LOAD, hle_register("villagehub:list_load", list_load));
     fnhook_set(FN_CATEGORY_BUILD, hle_register("villagehub:category_build", category_build));
     fnhook_set(FN_CATEGORY_FILL, hle_register("villagehub:category_fill", category_fill));
     fnhook_set(FN_CATEGORY_GET, hle_register("villagehub:category_get", category_get));
